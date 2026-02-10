@@ -1,0 +1,36 @@
+{
+    "name": "@nexus/api",
+    "version": "0.1.0",
+    "private": true,
+    "description": "NEXUS API Server - Code Intelligence Platform Backend",
+    "type": "module",
+    "main": "dist/index.js",
+    "scripts": {
+        "dev": "tsx watch src/index.ts",
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "lint": "eslint src/**/*.ts"
+    },
+    "dependencies": {
+        "hono": "^4.6.0",
+        "@hono/node-server": "^1.13.0",
+        "@hono/zod-validator": "^0.4.0",
+        "@trpc/server": "^11.0.0",
+        "zod": "^3.23.0",
+        "drizzle-orm": "^0.36.0",
+        "postgres": "^3.4.0",
+        "bullmq": "^5.0.0",
+        "ioredis": "^5.4.0",
+        "@nexus/ai": "workspace:*",
+        "@nexus/db": "workspace:*",
+        "jose": "^5.9.0",
+        "nanoid": "^5.0.0",
+        "ws": "^8.18.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@types/ws": "^8.5.0",
+        "tsx": "^4.19.0",
+        "typescript": "^5.7.0"
+    }
+}
