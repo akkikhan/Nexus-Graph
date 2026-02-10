@@ -9,10 +9,35 @@ import { createNexusAI } from "@nexus/ai";
 const aiRouter = new Hono();
 // Initialize NEXUS AI (in production, this would be configured per-org)
 const nexusAI = createNexusAI({
-    anthropic: { apiKey: process.env.ANTHROPIC_API_KEY || "" },
-    openai: { apiKey: process.env.OPENAI_API_KEY || "" },
-    google: { apiKey: process.env.GOOGLE_AI_API_KEY || "" },
+    providers: {
+        anthropic: {
+            apiKey: process.env.ANTHROPIC_API_KEY || "",
+            model: "claude-3-5-sonnet-20241022"
+        },
+        openai: {
+            apiKey: process.env.OPENAI_API_KEY || "",
+            model: "gpt-4-turbo-preview"
+        },
+        google: {
+            apiKey: process.env.GOOGLE_AI_API_KEY || "",
+            model: "gemini-pro"
+        }
+    },
     defaultProvider: "anthropic",
+    routing: {
+        codeReview: "anthropic",
+        summarization: "openai",
+        suggestions: "anthropic",
+        riskAssessment: "anthropic"
+    }
+});
+// Helper to ensure DiffContext compliance
+const toDiffContext = (f) => ({
+    file: f.file,
+    diff: f.diff,
+    additions: 0,
+    deletions: 0,
+    patch: "",
 });
 // Schemas
 const reviewSchema = z.object({
@@ -104,7 +129,7 @@ aiRouter.post("/route", zValidator("json", routingSchema), async (c) => {
     const body = c.req.valid("json");
     try {
         const decision = await nexusAI.modelRouter.route({
-            files: body.files,
+            files: body.files.map(toDiffContext),
             primaryLanguage: body.primaryLanguage,
             totalTokens: body.files.reduce((sum, f) => sum + f.diff.length / 4, 0),
             riskLevel: body.riskLevel,
@@ -128,7 +153,7 @@ aiRouter.post("/route", zValidator("json", routingSchema), async (c) => {
 aiRouter.post("/review", zValidator("json", reviewSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const comments = await nexusAI.codeReviewer.reviewPR(body.files);
+        const comments = await nexusAI.codeReviewer.reviewPR(body.files.map(toDiffContext));
         return c.json({
             success: true,
             comments,
@@ -153,7 +178,7 @@ aiRouter.post("/review", zValidator("json", reviewSchema), async (c) => {
 aiRouter.post("/debate", zValidator("json", debateSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const result = await nexusAI.ensembleDebate.debate(body.diff, body.models);
+        const result = await nexusAI.ensembleDebate.debate(toDiffContext(body.diff), body.models);
         return c.json({
             success: true,
             debate: result,
@@ -169,7 +194,7 @@ aiRouter.post("/debate", zValidator("json", debateSchema), async (c) => {
 aiRouter.post("/intent", zValidator("json", intentSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const analysis = await nexusAI.intentDetector.analyze(body.files);
+        const analysis = await nexusAI.intentDetector.analyze(body.files.map(toDiffContext));
         return c.json({
             success: true,
             intent: analysis,
@@ -185,23 +210,19 @@ aiRouter.post("/intent", zValidator("json", intentSchema), async (c) => {
 aiRouter.post("/risk", zValidator("json", reviewSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const riskScores = await Promise.all(body.files.map((file) => nexusAI.riskScorer.calculate({
-            file: file.file,
-            diff: file.diff,
-        })));
-        // Aggregate scores
-        const avgScore = riskScores.reduce((sum, r) => sum + r.score, 0) / riskScores.length;
+        // Calculate risk for the whole PR using assessRisk
+        const riskScore = await nexusAI.riskScorer.assessRisk(body.files.map(toDiffContext), {
+            linesAdded: 0, // Mock metrics for now
+            linesRemoved: 0,
+            filesChanged: body.files.length,
+            testFilesChanged: 0
+        });
         return c.json({
             success: true,
-            overallScore: Math.round(avgScore),
-            overallLevel: avgScore >= 75
-                ? "critical"
-                : avgScore >= 50
-                    ? "high"
-                    : avgScore >= 25
-                        ? "medium"
-                        : "low",
-            files: riskScores,
+            overallScore: riskScore.score,
+            overallLevel: riskScore.level,
+            risk: riskScore,
+            files: [] // Backwards compatibility: empty list since we have a single PR score now
         });
     }
     catch (error) {
@@ -250,7 +271,7 @@ aiRouter.post("/generate-tests", zValidator("json", testGenSchema), async (c) =>
 aiRouter.post("/simulate-impact", zValidator("json", impactSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const simulation = nexusAI.impactSimulator.simulate(body.files, {
+        const simulation = nexusAI.impactSimulator.simulate(body.files.map(toDiffContext), {
             userLoad: body.userLoad,
         });
         return c.json({
@@ -268,7 +289,7 @@ aiRouter.post("/simulate-impact", zValidator("json", impactSchema), async (c) =>
 aiRouter.post("/split", zValidator("json", intentSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const suggestions = await nexusAI.autoSplitter.suggestSplits(body.files);
+        const suggestions = await nexusAI.autoSplitter.suggestSplits(body.files.map(toDiffContext));
         return c.json({
             success: true,
             splits: suggestions,

@@ -20,26 +20,26 @@ export declare const stackRepository: {
      */
     create(input: CreateStackInput): Promise<{
         status: string;
-        name: string;
         id: string;
-        baseBranch: string;
-        updatedAt: Date;
-        createdAt: Date;
-        userId: string;
         repoId: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        userId: string;
+        baseBranch: string;
     }>;
     /**
      * Find stack by ID
      */
     findById(id: string): Promise<{
         status: string;
-        name: string;
         id: string;
-        baseBranch: string;
-        updatedAt: Date;
-        createdAt: Date;
-        userId: string;
         repoId: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        userId: string;
+        baseBranch: string;
         user: {
             [x: string]: any;
         } | {
@@ -61,13 +61,13 @@ export declare const stackRepository: {
         repoId?: string;
     }): Promise<{
         status: string;
-        name: string;
         id: string;
-        baseBranch: string;
-        updatedAt: Date;
-        createdAt: Date;
-        userId: string;
         repoId: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        userId: string;
+        baseBranch: string;
         branches: {
             [x: string]: any;
         }[];
@@ -102,47 +102,15 @@ export declare const stackRepository: {
      * Get full stack with PR details
      */
     getWithPRDetails(id: string): Promise<{
-        branches: ({
-            pullRequest: null;
-        } | {
-            pullRequest: {
-                number: number;
-                status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
-                id: string;
-                title: string;
-                description: string | null;
-                updatedAt: Date;
-                mergedAt: Date | null;
-                riskLevel: "high" | "critical" | "low" | "medium" | null;
-                createdAt: Date;
-                externalId: string;
-                repoId: string;
-                branchId: string | null;
-                authorId: string;
-                url: string;
-                isDraft: boolean | null;
-                linesAdded: number | null;
-                linesRemoved: number | null;
-                filesChanged: number | null;
-                commitsCount: number | null;
-                aiSummary: string | null;
-                riskScore: number | null;
-                riskFactors: unknown;
-                estimatedReviewMinutes: number | null;
-                publishedAt: Date | null;
-                firstReviewAt: Date | null;
-                approvedAt: Date | null;
-                closedAt: Date | null;
-            } | undefined;
-        })[];
+        branches: any[];
         status: string;
-        name: string;
         id: string;
-        baseBranch: string;
-        updatedAt: Date;
-        createdAt: Date;
-        userId: string;
         repoId: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        userId: string;
+        baseBranch: string;
         user: {
             [x: string]: any;
         } | {

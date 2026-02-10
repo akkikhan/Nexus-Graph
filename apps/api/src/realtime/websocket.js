@@ -19,13 +19,14 @@ export class RealtimeServer {
     setupEventHandlers() {
         this.wss.on("connection", (ws, req) => {
             const clientId = this.generateClientId();
+            const remoteAddress = req.socket.remoteAddress ?? "unknown";
             const client = {
                 ws,
                 subscriptions: new Set(["global"]),
                 lastPing: Date.now(),
             };
             this.clients.set(clientId, client);
-            console.log(`[WebSocket] Client connected: ${clientId}`);
+            console.log(`[WebSocket] Client connected: ${clientId} (${remoteAddress})`);
             // Send welcome message
             this.sendTo(ws, {
                 type: "connected",

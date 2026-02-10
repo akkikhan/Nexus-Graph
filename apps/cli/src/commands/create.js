@@ -51,8 +51,9 @@ export const createCommand = new Command("create")
             }
         }
         // Get branch name if not provided
-        if (!name) {
-            const { branchName } = await inquirer.prompt([
+        let branchName = name;
+        if (!branchName) {
+            const { branchName: promptedName } = await inquirer.prompt([
                 {
                     type: "input",
                     name: "branchName",
@@ -67,14 +68,17 @@ export const createCommand = new Command("create")
                     },
                 },
             ]);
-            name = branchName;
+            branchName = promptedName;
+        }
+        if (!branchName) {
+            throw new Error("Branch name is required");
         }
         // Get current branch (will be the parent)
         const currentBranch = await getCurrentBranch(git);
         const trunk = config.get("trunk", "main");
         // Format branch name with prefix
         const prefix = config.get("branchPrefix", "");
-        const fullBranchName = prefix ? `${prefix}/${name}` : name;
+        const fullBranchName = prefix ? `${prefix}/${branchName}` : branchName;
         spinner.start(`Creating branch ${chalk.cyan(fullBranchName)}...`);
         // Create and checkout the new branch
         await git.checkoutLocalBranch(fullBranchName);

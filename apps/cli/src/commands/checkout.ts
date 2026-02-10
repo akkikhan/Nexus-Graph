@@ -48,7 +48,7 @@ export const checkoutCommand = new Command("checkout")
                 console.log(chalk.green(`→ ${selected}`));
             } else {
                 // Show stack picker
-                const choices = stack.map((b, index) => {
+                const choices = stack.map((b) => {
                     const isCurrent = b.name === currentBranch;
                     const status = b.prNumber ? chalk.gray(` (PR #${b.prNumber})`) : "";
                     return {

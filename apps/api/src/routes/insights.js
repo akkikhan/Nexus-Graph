@@ -9,9 +9,27 @@ import { createNexusAI } from "@nexus/ai";
 const insightsRouter = new Hono();
 // Initialize NEXUS AI
 const nexusAI = createNexusAI({
-    anthropic: { apiKey: process.env.ANTHROPIC_API_KEY || "" },
-    openai: { apiKey: process.env.OPENAI_API_KEY || "" },
+    providers: {
+        anthropic: {
+            apiKey: process.env.ANTHROPIC_API_KEY || "",
+            model: "claude-3-5-sonnet-20241022"
+        },
+        openai: {
+            apiKey: process.env.OPENAI_API_KEY || "",
+            model: "gpt-4-turbo-preview"
+        },
+        google: {
+            apiKey: process.env.GOOGLE_AI_API_KEY || "",
+            model: "gemini-pro"
+        }
+    },
     defaultProvider: "anthropic",
+    routing: {
+        codeReview: "anthropic",
+        summarization: "openai",
+        suggestions: "anthropic",
+        riskAssessment: "anthropic"
+    }
 });
 // Schemas
 const conflictPredictionSchema = z.object({
@@ -143,6 +161,10 @@ insightsRouter.post("/reviewer-fatigue", zValidator("json", fatigueSchema), asyn
         avgReviewDuration: 12, // minutes
         avgCommentLength: 25, // words
         approvalRate: 0.87,
+        userId: reviewerId,
+        username: "reviewer",
+        sessionStart: new Date(Date.now() - 3 * 60 * 60 * 1000),
+        reviews: []
     };
     const analysis = nexusAI.flowAnalyzer.analyzeFlowState(mockSession);
     return c.json({

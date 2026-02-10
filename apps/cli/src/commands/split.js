@@ -22,7 +22,11 @@ export const splitCommand = new Command("split")
         spinner.start("Analyzing changes for split opportunities...");
         // Get diff stats
         const diffSummary = await git.diffSummary([trunk, currentBranch]);
-        const totalLines = (diffSummary.insertions || 0) + (diffSummary.deletions || 0);
+        const totalLines = (diffSummary.files || []).reduce((sum, file) => {
+            if (file.binary)
+                return sum;
+            return sum + (file.insertions || 0) + (file.deletions || 0);
+        }, 0);
         if (totalLines < 150) {
             spinner.info("PR is already small enough. No split needed.");
             console.log(chalk.gray(`\nTotal changes: ${totalLines} lines`));
@@ -71,7 +75,7 @@ export const splitCommand = new Command("split")
         // Create split suggestions
         const suggestions = [];
         if (groups.migrations.length > 0) {
-            const lines = groups.migrations.reduce((sum, f) => sum + (f.insertions || 0) + (f.deletions || 0), 0);
+            const lines = groups.migrations.reduce((sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)), 0);
             suggestions.push({
                 name: "Database Changes",
                 files: groups.migrations.length,
@@ -80,7 +84,7 @@ export const splitCommand = new Command("split")
             });
         }
         if (groups.backend.length > 0) {
-            const lines = groups.backend.reduce((sum, f) => sum + (f.insertions || 0) + (f.deletions || 0), 0);
+            const lines = groups.backend.reduce((sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)), 0);
             suggestions.push({
                 name: "Backend Implementation",
                 files: groups.backend.length,
@@ -89,7 +93,7 @@ export const splitCommand = new Command("split")
             });
         }
         if (groups.frontend.length > 0) {
-            const lines = groups.frontend.reduce((sum, f) => sum + (f.insertions || 0) + (f.deletions || 0), 0);
+            const lines = groups.frontend.reduce((sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)), 0);
             suggestions.push({
                 name: "Frontend Implementation",
                 files: groups.frontend.length,
@@ -98,7 +102,7 @@ export const splitCommand = new Command("split")
             });
         }
         if (groups.tests.length > 0) {
-            const lines = groups.tests.reduce((sum, f) => sum + (f.insertions || 0) + (f.deletions || 0), 0);
+            const lines = groups.tests.reduce((sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)), 0);
             suggestions.push({
                 name: "Tests",
                 files: groups.tests.length,
@@ -107,7 +111,7 @@ export const splitCommand = new Command("split")
             });
         }
         if (groups.config.length > 0) {
-            const lines = groups.config.reduce((sum, f) => sum + (f.insertions || 0) + (f.deletions || 0), 0);
+            const lines = groups.config.reduce((sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)), 0);
             suggestions.push({
                 name: "Configuration",
                 files: groups.config.length,
@@ -116,7 +120,7 @@ export const splitCommand = new Command("split")
             });
         }
         if (groups.other.length > 0) {
-            const lines = groups.other.reduce((sum, f) => sum + (f.insertions || 0) + (f.deletions || 0), 0);
+            const lines = groups.other.reduce((sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)), 0);
             suggestions.push({
                 name: "Other Changes",
                 files: groups.other.length,
@@ -183,7 +187,12 @@ export const splitCommand = new Command("split")
                 });
                 const files = groups[groupKey] || [];
                 for (const file of files) {
-                    console.log(chalk.gray(`  ${file.file} (+${file.insertions || 0}/-${file.deletions || 0})`));
+                    if (file.binary) {
+                        console.log(chalk.gray(`  ${file.file} (binary)`));
+                    }
+                    else {
+                        console.log(chalk.gray(`  ${file.file} (+${file.insertions || 0}/-${file.deletions || 0})`));
+                    }
                 }
             }
             console.log("");

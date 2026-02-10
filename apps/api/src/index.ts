@@ -11,19 +11,19 @@ import { prettyJSON } from "hono/pretty-json";
 import { timing } from "hono/timing";
 
 // Import routes
-import { authRouter } from "./routes/auth";
-import { prRouter } from "./routes/pr";
-import { stackRouter } from "./routes/stack";
-import { reviewRouter } from "./routes/review";
-import { aiRouter } from "./routes/ai";
-import { insightsRouter } from "./routes/insights";
-import { webhookRouter } from "./routes/webhooks";
+import { authRouter } from "./routes/auth.js";
+import { prRouter } from "./routes/pr.js";
+import { stackRouter } from "./routes/stack.js";
+import { reviewRouter } from "./routes/review.js";
+import { aiRouter } from "./routes/ai.js";
+import { insightsRouter } from "./routes/insights.js";
+import { webhookRouter } from "./routes/webhooks.js";
 
 // Import realtime
-import { initRealtimeServer, getRealtimeServer } from "./realtime/websocket";
+import { initRealtimeServer, getRealtimeServer } from "./realtime/websocket.js";
 
 // Import database
-import { checkDatabaseHealth } from "./db";
+import { checkDatabaseHealth } from "./db/index.js";
 
 // Create main app
 const app = new Hono();
@@ -120,6 +120,6 @@ const server = serve({
 });
 
 // Initialize WebSocket server on top of HTTP server
-initRealtimeServer(server);
+initRealtimeServer(server as any);
 
 export default app;

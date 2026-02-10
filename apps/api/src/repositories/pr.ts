@@ -3,7 +3,7 @@
  */
 
 import { eq, desc, and, sql } from "drizzle-orm";
-import { db, pullRequests, reviews, comments, users, repositories } from "../db";
+import { db, pullRequests, reviews, comments, users, repositories } from "../db/index.js";
 
 export interface CreatePRInput {
     repoId: string;
@@ -170,6 +170,7 @@ export const prRepository = {
      * Get PRs pending review for a user
      */
     async getPendingReviews(userId: string) {
+        void userId;
         // In a full implementation, would join with review requests table
         const prs = await db.query.pullRequests.findMany({
             where: eq(pullRequests.status, "open"),

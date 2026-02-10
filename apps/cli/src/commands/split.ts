@@ -28,7 +28,10 @@ export const splitCommand = new Command("split")
 
             // Get diff stats
             const diffSummary = await git.diffSummary([trunk, currentBranch]);
-            const totalLines = (diffSummary.insertions || 0) + (diffSummary.deletions || 0);
+            const totalLines = (diffSummary.files || []).reduce((sum, file) => {
+                if (file.binary) return sum;
+                return sum + (file.insertions || 0) + (file.deletions || 0);
+            }, 0);
 
             if (totalLines < 150) {
                 spinner.info("PR is already small enough. No split needed.");
@@ -91,7 +94,7 @@ export const splitCommand = new Command("split")
 
             if (groups.migrations.length > 0) {
                 const lines = groups.migrations.reduce(
-                    (sum, f) => sum + (f.insertions || 0) + (f.deletions || 0),
+                    (sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)),
                     0
                 );
                 suggestions.push({
@@ -104,7 +107,7 @@ export const splitCommand = new Command("split")
 
             if (groups.backend.length > 0) {
                 const lines = groups.backend.reduce(
-                    (sum, f) => sum + (f.insertions || 0) + (f.deletions || 0),
+                    (sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)),
                     0
                 );
                 suggestions.push({
@@ -117,7 +120,7 @@ export const splitCommand = new Command("split")
 
             if (groups.frontend.length > 0) {
                 const lines = groups.frontend.reduce(
-                    (sum, f) => sum + (f.insertions || 0) + (f.deletions || 0),
+                    (sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)),
                     0
                 );
                 suggestions.push({
@@ -130,7 +133,7 @@ export const splitCommand = new Command("split")
 
             if (groups.tests.length > 0) {
                 const lines = groups.tests.reduce(
-                    (sum, f) => sum + (f.insertions || 0) + (f.deletions || 0),
+                    (sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)),
                     0
                 );
                 suggestions.push({
@@ -143,7 +146,7 @@ export const splitCommand = new Command("split")
 
             if (groups.config.length > 0) {
                 const lines = groups.config.reduce(
-                    (sum, f) => sum + (f.insertions || 0) + (f.deletions || 0),
+                    (sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)),
                     0
                 );
                 suggestions.push({
@@ -156,7 +159,7 @@ export const splitCommand = new Command("split")
 
             if (groups.other.length > 0) {
                 const lines = groups.other.reduce(
-                    (sum, f) => sum + (f.insertions || 0) + (f.deletions || 0),
+                    (sum, f) => sum + (f.binary ? 0 : (f.insertions || 0) + (f.deletions || 0)),
                     0
                 );
                 suggestions.push({
@@ -230,9 +233,13 @@ export const splitCommand = new Command("split")
                     });
                     const files = groups[groupKey as keyof typeof groups] || [];
                     for (const file of files) {
-                        console.log(
-                            chalk.gray(`  ${file.file} (+${file.insertions || 0}/-${file.deletions || 0})`)
-                        );
+                        if (file.binary) {
+                            console.log(chalk.gray(`  ${file.file} (binary)`));
+                        } else {
+                            console.log(
+                                chalk.gray(`  ${file.file} (+${(file as any).insertions || 0}/-${(file as any).deletions || 0})`)
+                            );
+                        }
                     }
                 }
                 console.log("");

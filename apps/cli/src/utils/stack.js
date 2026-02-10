@@ -36,6 +36,9 @@ class StackManager {
                 trunk,
             };
         }
+        if (!this.stackData) {
+            throw new Error("Stack data not initialized");
+        }
         return this.stackData;
     }
     async save() {

@@ -3,7 +3,7 @@
  */
 
 import { eq, desc, and } from "drizzle-orm";
-import { db, stacks, branches, pullRequests } from "../db";
+import { db, stacks, branches, pullRequests } from "../db/index.js";
 
 export interface CreateStackInput {
     repoId: string;
@@ -155,7 +155,7 @@ export const stackRepository = {
 
         // Enrich branches with PR data
         const enrichedBranches = await Promise.all(
-            stack.branches.map(async (branch) => {
+            stack.branches.map(async (branch: any) => {
                 if (!branch.prNumber) return { ...branch, pullRequest: null };
 
                 const pr = await db.query.pullRequests.findFirst({

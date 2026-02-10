@@ -2,7 +2,7 @@
  * NEXUS Repository Layer - Stacks
  */
 import { eq, desc, and } from "drizzle-orm";
-import { db, stacks, branches, pullRequests } from "../db";
+import { db, stacks, branches, pullRequests } from "../db/index.js";
 export const stackRepository = {
     /**
      * Create a new stack

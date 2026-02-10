@@ -1244,7 +1244,7 @@ export declare const pullRequests: import("drizzle-orm/pg-core").PgTableWithColu
             tableName: "pull_requests";
             dataType: "string";
             columnType: "PgEnumColumn";
-            data: "high" | "critical" | "low" | "medium";
+            data: "low" | "medium" | "high" | "critical";
             driverParam: string;
             notNull: false;
             hasDefault: false;
@@ -1962,7 +1962,7 @@ export declare const mergeQueue: import("drizzle-orm/pg-core").PgTableWithColumn
             tableName: "merge_queue";
             dataType: "string";
             columnType: "PgEnumColumn";
-            data: "merged" | "pending" | "running" | "passed" | "failed";
+            data: "merged" | "pending" | "running" | "failed" | "passed";
             driverParam: string;
             notNull: true;
             hasDefault: true;

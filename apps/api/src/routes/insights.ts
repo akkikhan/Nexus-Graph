@@ -184,6 +184,10 @@ insightsRouter.post(
             avgReviewDuration: 12, // minutes
             avgCommentLength: 25, // words
             approvalRate: 0.87,
+            userId: reviewerId,
+            username: "reviewer",
+            sessionStart: new Date(Date.now() - 3 * 60 * 60 * 1000),
+            reviews: []
         };
 
         const analysis = nexusAI.flowAnalyzer.analyzeFlowState(mockSession);

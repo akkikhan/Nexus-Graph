@@ -32,18 +32,16 @@ export declare const prRepository: {
      */
     create(input: CreatePRInput): Promise<{
         number: number;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         id: string;
-        title: string;
-        description: string | null;
-        updatedAt: Date;
-        mergedAt: Date | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
-        createdAt: Date;
-        externalId: string;
         repoId: string;
+        description: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        externalId: string;
         branchId: string | null;
         authorId: string;
+        title: string;
         url: string;
         isDraft: boolean | null;
         linesAdded: number | null;
@@ -52,11 +50,13 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
         firstReviewAt: Date | null;
         approvedAt: Date | null;
+        mergedAt: Date | null;
         closedAt: Date | null;
     }>;
     /**
@@ -64,18 +64,16 @@ export declare const prRepository: {
      */
     findById(id: string): Promise<{
         number: number;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         id: string;
-        title: string;
-        description: string | null;
-        updatedAt: Date;
-        mergedAt: Date | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
-        createdAt: Date;
-        externalId: string;
         repoId: string;
+        description: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        externalId: string;
         branchId: string | null;
         authorId: string;
+        title: string;
         url: string;
         isDraft: boolean | null;
         linesAdded: number | null;
@@ -84,17 +82,14 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
         firstReviewAt: Date | null;
         approvedAt: Date | null;
+        mergedAt: Date | null;
         closedAt: Date | null;
-        author: {
-            [x: string]: any;
-        } | {
-            [x: string]: any;
-        }[];
         comments: {
             [x: string]: any;
         }[];
@@ -106,24 +101,27 @@ export declare const prRepository: {
         } | {
             [x: string]: any;
         }[];
+        author: {
+            [x: string]: any;
+        } | {
+            [x: string]: any;
+        }[];
     } | undefined>;
     /**
      * Find PR by repo and number
      */
     findByRepoAndNumber(repoId: string, number: number): Promise<{
         number: number;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         id: string;
-        title: string;
-        description: string | null;
-        updatedAt: Date;
-        mergedAt: Date | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
-        createdAt: Date;
-        externalId: string;
         repoId: string;
+        description: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        externalId: string;
         branchId: string | null;
         authorId: string;
+        title: string;
         url: string;
         isDraft: boolean | null;
         linesAdded: number | null;
@@ -132,18 +130,20 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
         firstReviewAt: Date | null;
         approvedAt: Date | null;
+        mergedAt: Date | null;
         closedAt: Date | null;
-        author: {
+        repository: {
             [x: string]: any;
         } | {
             [x: string]: any;
         }[];
-        repository: {
+        author: {
             [x: string]: any;
         } | {
             [x: string]: any;
@@ -160,18 +160,16 @@ export declare const prRepository: {
         offset?: number;
     }): Promise<{
         number: number;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         id: string;
-        title: string;
-        description: string | null;
-        updatedAt: Date;
-        mergedAt: Date | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
-        createdAt: Date;
-        externalId: string;
         repoId: string;
+        description: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        externalId: string;
         branchId: string | null;
         authorId: string;
+        title: string;
         url: string;
         isDraft: boolean | null;
         linesAdded: number | null;
@@ -180,18 +178,20 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
         firstReviewAt: Date | null;
         approvedAt: Date | null;
+        mergedAt: Date | null;
         closedAt: Date | null;
-        author: {
+        repository: {
             [x: string]: any;
         } | {
             [x: string]: any;
         }[];
-        repository: {
+        author: {
             [x: string]: any;
         } | {
             [x: string]: any;
@@ -210,7 +210,7 @@ export declare const prRepository: {
         title: string;
         description: string | null;
         url: string;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         isDraft: boolean | null;
         linesAdded: number | null;
         linesRemoved: number | null;
@@ -218,7 +218,7 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
@@ -248,7 +248,7 @@ export declare const prRepository: {
         title: string;
         description: string | null;
         url: string;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         isDraft: boolean | null;
         linesAdded: number | null;
         linesRemoved: number | null;
@@ -256,7 +256,7 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
@@ -272,18 +272,16 @@ export declare const prRepository: {
      */
     getPendingReviews(userId: string): Promise<{
         number: number;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         id: string;
-        title: string;
-        description: string | null;
-        updatedAt: Date;
-        mergedAt: Date | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
-        createdAt: Date;
-        externalId: string;
         repoId: string;
+        description: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        externalId: string;
         branchId: string | null;
         authorId: string;
+        title: string;
         url: string;
         isDraft: boolean | null;
         linesAdded: number | null;
@@ -292,18 +290,20 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
         firstReviewAt: Date | null;
         approvedAt: Date | null;
+        mergedAt: Date | null;
         closedAt: Date | null;
-        author: {
+        repository: {
             [x: string]: any;
         } | {
             [x: string]: any;
         }[];
-        repository: {
+        author: {
             [x: string]: any;
         } | {
             [x: string]: any;
@@ -332,7 +332,7 @@ export declare const prRepository: {
         title: string;
         description: string | null;
         url: string;
-        status: "open" | "closed" | "merged" | "draft" | "approved" | "changes_requested";
+        status: "draft" | "open" | "approved" | "changes_requested" | "merged" | "closed";
         isDraft: boolean | null;
         linesAdded: number | null;
         linesRemoved: number | null;
@@ -340,7 +340,7 @@ export declare const prRepository: {
         commitsCount: number | null;
         aiSummary: string | null;
         riskScore: number | null;
-        riskLevel: "high" | "critical" | "low" | "medium" | null;
+        riskLevel: "low" | "medium" | "high" | "critical" | null;
         riskFactors: unknown;
         estimatedReviewMinutes: number | null;
         publishedAt: Date | null;
