@@ -48,8 +48,11 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD:-nexus_secret}@postgres:5432/nexus
+      SUPABASE_DATABASE_URL: ${SUPABASE_DATABASE_URL:-}
+      AZURE_POSTGRES_URL: ${AZURE_POSTGRES_URL:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://nexus:${POSTGRES_PASSWORD:-nexus_secret}@postgres:5432/nexus}
       REDIS_URL: redis://redis:6379
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       AUTH_SECRET: ${AUTH_SECRET}
       GITHUB_APP_ID: ${GITHUB_APP_ID}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
@@ -58,7 +61,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     ports:
-      - "3001:3001"
+      - "${API_PORT:-3001}:3001"
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,11 +82,11 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_API_URL: ${API_URL:-http://localhost:3001}
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:3001}
       NEXTAUTH_URL: ${WEB_URL:-http://localhost:3000}
       NEXTAUTH_SECRET: ${AUTH_SECRET}
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
     depends_on:
       - api
     healthcheck:

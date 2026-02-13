@@ -83,3 +83,33 @@ nx review
 ## 📄 License
 
 MIT © NEXUS Team
+
+## Validation
+
+Run end-to-end smoke checks locally:
+
+```bash
+pnpm validate:release
+```
+
+Run individual suites:
+
+```bash
+pnpm validate:artifacts
+pnpm smoke:api
+pnpm smoke:web
+```
+
+Detailed guide: `docs/validation.md`
+
+## Database Environments
+
+DB setup now supports local Postgres, Supabase, and Azure Postgres.
+
+```bash
+pnpm db:env:preflight
+pnpm db:bootstrap:supabase
+pnpm db:bootstrap:azure
+```
+
+Full environment guide: `docs/database-environments.md`

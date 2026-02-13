@@ -11,6 +11,7 @@ cp .env.example .env
 # 2. Edit .env with your settings
 # - Set POSTGRES_PASSWORD
 # - Set AUTH_SECRET
+# - Set WEB_URL (and optionally WEB_PORT=80 for cloud)
 # - Add GitHub App credentials
 # - Add at least one AI provider key
 
@@ -20,6 +21,22 @@ docker compose up -d
 # 4. Access NEXUS
 # Web: http://localhost:3000
 # API: http://localhost:3001
+```
+
+## Database Modes
+
+NEXUS supports three DB configurations:
+
+- Local Postgres (default Docker mode): uses compose `postgres` container
+- Supabase hosted Postgres: set `SUPABASE_DATABASE_URL` with `sslmode=require`
+- Azure Database for PostgreSQL: set `AZURE_POSTGRES_URL` with `sslmode=require`
+
+Bootstrap commands (run from repository root):
+
+```bash
+pnpm db:env:preflight
+pnpm db:bootstrap:supabase
+pnpm db:bootstrap:azure
 ```
 
 ## Services
@@ -59,6 +76,12 @@ docker compose --profile production up -d
 ```
 
 Configure `nginx.conf` with your SSL certificates.
+
+For direct VM exposure without nginx:
+
+- Set `WEB_URL` to your public URL (for example, `http://<vm-public-ip>:3000`)
+- Set `CORS_ORIGINS` to the same origin
+- Optional: set `WEB_PORT=80` to serve the web app on standard HTTP port
 
 ## Upgrading
 

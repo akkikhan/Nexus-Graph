@@ -1,0 +1,91 @@
+name: Validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  api-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: mkdir -p output/ci-logs
+      - name: Run API smoke
+        run: pnpm smoke:api 2>&1 | tee output/ci-logs/api-smoke.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: api-smoke-logs
+          path: output/ci-logs/
+          if-no-files-found: ignore
+
+  web-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Validate generated page artifacts
+        run: pnpm validate:artifacts
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: mkdir -p output/ci-logs output/playwright output/playwright-report
+      - name: Run Web smoke
+        run: pnpm smoke:web 2>&1 | tee output/ci-logs/web-smoke.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: web-smoke-artifacts
+          path: |
+            output/ci-logs/
+            output/playwright/
+            output/playwright-report/
+          if-no-files-found: ignore
+
+  release-validation:
+    runs-on: ubuntu-latest
+    needs:
+      - api-smoke
+      - web-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Validate generated page artifacts
+        run: pnpm validate:artifacts
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: mkdir -p output/ci-logs output/playwright output/playwright-report
+      - name: Run release validation
+        run: pnpm validate:release:ci 2>&1 | tee output/ci-logs/release-validation.log
+        env:
+          REQUIRE_PLAYWRIGHT: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-validation-artifacts
+          path: |
+            output/ci-logs/
+            output/playwright/
+            output/playwright-report/
+          if-no-files-found: ignore
