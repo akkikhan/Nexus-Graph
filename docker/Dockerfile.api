@@ -14,13 +14,24 @@ ENV NEXUS_BUILD_DTS="false"
 ENV NEXUS_BUILD_SOURCEMAP="false"
 ENV PNPM_WORKSPACE_CONCURRENCY="1"
 
-# Copy repo
+# Copy only manifests first for better Docker layer caching.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
+COPY apps/api/package.json ./apps/api/package.json
+COPY packages/ai/package.json ./packages/ai/package.json
+COPY packages/db/package.json ./packages/db/package.json
+COPY packages/config/package.json ./packages/config/package.json
+COPY packages/core/package.json ./packages/core/package.json
+COPY packages/git/package.json ./packages/git/package.json
+COPY packages/ui/package.json ./packages/ui/package.json
+
+RUN corepack enable pnpm \
+  && pnpm install --frozen-lockfile --network-concurrency=1
+
+# Copy the rest of the repo after installing deps.
 COPY . .
 
-# Install deps (includes dev deps for builds), then build sequentially to avoid OOM.
-RUN corepack enable pnpm \
-  && pnpm install --frozen-lockfile \
-  && pnpm --filter @nexus/db build \
+# Build sequentially to avoid OOM, then prune to production deps.
+RUN pnpm --filter @nexus/db build \
   && pnpm --filter @nexus/ai build \
   && node scripts/docker/gen-stub-dts.mjs \
   && pnpm --filter @nexus/api build \

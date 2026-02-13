@@ -11,11 +11,22 @@ ENV NEXUS_BUILD_DTS="false"
 ENV NEXUS_BUILD_SOURCEMAP="false"
 ENV PNPM_WORKSPACE_CONCURRENCY="1"
 
-COPY . .
+# Copy only manifests first for better Docker layer caching.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
+COPY apps/web/package.json ./apps/web/package.json
+COPY packages/ui/package.json ./packages/ui/package.json
+COPY packages/core/package.json ./packages/core/package.json
+COPY packages/config/package.json ./packages/config/package.json
+COPY packages/ai/package.json ./packages/ai/package.json
+COPY packages/db/package.json ./packages/db/package.json
+COPY packages/git/package.json ./packages/git/package.json
 
 RUN corepack enable pnpm \
-  && pnpm install --frozen-lockfile \
-  && pnpm --filter @nexus/core build \
+  && pnpm install --frozen-lockfile --network-concurrency=1
+
+COPY . .
+
+RUN pnpm --filter @nexus/core build \
   && pnpm --filter @nexus/ui build \
   && pnpm --filter @nexus/web build \
   && pnpm prune --prod
