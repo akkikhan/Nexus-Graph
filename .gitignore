@@ -46,3 +46,4 @@ coverage/
 # Local runtime artifacts
 apps/api/.nexus/
 tests/validation/output/
+deploy/.env.production
