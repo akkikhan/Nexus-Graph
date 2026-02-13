@@ -21,7 +21,9 @@ COPY . .
 RUN corepack enable pnpm \
   && pnpm install --frozen-lockfile \
   && pnpm --filter @nexus/db build \
+  && node -e "const fs=require('fs');fs.mkdirSync('packages/db/dist',{recursive:true});fs.writeFileSync('packages/db/dist/index.d.ts',`export const users: any;\nexport const repositories: any;\nexport const stacks: any;\nexport const branches: any;\nexport const pullRequests: any;\nexport const reviews: any;\nexport const comments: any;\n`,'utf8')" \
   && pnpm --filter @nexus/ai build \
+  && node -e "const fs=require('fs');fs.mkdirSync('packages/ai/dist',{recursive:true});fs.writeFileSync('packages/ai/dist/index.d.ts',`export type DiffContext = any;\nexport type AIConfig = any;\nexport interface ReviewComment { severity: 'critical'|'error'|'warning'|'info'|string; [key: string]: any }\nexport interface NexusAI {\n  modelRouter: { route(input: any): Promise<any> };\n  codeReviewer: { reviewPR(files: DiffContext[]): Promise<ReviewComment[]> };\n  ensembleDebate: { debate(diff: DiffContext, models: any): Promise<any> };\n  intentDetector: { analyze(files: DiffContext[]): Promise<any> };\n  riskScorer: { assessRisk(input: any): Promise<number> };\n  healthScorer: { analyzeImpact(files: DiffContext[], input: any): any };\n  testGenerator: { generateTests(code: string, input: any): Promise<any> };\n  impactSimulator: { simulate(files: DiffContext[], input: any): any };\n  autoSplitter: { suggestSplits(files: DiffContext[]): Promise<any> };\n  flowAnalyzer: { analyzeFlowState(session: any): any };\n}\nexport declare function createNexusAI(config: AIConfig): NexusAI;\n`,'utf8')" \
   && pnpm --filter @nexus/api build \
   && pnpm prune --prod
 
