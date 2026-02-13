@@ -22,6 +22,7 @@
         "db:env:preflight": "node scripts/validation/db-env-preflight.mjs",
         "db:bootstrap:supabase": "node scripts/validation/db-bootstrap.mjs --target=supabase",
         "db:bootstrap:azure": "node scripts/validation/db-bootstrap.mjs --target=azure",
+        "ops:preflight": "node scripts/validation/ops-preflight.mjs",
         "validate:api-smoke": "node scripts/validation/api-smoke.mjs",
         "validate:web-smoke": "node scripts/validation/web-e2e-smoke.mjs",
         "validate:release": "node scripts/validation/run-release-validation.mjs",

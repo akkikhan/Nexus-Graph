@@ -113,3 +113,25 @@ pnpm db:bootstrap:azure
 ```
 
 Full environment guide: `docs/database-environments.md`
+
+## Production Sign-off
+
+Pre-prod checks:
+
+```bash
+pnpm ops:preflight
+ALLOW_DEGRADED=false pnpm smoke:api
+ALLOW_DEGRADED=false REQUIRE_PLAYWRIGHT=true pnpm validate:release
+```
+
+Deployment and rollback (Oracle VM):
+
+```bash
+# Linux/macOS
+VM_IP=<vm-ip> VM_USER=ubuntu SSH_KEY=~/.ssh/oci_ed25519 ./deploy/deploy.sh
+VM_IP=<vm-ip> VM_USER=ubuntu SSH_KEY=~/.ssh/oci_ed25519 ./deploy/rollback.sh
+
+# Windows PowerShell
+powershell -File .\deploy\deploy.ps1 -VmIp <vm-ip>
+powershell -File .\deploy\rollback.ps1 -VmIp <vm-ip>
+```

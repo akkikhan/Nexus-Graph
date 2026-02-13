@@ -83,6 +83,13 @@ For direct VM exposure without nginx:
 - Set `CORS_ORIGINS` to the same origin
 - Optional: set `WEB_PORT=80` to serve the web app on standard HTTP port
 
+## Deployment Rollback
+
+The repo includes VM-level deployment helpers with automatic backup/rollback:
+
+- `deploy/deploy.sh` and `deploy/deploy.ps1` (creates `~/nexus-backup-<timestamp>.tar.gz` before deploy)
+- `deploy/rollback.sh` and `deploy/rollback.ps1` (restores latest backup)
+
 ## Upgrading
 
 ```bash
