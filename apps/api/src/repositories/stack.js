@@ -39,12 +39,15 @@ export const stackRepository = {
      * List stacks for a user
      */
     async listForUser(userId, options) {
-        const conditions = [eq(stacks.userId, userId)];
+        const conditions = [];
+        if (userId) {
+            conditions.push(eq(stacks.userId, userId));
+        }
         if (options?.repoId) {
             conditions.push(eq(stacks.repoId, options.repoId));
         }
         return db.query.stacks.findMany({
-            where: and(...conditions),
+            where: conditions.length > 0 ? and(...conditions) : undefined,
             with: {
                 repository: true,
                 branches: {

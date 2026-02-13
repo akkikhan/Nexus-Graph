@@ -5,6 +5,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import { prRepository } from "../repositories/pr.js";
 
 const prRouter = new Hono();
 
@@ -14,6 +15,7 @@ const listPRsSchema = z.object({
     author: z.string().optional(),
     reviewer: z.string().optional(),
     repo: z.string().optional(),
+    userId: z.string().optional(),
     limit: z.coerce.number().min(1).max(100).default(20),
     offset: z.coerce.number().min(0).default(0),
 });
@@ -37,6 +39,68 @@ const updatePRSchema = z.object({
     reviewers: z.array(z.string()).optional(),
 });
 
+function mapStatus(
+    status: string | null | undefined
+): "open" | "closed" | "merged" | "draft" {
+    if (status === "merged") return "merged";
+    if (status === "closed") return "closed";
+    if (status === "draft") return "draft";
+    return "open";
+}
+
+function mapRiskLevel(
+    level: string | null | undefined
+): "low" | "medium" | "high" | "critical" {
+    if (level === "critical") return "critical";
+    if (level === "high") return "high";
+    if (level === "medium") return "medium";
+    return "low";
+}
+
+function toIso(value: unknown): string {
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === "string") return value;
+    return new Date().toISOString();
+}
+
+function mapPR(pr: any) {
+    return {
+        id: pr.id,
+        number: pr.number,
+        title: pr.title,
+        status: mapStatus(pr.status),
+        author: {
+            username:
+                pr.author?.name ||
+                pr.author?.email ||
+                pr.author?.id ||
+                "unknown",
+            avatar: pr.author?.avatar || "",
+        },
+        repository: {
+            name:
+                pr.repository?.fullName ||
+                pr.repository?.name ||
+                pr.repoId ||
+                "unknown/repository",
+            id: pr.repository?.id || pr.repoId || "unknown",
+        },
+        riskLevel: mapRiskLevel(pr.riskLevel),
+        riskScore: Math.round(pr.riskScore || 0),
+        aiSummary: pr.aiSummary || "No AI summary yet",
+        createdAt: toIso(pr.createdAt),
+        updatedAt: toIso(pr.updatedAt),
+        comments: Array.isArray(pr.comments) ? pr.comments.length : 0,
+        linesAdded: pr.linesAdded || 0,
+        linesRemoved: pr.linesRemoved || 0,
+    };
+}
+
+function errorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return "Unknown database error";
+}
+
 // Routes
 
 /**
@@ -45,42 +109,31 @@ const updatePRSchema = z.object({
 prRouter.get("/", zValidator("query", listPRsSchema), async (c) => {
     const query = c.req.valid("query");
 
-    // In production, query database
-    const mockPRs = [
-        {
-            id: "pr-1",
-            number: 123,
-            title: "Add user authentication",
-            status: "open",
-            author: { username: "johndoe", avatar: "" },
-            repository: { name: "nexus/platform", id: "repo-1" },
-            riskLevel: "high",
-            riskScore: 72,
-            aiSummary: "Implements JWT-based auth with OAuth",
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        },
-        {
-            id: "pr-2",
-            number: 124,
-            title: "Fix payment edge case",
-            status: "open",
-            author: { username: "janedoe", avatar: "" },
-            repository: { name: "nexus/billing", id: "repo-2" },
-            riskLevel: "critical",
-            riskScore: 89,
-            aiSummary: "Critical fix for race condition",
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        },
-    ];
+    const mappedStatus = query.status && query.status !== "all" ? query.status : undefined;
+    try {
+        const prs = await prRepository.list({
+            repoId: query.repo,
+            authorId: query.author,
+            status: mappedStatus,
+            limit: query.limit,
+            offset: query.offset,
+        });
 
-    return c.json({
-        prs: mockPRs,
-        total: mockPRs.length,
-        limit: query.limit,
-        offset: query.offset,
-    });
+        return c.json({
+            prs: prs.map(mapPR),
+            total: prs.length,
+            limit: query.limit,
+            offset: query.offset,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for pull request listing",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -89,31 +142,21 @@ prRouter.get("/", zValidator("query", listPRsSchema), async (c) => {
 prRouter.get("/:id", async (c) => {
     const id = c.req.param("id");
 
-    // In production, query database
-    const mockPR = {
-        id,
-        number: 123,
-        title: "Add user authentication",
-        description: "Implements JWT-based authentication with OAuth support",
-        status: "open",
-        author: { username: "johndoe", avatar: "" },
-        repository: { name: "nexus/platform", id: "repo-1" },
-        headBranch: "feature/auth",
-        baseBranch: "main",
-        riskLevel: "high",
-        riskScore: 72,
-        aiSummary: "Implements JWT-based auth with OAuth",
-        files: [
-            { path: "src/auth/login.ts", additions: 150, deletions: 5 },
-            { path: "src/auth/jwt.ts", additions: 80, deletions: 0 },
-        ],
-        reviews: [],
-        comments: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-    };
-
-    return c.json({ pr: mockPR });
+    try {
+        const pr = await prRepository.findById(id);
+        if (pr) {
+            return c.json({ pr: mapPR(pr) });
+        }
+        return c.json({ error: "Pull request not found" }, 404);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for pull request detail",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -147,15 +190,19 @@ prRouter.patch("/:id", zValidator("json", updatePRSchema), async (c) => {
     const id = c.req.param("id");
     const updates = c.req.valid("json");
 
-    // In production, update database and sync with platform
-
-    return c.json({
-        pr: {
-            id,
-            ...updates,
-            updatedAt: new Date().toISOString(),
-        },
-    });
+    try {
+        const pr = await prRepository.update(id, updates);
+        if (!pr) return c.json({ error: "Pull request not found" }, 404);
+        return c.json({ pr: mapPR(pr) });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for pull request update",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -164,20 +211,22 @@ prRouter.patch("/:id", zValidator("json", updatePRSchema), async (c) => {
 prRouter.post("/:id/merge", async (c) => {
     const id = c.req.param("id");
 
-    // In production:
-    // 1. Check merge requirements
-    // 2. Merge via platform API
-    // 3. Update stack if part of one
-    // 4. Trigger post-merge hooks
-
-    return c.json({
-        success: true,
-        pr: {
-            id,
-            status: "merged",
-            mergedAt: new Date().toISOString(),
-        },
-    });
+    try {
+        const pr = await prRepository.markMerged(id);
+        if (!pr) return c.json({ error: "Pull request not found" }, 404);
+        return c.json({
+            success: true,
+            pr: mapPR(pr),
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for pull request merge",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 /**

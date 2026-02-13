@@ -5,13 +5,204 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import path from "path";
+import { mkdir, readFile, writeFile } from "fs/promises";
+import { stackRepository } from "../repositories/stack.js";
 
 const stackRouter = new Hono();
+const SERVER_STACK_FILE = path.join(process.cwd(), ".nexus", "server-stack.json");
+const LOCAL_STACK_FILE = path.join(process.cwd(), ".nexus", "stack.json");
+
+interface LocalStackBranch {
+    name: string;
+    parent?: string;
+    position: number;
+    prNumber?: number;
+    prStatus?: string;
+}
+
+interface LocalStackData {
+    trunk: string;
+    branches: Record<string, LocalStackBranch>;
+}
+
+interface StackSummary {
+    id: string;
+    name: string;
+    description?: string;
+    repository: {
+        id: string;
+        name: string;
+    };
+    baseBranch: string;
+    branches: Array<{
+        name: string;
+        order: number;
+        status: string;
+        prNumber: number | null;
+    }>;
+    mergableCount: number;
+    totalPRs: number;
+    createdAt: string;
+    updatedAt?: string;
+}
+
+function normalizeStatus(status?: string | null): string {
+    if (!status) return "pending";
+    if (status === "changes_requested") return "changes_requested";
+    if (status === "approved") return "approved";
+    if (status === "draft") return "draft";
+    if (status === "merged") return "merged";
+    if (status === "closed") return "closed";
+    if (status === "open") return "open";
+    return "pending";
+}
+
+function toStackSummaryFromDb(stack: any): StackSummary {
+    const branches = (stack.branches || [])
+        .slice()
+        .sort((a: any, b: any) => a.position - b.position)
+        .map((branch: any) => ({
+            name: branch.name,
+            order: branch.position,
+            status: normalizeStatus(branch.prStatus),
+            prNumber: branch.prNumber ?? null,
+        }));
+
+    return {
+        id: stack.id,
+        name: stack.name,
+        description: stack.description || undefined,
+        repository: {
+            id: stack.repository?.id || stack.repoId || "unknown",
+            name: stack.repository?.fullName || stack.repository?.name || "unknown",
+        },
+        baseBranch: stack.baseBranch || "main",
+        branches,
+        mergableCount: branches.filter((b: { status: string }) => b.status === "approved").length,
+        totalPRs: branches.filter((b: { prNumber: number | null }) => b.prNumber !== null).length,
+        createdAt: stack.createdAt?.toISOString?.() || new Date().toISOString(),
+        updatedAt: stack.updatedAt?.toISOString?.() || new Date().toISOString(),
+    };
+}
+
+function toStackDetailFromDb(stack: any) {
+    const base = toStackSummaryFromDb(stack);
+    return {
+        ...base,
+        branches: (stack.branches || [])
+            .slice()
+            .sort((a: any, b: any) => a.position - b.position)
+            .map((branch: any) => ({
+                name: branch.name,
+                order: branch.position,
+                status: normalizeStatus(branch.prStatus),
+                pr: branch.pullRequest
+                    ? {
+                        number: branch.pullRequest.number,
+                        title: branch.pullRequest.title,
+                        riskScore: branch.pullRequest.riskScore || 0,
+                    }
+                    : branch.prNumber
+                        ? {
+                            number: branch.prNumber,
+                            title: branch.prTitle || `PR #${branch.prNumber}`,
+                            riskScore: 0,
+                        }
+                        : undefined,
+            })),
+    };
+}
+
+function isLocalStackData(input: unknown): input is LocalStackData {
+    if (!input || typeof input !== "object") return false;
+    const candidate = input as Record<string, unknown>;
+    return (
+        typeof candidate.trunk === "string" &&
+        !!candidate.branches &&
+        typeof candidate.branches === "object"
+    );
+}
+
+async function loadLocalStackData(): Promise<LocalStackData | null> {
+    const candidates = [SERVER_STACK_FILE, LOCAL_STACK_FILE];
+    for (const candidate of candidates) {
+        try {
+            const raw = await readFile(candidate, "utf8");
+            const parsed = JSON.parse(raw);
+            if (!isLocalStackData(parsed)) continue;
+            return parsed;
+        } catch {
+            // Try next file.
+        }
+    }
+    return null;
+}
+
+function localStatus(branch: LocalStackBranch): string {
+    return normalizeStatus(branch.prStatus);
+}
+
+function toLocalStackSummary(data: LocalStackData): StackSummary {
+    const branches = Object.values(data.branches)
+        .slice()
+        .sort((a, b) => a.position - b.position)
+        .map((branch) => ({
+            name: branch.name,
+            order: branch.position,
+            status: localStatus(branch),
+            prNumber: branch.prNumber ?? null,
+        }));
+
+    return {
+        id: "local-stack",
+        name: "Local Stack",
+        description: "Derived from .nexus/stack.json",
+        repository: {
+            id: "local",
+            name: "local/repository",
+        },
+        baseBranch: data.trunk || "main",
+        branches,
+        mergableCount: branches.filter((b: { status: string }) => b.status === "approved").length,
+        totalPRs: branches.filter((b: { prNumber: number | null }) => b.prNumber !== null).length,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function toLocalStackDetail(data: LocalStackData) {
+    const summary = toLocalStackSummary(data);
+    return {
+        ...summary,
+        branches: Object.values(data.branches)
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .map((branch) => ({
+                name: branch.name,
+                order: branch.position,
+                status: localStatus(branch),
+                pr: branch.prNumber
+                    ? {
+                        number: branch.prNumber,
+                        title: `PR #${branch.prNumber}`,
+                        riskScore: 0,
+                    }
+                    : undefined,
+            })),
+    };
+}
+
+function errorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return "Unknown database error";
+}
 
 // Schemas
 const createStackSchema = z.object({
     name: z.string().min(1),
     description: z.string().optional(),
+    userId: z.string().optional(),
     repositoryId: z.string(),
     baseBranch: z.string().default("main"),
 });
@@ -31,77 +222,110 @@ const reorderSchema = z.object({
     ),
 });
 
+const syncLocalStackSchema = z.object({
+    stackName: z.string().default("local-stack"),
+    repo: z.string().optional(),
+    user: z.string().optional(),
+    snapshot: z.object({
+        trunk: z.string().default("main"),
+        branches: z.array(
+            z.object({
+                name: z.string(),
+                parent: z.string().optional(),
+                position: z.number(),
+                prNumber: z.number().optional(),
+                prStatus: z.string().optional(),
+            })
+        ),
+    }),
+});
+
 // Routes
+
+/**
+ * POST /stacks/sync-local - Store CLI stack snapshot for API/web consumption
+ */
+stackRouter.post(
+    "/sync-local",
+    zValidator("json", syncLocalStackSchema),
+    async (c) => {
+        const body = c.req.valid("json");
+
+        const branches: Record<string, LocalStackBranch> = {};
+        for (const branch of body.snapshot.branches) {
+            branches[branch.name] = {
+                name: branch.name,
+                parent: branch.parent,
+                position: branch.position,
+                prNumber: branch.prNumber,
+                prStatus: branch.prStatus,
+            };
+        }
+
+        const snapshot: LocalStackData = {
+            trunk: body.snapshot.trunk,
+            branches,
+        };
+
+        try {
+            await mkdir(path.dirname(SERVER_STACK_FILE), { recursive: true });
+            await writeFile(
+                SERVER_STACK_FILE,
+                JSON.stringify(snapshot, null, 2),
+                "utf8"
+            );
+
+            return c.json({
+                success: true,
+                stackName: body.stackName,
+                branches: body.snapshot.branches.length,
+                persistedTo: SERVER_STACK_FILE,
+            });
+        } catch (error: any) {
+            return c.json(
+                {
+                    success: false,
+                    error: error?.message || "Failed to persist local stack snapshot",
+                },
+                500
+            );
+        }
+    }
+);
 
 /**
  * GET /stacks - List all stacks
  */
 stackRouter.get("/", async (c) => {
-    // In production, query database
+    const userId = c.req.query("userId");
+    const repoId = c.req.query("repoId");
+    let dbError: string | null = null;
 
-    const mockStacks = [
-        {
-            id: "stack-1",
-            name: "auth-feature",
-            description: "Complete authentication flow",
-            repository: { id: "repo-1", name: "nexus/platform" },
-            baseBranch: "main",
-            branches: [
-                {
-                    name: "feature/auth-base",
-                    order: 0,
-                    status: "merged",
-                    prNumber: 120,
-                },
-                {
-                    name: "feature/auth-github",
-                    order: 1,
-                    status: "approved",
-                    prNumber: 121,
-                },
-                {
-                    name: "feature/auth-gitlab",
-                    order: 2,
-                    status: "in_review",
-                    prNumber: 122,
-                },
-                {
-                    name: "feature/auth-ui",
-                    order: 3,
-                    status: "draft",
-                    prNumber: null,
-                },
-            ],
-            mergableCount: 1,
-            totalPRs: 3,
-            createdAt: new Date().toISOString(),
-        },
-        {
-            id: "stack-2",
-            name: "billing-refactor",
-            repository: { id: "repo-2", name: "nexus/billing" },
-            baseBranch: "main",
-            branches: [
-                {
-                    name: "refactor/billing-v2",
-                    order: 0,
-                    status: "in_review",
-                    prNumber: 89,
-                },
-                {
-                    name: "refactor/billing-stripe",
-                    order: 1,
-                    status: "pending",
-                    prNumber: 90,
-                },
-            ],
-            mergableCount: 0,
-            totalPRs: 2,
-            createdAt: new Date().toISOString(),
-        },
-    ];
+    try {
+        const stacks = await stackRepository.listForUser(userId, {
+            repoId,
+        });
+        return c.json({
+            stacks: stacks.map(toStackSummaryFromDb),
+        });
+    } catch (error) {
+        dbError = errorMessage(error);
+    }
 
-    return c.json({ stacks: mockStacks });
+    const localData = await loadLocalStackData();
+    if (localData) {
+        return c.json({
+            stacks: [toLocalStackSummary(localData)],
+        });
+    }
+
+    return c.json(
+        {
+            error: "Database unavailable for stack listing",
+            details: dbError || undefined,
+        },
+        503
+    );
 });
 
 /**
@@ -109,50 +333,37 @@ stackRouter.get("/", async (c) => {
  */
 stackRouter.get("/:id", async (c) => {
     const id = c.req.param("id");
+    let dbError: string | null = null;
 
-    const mockStack = {
-        id,
-        name: "auth-feature",
-        description: "Complete authentication flow",
-        repository: { id: "repo-1", name: "nexus/platform" },
-        baseBranch: "main",
-        branches: [
-            {
-                name: "feature/auth-base",
-                order: 0,
-                status: "merged",
-                pr: {
-                    number: 120,
-                    title: "Add auth base structure",
-                    riskScore: 35,
-                },
-            },
-            {
-                name: "feature/auth-github",
-                order: 1,
-                status: "approved",
-                pr: {
-                    number: 121,
-                    title: "Implement GitHub OAuth",
-                    riskScore: 55,
-                },
-            },
-            {
-                name: "feature/auth-gitlab",
-                order: 2,
-                status: "in_review",
-                pr: {
-                    number: 122,
-                    title: "Implement GitLab OAuth",
-                    riskScore: 48,
-                },
-            },
-        ],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-    };
+    try {
+        if (id !== "local-stack") {
+            const stack = await stackRepository.getWithPRDetails(id);
+            if (stack) {
+                return c.json({ stack: toStackDetailFromDb(stack) });
+            }
+        }
+    } catch (error) {
+        dbError = errorMessage(error);
+    }
 
-    return c.json({ stack: mockStack });
+    const localData = await loadLocalStackData();
+    if (localData && id === "local-stack") {
+        return c.json({
+            stack: toLocalStackDetail(localData),
+        });
+    }
+
+    if (dbError) {
+        return c.json(
+            {
+                error: "Database unavailable for stack detail",
+                details: dbError,
+            },
+            503
+        );
+    }
+
+    return c.json({ error: "Stack not found" }, 404);
 });
 
 /**
@@ -160,6 +371,30 @@ stackRouter.get("/:id", async (c) => {
  */
 stackRouter.post("/", zValidator("json", createStackSchema), async (c) => {
     const body = c.req.valid("json");
+
+    if (body.userId) {
+        try {
+            const created = await stackRepository.create({
+                repoId: body.repositoryId,
+                userId: body.userId,
+                name: body.name,
+                baseBranch: body.baseBranch,
+            });
+            return c.json({
+                stack: {
+                    id: created.id,
+                    name: created.name,
+                    baseBranch: created.baseBranch,
+                    branches: [],
+                    createdAt: created.createdAt,
+                },
+            }, 201);
+        } catch (error: any) {
+            return c.json({
+                error: error?.message || "Failed to create stack",
+            }, 500);
+        }
+    }
 
     const newStack = {
         id: `stack-${Date.now()}`,
