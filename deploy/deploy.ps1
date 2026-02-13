@@ -112,8 +112,8 @@ PY
     }
 
     Write-Host "[deploy] Running remote deployment..." -ForegroundColor Yellow
-    # Use a single-quoted here-string so Bash syntax like $(...) is not mangled by PowerShell interpolation.
-    ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" @'
+    # Send the script via stdin to avoid quote/CRLF issues with remote `bash -c "..."` parsing.
+    $remoteScript = @'
 set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -165,6 +165,8 @@ curl -fsS http://localhost:3001/health >/dev/null
 curl -fsS http://localhost:3000 >/dev/null
 docker compose ps
 '@
+
+    $remoteScript | ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s"
     if ($LASTEXITCODE -ne 0) { throw "remote deployment failed with exit code $LASTEXITCODE" }
 
     Write-Host "[deploy] Deployment complete." -ForegroundColor Green
