@@ -193,10 +193,10 @@ aiRouter.post("/review", zValidator("json", reviewSchema), async (c) => {
             summary: {
                 total: comments.length,
                 bySeverity: {
-                    critical: comments.filter((c) => c.severity === "critical").length,
-                    error: comments.filter((c) => c.severity === "error").length,
-                    warning: comments.filter((c) => c.severity === "warning").length,
-                    info: comments.filter((c) => c.severity === "info").length,
+                    critical: comments.filter((c: any) => c.severity === "critical").length,
+                    error: comments.filter((c: any) => c.severity === "error").length,
+                    warning: comments.filter((c: any) => c.severity === "warning").length,
+                    info: comments.filter((c: any) => c.severity === "info").length,
                 },
             },
         });
