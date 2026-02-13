@@ -112,7 +112,8 @@ PY
     }
 
     Write-Host "[deploy] Running remote deployment..." -ForegroundColor Yellow
-    ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" @"
+    # Use a single-quoted here-string so Bash syntax like $(...) is not mangled by PowerShell interpolation.
+    ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" @'
 set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -127,9 +128,9 @@ if ! docker compose version >/dev/null 2>&1; then
   sudo apt-get install -y docker-compose-plugin
 fi
 
-TS=`$(date +%Y%m%d%H%M%S)
+TS="$(date +%Y%m%d%H%M%S)"
 if [ -d ~/nexus ]; then
-  tar -czf ~/nexus-backup-`$TS.tar.gz -C ~ nexus
+  tar -czf ~/nexus-backup-${TS}.tar.gz -C ~ nexus
 fi
 
 ENV_BAK=""
@@ -163,7 +164,7 @@ sleep 15
 curl -fsS http://localhost:3001/health >/dev/null
 curl -fsS http://localhost:3000 >/dev/null
 docker compose ps
-"@
+'@
     if ($LASTEXITCODE -ne 0) { throw "remote deployment failed with exit code $LASTEXITCODE" }
 
     Write-Host "[deploy] Deployment complete." -ForegroundColor Green
