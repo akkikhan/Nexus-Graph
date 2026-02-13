@@ -91,11 +91,11 @@ try {
     Write-Host "[deploy] Archive size: $localSize bytes" -ForegroundColor DarkGray
 
     Write-Host "[deploy] Uploading archive..." -ForegroundColor Yellow
-    scp -i $SshKey -o StrictHostKeyChecking=no $ArchivePath "${VmUser}@${VmIp}:~/nexus-deploy.tar.gz"
+    scp -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 $ArchivePath "${VmUser}@${VmIp}:~/nexus-deploy.tar.gz"
     if ($LASTEXITCODE -ne 0) { throw "scp failed with exit code $LASTEXITCODE" }
 
     # Verify upload integrity on the VM. If this fails, do not proceed.
-    $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" @"
+    $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" @"
 python3 - <<'PY'
 import hashlib
 p = '/home/$VmUser/nexus-deploy.tar.gz'
@@ -112,7 +112,7 @@ PY
     }
 
     Write-Host "[deploy] Running remote deployment..." -ForegroundColor Yellow
-    ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" @"
+    ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" @"
 set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -132,17 +132,32 @@ if [ -d ~/nexus ]; then
   tar -czf ~/nexus-backup-`$TS.tar.gz -C ~ nexus
 fi
 
-mkdir -p ~/nexus
+ENV_BAK=""
+if [ -f ~/nexus/docker/.env ]; then
+  ENV_BAK="/tmp/nexus.env"
+  cp ~/nexus/docker/.env "$ENV_BAK"
+fi
+
+rm -rf ~/nexus_new
+mkdir -p ~/nexus_new
 tar -tzf ~/nexus-deploy.tar.gz >/dev/null
-tar -xzf ~/nexus-deploy.tar.gz -C ~/nexus
+tar -xzf ~/nexus-deploy.tar.gz -C ~/nexus_new
 rm -f ~/nexus-deploy.tar.gz
+
+if [ -n "$ENV_BAK" ]; then
+  mkdir -p ~/nexus_new/docker
+  cp "$ENV_BAK" ~/nexus_new/docker/.env
+fi
+
+rm -rf ~/nexus
+mv ~/nexus_new ~/nexus
 
 cd ~/nexus/docker
 if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
-docker compose build --no-cache
+docker compose build
 docker compose up -d
 sleep 15
 curl -fsS http://localhost:3001/health >/dev/null

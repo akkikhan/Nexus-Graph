@@ -15,8 +15,8 @@ REMOTE_DIR="${REMOTE_DIR:-$HOME/nexus}"
 ARCHIVE_LOCAL="/tmp/nexus-deploy-$(date +%Y%m%d%H%M%S).tar.gz"
 ARCHIVE_REMOTE="~/nexus-deploy.tar.gz"
 
-SSH=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$VM_USER@$VM_IP")
-SCP=(scp -i "$SSH_KEY" -o StrictHostKeyChecking=no)
+SSH=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VM_USER@$VM_IP")
+SCP=(scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8)
 
 log() { echo "[deploy] $*"; }
 
@@ -83,8 +83,25 @@ if [ -d ~/nexus ]; then
 fi
 
 mkdir -p ~/nexus
-tar -xzf ~/nexus-deploy.tar.gz -C ~/nexus
+ENV_BAK=""
+if [ -f ~/nexus/docker/.env ]; then
+  ENV_BAK="/tmp/nexus.env"
+  cp ~/nexus/docker/.env "$ENV_BAK"
+fi
+
+rm -rf ~/nexus_new
+mkdir -p ~/nexus_new
+tar -tzf ~/nexus-deploy.tar.gz >/dev/null
+tar -xzf ~/nexus-deploy.tar.gz -C ~/nexus_new
 rm -f ~/nexus-deploy.tar.gz
+
+if [ -n "$ENV_BAK" ]; then
+  mkdir -p ~/nexus_new/docker
+  cp "$ENV_BAK" ~/nexus_new/docker/.env
+fi
+
+rm -rf ~/nexus
+mv ~/nexus_new ~/nexus
 
 cd ~/nexus/docker
 if [ ! -f .env ]; then
@@ -92,7 +109,7 @@ if [ ! -f .env ]; then
   echo "[remote] created docker/.env from template"
 fi
 
-docker compose build --no-cache
+docker compose build
 docker compose up -d
 sleep 15
 curl -fsS http://localhost:3001/health >/dev/null
