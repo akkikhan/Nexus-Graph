@@ -21,9 +21,8 @@ COPY . .
 RUN corepack enable pnpm \
   && pnpm install --frozen-lockfile \
   && pnpm --filter @nexus/db build \
-  && node -e 'const fs=require("fs");fs.mkdirSync("packages/db/dist",{recursive:true});const lines=["export const users: any;","export const repositories: any;","export const stacks: any;","export const branches: any;","export const pullRequests: any;","export const reviews: any;","export const comments: any;"];fs.writeFileSync("packages/db/dist/index.d.ts",lines.join(\"\\n\")+\"\\n\",\"utf8\")' \
   && pnpm --filter @nexus/ai build \
-  && node -e 'const fs=require("fs");fs.mkdirSync("packages/ai/dist",{recursive:true});const lines=["export type DiffContext = any;","export type AIConfig = any;","export interface ReviewComment { severity: string; [key: string]: any }","export interface NexusAI {","  modelRouter: { route(input: any): Promise<any> };","  codeReviewer: { reviewPR(files: DiffContext[]): Promise<ReviewComment[]> };","  ensembleDebate: { debate(diff: DiffContext, models: any): Promise<any> };","  intentDetector: { analyze(files: DiffContext[]): Promise<any> };","  riskScorer: { assessRisk(input: any): Promise<number> };","  healthScorer: { analyzeImpact(files: DiffContext[], input: any): any };","  testGenerator: { generateTests(code: string, input: any): Promise<any> };","  impactSimulator: { simulate(files: DiffContext[], input: any): any };","  autoSplitter: { suggestSplits(files: DiffContext[]): Promise<any> };","  flowAnalyzer: { analyzeFlowState(session: any): any };","}","export declare function createNexusAI(config: AIConfig): NexusAI;"];fs.writeFileSync("packages/ai/dist/index.d.ts",lines.join(\"\\n\")+\"\\n\",\"utf8\")' \
+  && node scripts/docker/gen-stub-dts.mjs \
   && pnpm --filter @nexus/api build \
   && pnpm prune --prod
 
