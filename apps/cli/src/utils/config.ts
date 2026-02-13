@@ -17,6 +17,7 @@ interface NexusConfig {
     trunk?: string;
     branchPrefix?: string;
     initialized?: boolean;
+    apiUrl?: string;
     // AI
     aiProvider?: string;
     aiApiKey?: string;
@@ -35,6 +36,7 @@ export function getConfig(): Conf<NexusConfig> {
                 trunk: "main",
                 colorOutput: true,
                 autoStage: false,
+                apiUrl: process.env.NEXUS_API_URL || "http://localhost:3001",
             },
         });
     }

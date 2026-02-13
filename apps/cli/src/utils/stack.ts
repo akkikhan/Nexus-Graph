@@ -22,6 +22,19 @@ interface StackData {
     trunk: string;
 }
 
+export interface StackSnapshotBranch {
+    name: string;
+    parent?: string;
+    position: number;
+    prNumber?: number;
+    prStatus?: string;
+}
+
+export interface StackSnapshot {
+    trunk: string;
+    branches: StackSnapshotBranch[];
+}
+
 const STACK_FILE = ".nexus/stack.json";
 
 class StackManager {
@@ -200,6 +213,25 @@ class StackManager {
         }
 
         return merged;
+    }
+
+    async getSnapshot(): Promise<StackSnapshot> {
+        const data = await this.load();
+        const branches = Object.values(data.branches)
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .map((branch) => ({
+                name: branch.name,
+                parent: branch.parent,
+                position: branch.position,
+                prNumber: branch.prNumber,
+                prStatus: branch.prStatus,
+            }));
+
+        return {
+            trunk: data.trunk,
+            branches,
+        };
     }
 }
 

@@ -10,72 +10,17 @@ import {
     Search,
     Filter,
 } from "lucide-react";
-
-// Mock data for the PR inbox
-const mockPRs = [
-    {
-        id: 1,
-        title: "Add user authentication system",
-        repo: "nexus/platform",
-        author: "johndoe",
-        authorAvatar: "",
-        status: "needs_review",
-        riskLevel: "high",
-        riskScore: 72,
-        comments: 3,
-        updatedAt: "2 hours ago",
-        linesAdded: 450,
-        linesRemoved: 23,
-        aiSummary: "Implements JWT-based authentication with OAuth support",
-    },
-    {
-        id: 2,
-        title: "Fix payment processing edge case",
-        repo: "nexus/billing",
-        author: "janesmith",
-        authorAvatar: "",
-        status: "approved",
-        riskLevel: "critical",
-        riskScore: 89,
-        comments: 12,
-        updatedAt: "30 minutes ago",
-        linesAdded: 45,
-        linesRemoved: 12,
-        aiSummary: "Critical fix for race condition in payment callbacks",
-    },
-    {
-        id: 3,
-        title: "Update dependencies to latest versions",
-        repo: "nexus/platform",
-        author: "devbot",
-        authorAvatar: "",
-        status: "needs_review",
-        riskLevel: "low",
-        riskScore: 15,
-        comments: 0,
-        updatedAt: "1 day ago",
-        linesAdded: 89,
-        linesRemoved: 67,
-        aiSummary: "Routine dependency updates, all tests passing",
-    },
-    {
-        id: 4,
-        title: "Refactor database queries for performance",
-        repo: "nexus/api",
-        author: "alexdev",
-        authorAvatar: "",
-        status: "changes_requested",
-        riskLevel: "medium",
-        riskScore: 45,
-        comments: 7,
-        updatedAt: "5 hours ago",
-        linesAdded: 234,
-        linesRemoved: 178,
-        aiSummary: "Optimizes N+1 queries, adds connection pooling",
-    },
-];
+import { useQuery } from "@tanstack/react-query";
+import { fetchPRs, PullRequest } from "../../../lib/api";
+import { useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 const statusColors = {
+    open: "bg-blue-500/10 text-blue-500 border-blue-500/20",
+    closed: "bg-gray-500/10 text-gray-500 border-gray-500/20",
+    merged: "bg-purple-500/10 text-purple-500 border-purple-500/20",
+    draft: "bg-zinc-500/10 text-zinc-500 border-zinc-500/20",
+    // Keep existing for legacy/mock compatibility if needed
     needs_review: "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
     approved: "bg-green-500/10 text-green-500 border-green-500/20",
     changes_requested: "bg-red-500/10 text-red-500 border-red-500/20",
@@ -88,7 +33,93 @@ const riskColors = {
     critical: "bg-risk-critical",
 };
 
+const STATUS_FILTERS = ["all", "open", "merged", "draft"] as const;
+type StatusFilter = (typeof STATUS_FILTERS)[number];
+
+function parseStatusFilter(value: string | null): StatusFilter {
+    if (value === "open" || value === "merged" || value === "draft") return value;
+    return "all";
+}
+
 export default function InboxPage() {
+    const router = useRouter();
+    const pathname = usePathname();
+    const searchParams = useSearchParams();
+    const statusFilter = parseStatusFilter(searchParams.get("status"));
+    const search = searchParams.get("q") || "";
+
+    const updateQuery = (updates: { status?: StatusFilter; q?: string }) => {
+        const params = new URLSearchParams(searchParams.toString());
+
+        if (updates.status !== undefined) {
+            if (updates.status === "all") {
+                params.delete("status");
+            } else {
+                params.set("status", updates.status);
+            }
+        }
+
+        if (updates.q !== undefined) {
+            if (!updates.q.trim()) {
+                params.delete("q");
+            } else {
+                params.set("q", updates.q);
+            }
+        }
+
+        const query = params.toString();
+        router.replace(query ? `${pathname}?${query}` : pathname);
+    };
+
+    const { data: prs, isLoading, error } = useQuery({
+        queryKey: ["prs", statusFilter],
+        queryFn: () =>
+            fetchPRs({
+                status:
+                    statusFilter === "draft" || statusFilter === "all"
+                        ? "all"
+                        : statusFilter,
+            }),
+    });
+
+    const prList = useMemo(() => {
+        const list: PullRequest[] = prs || [];
+        const byStatus =
+            statusFilter === "all"
+                ? list
+                : list.filter((pr: PullRequest) => pr.status === statusFilter);
+        if (!search.trim()) return byStatus;
+        const q = search.trim().toLowerCase();
+        return byStatus.filter((pr: PullRequest) =>
+            pr.title.toLowerCase().includes(q) ||
+            pr.repository.name.toLowerCase().includes(q) ||
+            pr.author.username.toLowerCase().includes(q)
+        );
+    }, [prs, search, statusFilter]);
+
+    const stats = {
+        open: prList.filter((pr: PullRequest) => pr.status === "open").length,
+        merged: prList.filter((pr: PullRequest) => pr.status === "merged").length,
+        critical: prList.filter((pr: PullRequest) => pr.riskLevel === "critical").length,
+        total: prList.length,
+    };
+
+    if (isLoading) {
+        return (
+            <div className="p-8 flex items-center justify-center h-full">
+                <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-nexus-500"></div>
+            </div>
+        );
+    }
+
+    if (error) {
+        return (
+            <div className="p-8 text-red-500">
+                Error loading PRs: {(error as Error).message}
+            </div>
+        );
+    }
+
     return (
         <div className="p-8">
             {/* Header */}
@@ -106,22 +137,35 @@ export default function InboxPage() {
                     <input
                         type="text"
                         placeholder="Search pull requests..."
+                        value={search}
+                        onChange={(e) => updateQuery({ q: e.target.value })}
                         className="w-full pl-10 pr-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-lg text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-nexus-500/50"
                     />
                 </div>
-                <button className="flex items-center gap-2 px-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-lg text-zinc-400 hover:text-white transition-colors">
-                    <Filter className="w-4 h-4" />
-                    Filter
-                </button>
+                <div className="flex items-center gap-2 px-2 py-1 bg-zinc-900 border border-zinc-800 rounded-lg">
+                    <Filter className="w-4 h-4 text-zinc-500 ml-1" />
+                    {STATUS_FILTERS.map((status) => (
+                        <button
+                            key={status}
+                            onClick={() => updateQuery({ status })}
+                            className={`px-3 py-1.5 text-xs rounded-md transition-colors ${statusFilter === status
+                                ? "bg-nexus-600 text-white"
+                                : "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                                }`}
+                        >
+                            {status}
+                        </button>
+                    ))}
+                </div>
             </div>
 
             {/* Stats */}
             <div className="grid grid-cols-4 gap-4 mb-8">
                 {[
-                    { label: "Needs Review", value: 12, icon: Clock, color: "text-yellow-500" },
-                    { label: "Approved", value: 8, icon: CheckCircle2, color: "text-green-500" },
-                    { label: "Changes Requested", value: 3, icon: AlertCircle, color: "text-red-500" },
-                    { label: "Total PRs", value: 23, icon: GitPullRequest, color: "text-nexus-500" },
+                    { label: "Open PRs", value: stats.open, icon: Clock, color: "text-blue-500" },
+                    { label: "Merged", value: stats.merged, icon: CheckCircle2, color: "text-purple-500" },
+                    { label: "Critical Risk", value: stats.critical, icon: AlertCircle, color: "text-red-500" },
+                    { label: "Total PRs", value: stats.total, icon: GitPullRequest, color: "text-nexus-500" },
                 ].map((stat, i) => (
                     <motion.div
                         key={stat.label}
@@ -141,19 +185,20 @@ export default function InboxPage() {
 
             {/* PR List */}
             <div className="space-y-3">
-                {mockPRs.map((pr, i) => (
+                {prList.map((pr: PullRequest, i: number) => (
                     <motion.div
                         key={pr.id}
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.2 + i * 0.1 }}
                         className="p-4 bg-zinc-900/50 border border-zinc-800 rounded-xl hover:border-zinc-700 transition-colors cursor-pointer group"
+                        onClick={() => router.push(`/inbox/${pr.id}`)}
                     >
                         <div className="flex items-start gap-4">
                             {/* Risk indicator */}
                             <div className="flex flex-col items-center gap-1">
                                 <div
-                                    className={`w-2 h-full min-h-[60px] rounded-full ${riskColors[pr.riskLevel as keyof typeof riskColors]}`}
+                                    className={`w-2 h-full min-h-[60px] rounded-full ${riskColors[pr.riskLevel]}`}
                                 />
                             </div>
 
@@ -164,7 +209,7 @@ export default function InboxPage() {
                                         {pr.title}
                                     </h3>
                                     <span
-                                        className={`px-2.5 py-0.5 text-xs font-medium rounded-full border ${statusColors[pr.status as keyof typeof statusColors]}`}
+                                        className={`px-2.5 py-0.5 text-xs font-medium rounded-full border ${statusColors[pr.status] || statusColors.open}`}
                                     >
                                         {pr.status.replace("_", " ")}
                                     </span>
@@ -173,15 +218,15 @@ export default function InboxPage() {
                                 <p className="text-sm text-zinc-400 mb-2">{pr.aiSummary}</p>
 
                                 <div className="flex items-center gap-4 text-xs text-zinc-500">
-                                    <span>{pr.repo}</span>
-                                    <span>by @{pr.author}</span>
+                                    <span>{pr.repository.name}</span>
+                                    <span>by @{pr.author.username}</span>
                                     <span className="flex items-center gap-1">
                                         <MessageSquare className="w-3 h-3" />
-                                        {pr.comments}
+                                        {pr.comments || 0}
                                     </span>
-                                    <span className="text-green-500">+{pr.linesAdded}</span>
-                                    <span className="text-red-500">-{pr.linesRemoved}</span>
-                                    <span>{pr.updatedAt}</span>
+                                    <span className="text-green-500">+{pr.linesAdded || 0}</span>
+                                    <span className="text-red-500">-{pr.linesRemoved || 0}</span>
+                                    <span>{new Date(pr.updatedAt).toLocaleDateString()}</span>
                                 </div>
                             </div>
 
@@ -189,12 +234,12 @@ export default function InboxPage() {
                             <div className="text-right">
                                 <div
                                     className={`text-2xl font-bold ${pr.riskScore >= 75
-                                            ? "text-risk-critical"
-                                            : pr.riskScore >= 50
-                                                ? "text-risk-high"
-                                                : pr.riskScore >= 25
-                                                    ? "text-risk-medium"
-                                                    : "text-risk-low"
+                                        ? "text-risk-critical"
+                                        : pr.riskScore >= 50
+                                            ? "text-risk-high"
+                                            : pr.riskScore >= 25
+                                                ? "text-risk-medium"
+                                                : "text-risk-low"
                                         }`}
                                 >
                                     {pr.riskScore}

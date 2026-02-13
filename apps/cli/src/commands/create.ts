@@ -10,6 +10,7 @@ import inquirer from "inquirer";
 import { getGit, ensureCleanWorkingTree, getCurrentBranch } from "../utils/git";
 import { getStackManager } from "../utils/stack";
 import { getConfig } from "../utils/config";
+import { syncStackToServer } from "../utils/api";
 
 export const createCommand = new Command("create")
     .alias("c")
@@ -116,12 +117,26 @@ export const createCommand = new Command("create")
             const stack = await stackManager.getStack();
             for (const branch of stack) {
                 const isCurrent = branch.name === fullBranchName;
-                const marker = isCurrent ? chalk.green("→") : " ";
+                const marker = isCurrent ? chalk.green(">") : " ";
                 console.log(`  ${marker} ${isCurrent ? chalk.bold(branch.name) : branch.name}`);
             }
             console.log("");
             console.log(chalk.gray(`Parent: ${currentBranch}`));
             console.log(chalk.gray(`Trunk: ${trunk}`));
+
+            try {
+                await syncStackToServer({
+                    stackName: "local-stack",
+                    snapshot: await stackManager.getSnapshot(),
+                    repo: config.get("repo") as string | undefined,
+                    user:
+                        (config.get("githubUser") as string | undefined) ||
+                        (config.get("gitlabUser") as string | undefined),
+                });
+                console.log(chalk.gray("Stack synced to NEXUS API."));
+            } catch (error) {
+                console.log(chalk.gray(`Skipped API stack sync: ${String(error)}`));
+            }
         } catch (error) {
             spinner.fail("Failed to create branch");
             console.error(chalk.red(String(error)));

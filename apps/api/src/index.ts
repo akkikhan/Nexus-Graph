@@ -18,6 +18,8 @@ import { reviewRouter } from "./routes/review.js";
 import { aiRouter } from "./routes/ai.js";
 import { insightsRouter } from "./routes/insights.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { activityRouter } from "./routes/activity.js";
+import { queueRouter } from "./routes/queue.js";
 
 // Import realtime
 import { initRealtimeServer, getRealtimeServer } from "./realtime/websocket.js";
@@ -27,6 +29,11 @@ import { checkDatabaseHealth } from "./db/index.js";
 
 // Create main app
 const app = new Hono();
+const corsOrigins = (process.env.CORS_ORIGINS ||
+    "http://localhost:3000,https://app.nexus.dev")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
 // Middleware
 app.use("*", logger());
@@ -35,7 +42,7 @@ app.use("*", prettyJSON());
 app.use(
     "*",
     cors({
-        origin: ["http://localhost:3000", "https://app.nexus.dev"],
+        origin: corsOrigins,
         credentials: true,
     })
 );
@@ -61,6 +68,23 @@ app.get("/health", async (c) => {
 // API versioning
 const v1 = new Hono();
 
+v1.get("/health", async (c) => {
+    const dbHealth = await checkDatabaseHealth();
+    const wsStats = getRealtimeServer()?.getStats();
+
+    return c.json({
+        status: dbHealth.connected ? "healthy" : "degraded",
+        version: "0.1.0",
+        timestamp: new Date().toISOString(),
+        database: {
+            connected: dbHealth.connected,
+            latencyMs: dbHealth.latencyMs,
+            error: dbHealth.error,
+        },
+        websocket: wsStats || { status: "not_initialized" },
+    });
+});
+
 // Mount routers
 v1.route("/auth", authRouter);
 v1.route("/prs", prRouter);
@@ -69,6 +93,8 @@ v1.route("/reviews", reviewRouter);
 v1.route("/ai", aiRouter);
 v1.route("/insights", insightsRouter);
 v1.route("/webhooks", webhookRouter);
+v1.route("/activity", activityRouter);
+v1.route("/queue", queueRouter);
 
 // Mount v1 API
 app.route("/api/v1", v1);
@@ -92,6 +118,7 @@ app.onError((err, c) => {
 
 // Start server
 const port = parseInt(process.env.PORT || "3001", 10);
+const host = process.env.HOST || "0.0.0.0";
 
 console.log(`
 ╔═══════════════════════════════════════════════════════════╗
@@ -117,6 +144,7 @@ console.log(`
 const server = serve({
     fetch: app.fetch,
     port,
+    hostname: host,
 });
 
 // Initialize WebSocket server on top of HTTP server

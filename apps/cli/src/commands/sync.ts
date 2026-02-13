@@ -9,6 +9,7 @@ import ora from "ora";
 import { getGit, getCurrentBranch } from "../utils/git";
 import { getStackManager } from "../utils/stack";
 import { getConfig } from "../utils/config";
+import { syncStackToServer } from "../utils/api";
 
 export const syncCommand = new Command("sync")
     .description("Sync your stack with remote changes")
@@ -95,6 +96,19 @@ export const syncCommand = new Command("sync")
                 }
             } else {
                 spinner.succeed("No merged branches to clean up");
+            }
+
+            try {
+                await syncStackToServer({
+                    stackName: "local-stack",
+                    snapshot: await stackManager.getSnapshot(),
+                    repo: config.get("repo") as string | undefined,
+                    user:
+                        (config.get("githubUser") as string | undefined) ||
+                        (config.get("gitlabUser") as string | undefined),
+                });
+            } catch {
+                // Best effort only; local workflow should not fail on API sync issues.
             }
 
             console.log(chalk.green("\n✓ Sync complete!\n"));

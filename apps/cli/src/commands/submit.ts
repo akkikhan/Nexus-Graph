@@ -10,6 +10,7 @@ import { getGit, getCurrentBranch } from "../utils/git";
 import { getStackManager } from "../utils/stack";
 import { getConfig } from "../utils/config";
 import { GitHubAPI } from "../utils/github";
+import { syncStackToServer } from "../utils/api";
 
 export const submitCommand = new Command("submit")
     .alias("ss")
@@ -72,6 +73,11 @@ export const submitCommand = new Command("submit")
 
                     spinner.succeed(`Updated PR #${existingPR.number}: ${chalk.gray(existingPR.title)}`);
                     console.log(chalk.gray(`   ${existingPR.html_url}`));
+                    await stackManager.updatePRInfo(
+                        branch.name,
+                        existingPR.number,
+                        existingPR.draft ? "draft" : existingPR.state
+                    );
                 } else if (!options.updateOnly) {
                     // Create new PR
                     spinner.start(`Creating PR for ${chalk.cyan(branch.name)}...`);
@@ -86,6 +92,11 @@ export const submitCommand = new Command("submit")
 
                     spinner.succeed(`Created PR #${pr.number}: ${chalk.cyan(pr.title)}`);
                     console.log(chalk.gray(`   ${pr.html_url}`));
+                    await stackManager.updatePRInfo(
+                        branch.name,
+                        pr.number,
+                        options.draft ? "draft" : "open"
+                    );
 
                     // Request AI review if enabled
                     if (options.ai !== false) {
@@ -96,6 +107,19 @@ export const submitCommand = new Command("submit")
                 }
 
                 previousBranch = branch.name;
+            }
+
+            try {
+                await syncStackToServer({
+                    stackName: "local-stack",
+                    snapshot: await stackManager.getSnapshot(),
+                    repo: config.get("repo") as string | undefined,
+                    user:
+                        (config.get("githubUser") as string | undefined) ||
+                        (config.get("gitlabUser") as string | undefined),
+                });
+            } catch {
+                // Best effort only.
             }
 
             console.log(chalk.green(`\n✓ Stack submitted successfully!\n`));
