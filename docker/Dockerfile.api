@@ -8,13 +8,21 @@ WORKDIR /app
 # System deps: curl is used by Compose healthchecks; git sometimes needed for pnpm fetches.
 RUN apk add --no-cache libc6-compat curl git
 
+# Reduce memory pressure during type/DTS generation (not needed for runtime images).
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+ENV NEXUS_BUILD_DTS="false"
+ENV NEXUS_BUILD_SOURCEMAP="false"
+ENV PNPM_WORKSPACE_CONCURRENCY="1"
+
 # Copy repo
 COPY . .
 
-# Install deps (includes dev deps for builds), then build only what API needs.
+# Install deps (includes dev deps for builds), then build sequentially to avoid OOM.
 RUN corepack enable pnpm \
   && pnpm install --frozen-lockfile \
-  && pnpm --filter @nexus/api... build \
+  && pnpm --filter @nexus/db build \
+  && pnpm --filter @nexus/ai build \
+  && pnpm --filter @nexus/api build \
   && pnpm prune --prod
 
 FROM node:20-alpine AS runner
@@ -39,4 +47,3 @@ USER nexus
 EXPOSE 3001
 
 CMD ["node", "apps/api/dist/index.js"]
-

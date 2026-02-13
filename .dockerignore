@@ -1,8 +1,10 @@
 node_modules
 .git
 .turbo
-# .next - Commented out for pre-built web artifacts
-# dist - Commented out to allow pre-built artifacts
+.next
+**/.next
+dist
+**/dist
 .env
 .env.local
 .env.development.local

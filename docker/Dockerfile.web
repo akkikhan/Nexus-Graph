@@ -6,11 +6,18 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache libc6-compat curl git
 
+ENV NODE_OPTIONS="--max-old-space-size=3072"
+ENV NEXUS_BUILD_DTS="false"
+ENV NEXUS_BUILD_SOURCEMAP="false"
+ENV PNPM_WORKSPACE_CONCURRENCY="1"
+
 COPY . .
 
 RUN corepack enable pnpm \
   && pnpm install --frozen-lockfile \
-  && pnpm --filter @nexus/web... build \
+  && pnpm --filter @nexus/core build \
+  && pnpm --filter @nexus/ui build \
+  && pnpm --filter @nexus/web build \
   && pnpm prune --prod
 
 FROM node:20-alpine AS runner
@@ -34,4 +41,3 @@ EXPOSE 3000
 
 WORKDIR /app/apps/web
 CMD ["pnpm", "start"]
-
