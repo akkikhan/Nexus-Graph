@@ -27,21 +27,7 @@ writeFile(
     [
         "export type DiffContext = any;",
         "export type AIConfig = any;",
-        "export interface ReviewComment { severity: string; [key: string]: any }",
-        "export interface NexusAI {",
-        "  modelRouter: { route(input: any): Promise<any> };",
-        "  codeReviewer: { reviewPR(files: DiffContext[]): Promise<ReviewComment[]> };",
-        "  ensembleDebate: { debate(diff: DiffContext, models: any): Promise<any> };",
-        "  intentDetector: { analyze(files: DiffContext[]): Promise<any> };",
-        "  riskScorer: { assessRisk(input: any): Promise<number> };",
-        "  healthScorer: { analyzeImpact(files: DiffContext[], input: any): any };",
-        "  testGenerator: { generateTests(code: string, input: any): Promise<any> };",
-        "  impactSimulator: { simulate(files: DiffContext[], input: any): any };",
-        "  autoSplitter: { suggestSplits(files: DiffContext[]): Promise<any> };",
-        "  flowAnalyzer: { analyzeFlowState(session: any): any };",
-        "}",
-        "export declare function createNexusAI(config: AIConfig): NexusAI;",
+        "export declare function createNexusAI(config: AIConfig): any;",
         "",
     ].join("\n")
 );
-
