@@ -1,45 +1,39 @@
-# NEXUS API Dockerfile
-FROM node:20-alpine AS base
+# NEXUS API Dockerfile (Pre-built)
+FROM node:20-alpine AS runner
 
-# Install dependencies only when needed
-FROM base AS deps
-RUN apk add --no-cache libc6-compat
 WORKDIR /app
-
-# Copy root package files
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/api/package.json ./apps/api/
-COPY packages/*/package.json ./packages/
-
-RUN corepack enable pnpm && pnpm install --frozen-lockfile
-
-# Build the source code
-FROM base AS builder
-WORKDIR /app
-
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-
-RUN corepack enable pnpm && pnpm run build --filter=@nexus/api
-
-# Production image
-FROM base AS runner
-WORKDIR /app
-
 ENV NODE_ENV=production
+ENV PORT=3001
+ENV HOST=0.0.0.0
 
+# Install system dependencies (curl is used by Compose healthchecks)
+RUN apk add --no-cache libc6-compat curl
+
+# Create user
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nexus
 
-COPY --from=builder --chown=nexus:nodejs /app/apps/api/dist ./dist
-COPY --from=builder --chown=nexus:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nexus:nodejs /app/apps/api/package.json ./
+# Copy package configuration
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json ./apps/api/
+COPY packages/ai/package.json ./packages/ai/
+COPY packages/db/package.json ./packages/db/
+
+# Install ONLY production dependencies
+# This links workspace packages but doesnt build them
+RUN corepack enable pnpm && pnpm install --frozen-lockfile --prod
+
+# Copy pre-built artifacts FROM HOST context
+# We removed 'dist' from .dockerignore so these files are now available
+COPY apps/api/dist ./apps/api/dist
+COPY packages/db/dist ./packages/db/dist
+COPY packages/ai/dist ./packages/ai/dist
+
+# Ensure correct permissions
+RUN chown -R nexus:nodejs /app
 
 USER nexus
 
 EXPOSE 3001
 
-ENV PORT=3001
-ENV HOST=0.0.0.0
-
-CMD ["node", "dist/index.js"]
+CMD ["node", "apps/api/dist/index.js"]
