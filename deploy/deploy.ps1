@@ -8,7 +8,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$VmIp,
     [string]$VmUser = "ubuntu",
-    [string]$SshKey = "$env:USERPROFILE\.ssh\oci_ed25519"
+    [string]$SshKey = "$env:USERPROFILE\.ssh\oci_ed25519",
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +22,33 @@ Write-Host "[deploy] Project: $ProjectDir"
 
 if (-not (Test-Path $SshKey)) {
     throw "SSH key not found: $SshKey"
+}
+
+function Get-LocalSha256([string]$Path) {
+    return (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
+}
+
+function Get-RemoteSha256([string]$RemotePath) {
+    $cmd = @"
+python3 - <<'PY'
+import hashlib, sys
+p = sys.argv[1]
+h = hashlib.sha256()
+with open(p, 'rb') as f:
+    for b in iter(lambda: f.read(1024*1024), b''):
+        h.update(b)
+print(h.hexdigest())
+PY
+"@
+    return (ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" "python3 - <<'PY'
+import hashlib, sys
+p = '$RemotePath'
+h = hashlib.sha256()
+with open(p, 'rb') as f:
+    for b in iter(lambda: f.read(1024*1024), b''):
+        h.update(b)
+print(h.hexdigest())
+PY").Trim().ToLowerInvariant()
 }
 
 function Invoke-Rollback {
@@ -44,20 +72,44 @@ echo "[rollback] restore successful"
 }
 
 try {
+    if (-not $SkipBuild) {
+        Write-Host "[deploy] Note: Docker images build inside the VM (Node 20). Skipping local build." -ForegroundColor DarkGray
+    }
+
     Write-Host "[deploy] Packaging archive..." -ForegroundColor Yellow
     Push-Location $ProjectDir
-    tar --exclude='node_modules' `
-        --exclude='.git' `
-        --exclude='.turbo' `
-        --exclude='.next' `
-        --exclude='dist' `
-        --exclude='*.tsbuildinfo' `
-        --exclude='tests/validation/output' `
-        -czf $ArchivePath .
+    git archive --format=tar.gz -o $ArchivePath HEAD
+    if ($LASTEXITCODE -ne 0) { throw "git archive failed with exit code $LASTEXITCODE" }
     Pop-Location
+
+    # Verify archive integrity locally before uploading.
+    tar -tf $ArchivePath > $null
+    if ($LASTEXITCODE -ne 0) { throw "archive integrity check failed with exit code $LASTEXITCODE" }
+    $localSha = Get-LocalSha256 $ArchivePath
+    $localSize = (Get-Item $ArchivePath).Length
+    Write-Host "[deploy] Archive SHA256: $localSha" -ForegroundColor DarkGray
+    Write-Host "[deploy] Archive size: $localSize bytes" -ForegroundColor DarkGray
 
     Write-Host "[deploy] Uploading archive..." -ForegroundColor Yellow
     scp -i $SshKey -o StrictHostKeyChecking=no $ArchivePath "${VmUser}@${VmIp}:~/nexus-deploy.tar.gz"
+    if ($LASTEXITCODE -ne 0) { throw "scp failed with exit code $LASTEXITCODE" }
+
+    # Verify upload integrity on the VM. If this fails, do not proceed.
+    $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" @"
+python3 - <<'PY'
+import hashlib
+p = '/home/$VmUser/nexus-deploy.tar.gz'
+h = hashlib.sha256()
+with open(p, 'rb') as f:
+    for b in iter(lambda: f.read(1024*1024), b''):
+        h.update(b)
+print(h.hexdigest())
+PY
+"@).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0) { throw "remote sha256 check failed with exit code $LASTEXITCODE" }
+    if ($remoteSha -ne $localSha) {
+        throw "Upload hash mismatch. local=$localSha remote=$remoteSha"
+    }
 
     Write-Host "[deploy] Running remote deployment..." -ForegroundColor Yellow
     ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" @"
@@ -81,6 +133,7 @@ if [ -d ~/nexus ]; then
 fi
 
 mkdir -p ~/nexus
+tar -tzf ~/nexus-deploy.tar.gz >/dev/null
 tar -xzf ~/nexus-deploy.tar.gz -C ~/nexus
 rm -f ~/nexus-deploy.tar.gz
 
@@ -96,6 +149,7 @@ curl -fsS http://localhost:3001/health >/dev/null
 curl -fsS http://localhost:3000 >/dev/null
 docker compose ps
 "@
+    if ($LASTEXITCODE -ne 0) { throw "remote deployment failed with exit code $LASTEXITCODE" }
 
     Write-Host "[deploy] Deployment complete." -ForegroundColor Green
     Write-Host "[deploy] Web: http://${VmIp}:3000" -ForegroundColor Green

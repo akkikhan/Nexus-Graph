@@ -51,14 +51,7 @@ log "Target: $VM_USER@$VM_IP"
 log "Project: $PROJECT_DIR"
 log "Packaging archive..."
 cd "$PROJECT_DIR"
-tar --exclude='node_modules' \
-    --exclude='.git' \
-    --exclude='.turbo' \
-    --exclude='.next' \
-    --exclude='dist' \
-    --exclude='*.tsbuildinfo' \
-    --exclude='tests/validation/output' \
-    -czf "$ARCHIVE_LOCAL" .
+git archive --format=tar.gz -o "$ARCHIVE_LOCAL" HEAD
 
 log "Uploading archive..."
 "${SCP[@]}" "$ARCHIVE_LOCAL" "$VM_USER@$VM_IP:$ARCHIVE_REMOTE"
@@ -84,7 +77,7 @@ fi
 
 TS="$(date +%Y%m%d%H%M%S)"
 if [ -d ~/nexus ]; then
-  BACKUP_FILE="~/nexus-backup-${TS}.tar.gz"
+  BACKUP_FILE="$HOME/nexus-backup-${TS}.tar.gz"
   echo "[remote] creating backup: $BACKUP_FILE"
   tar -czf "$BACKUP_FILE" -C ~ nexus
 fi

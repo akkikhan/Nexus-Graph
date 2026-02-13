@@ -1,46 +1,37 @@
-# NEXUS Web Dockerfile (Pre-built)
-FROM node:20-alpine AS runner
-WORKDIR /app
+# NEXUS Web Dockerfile (Build-in-container)
+# Builds the monorepo inside Docker (Node 20), then runs Next.js in a slim runtime image.
 
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+RUN apk add --no-cache libc6-compat curl git
+
+COPY . .
+
+RUN corepack enable pnpm \
+  && pnpm install --frozen-lockfile \
+  && pnpm --filter @nexus/web... build \
+  && pnpm prune --prod
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-# Install system dependencies (curl is used by Compose healthchecks)
 RUN apk add --no-cache libc6-compat curl
 
-# Create user
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+RUN addgroup --system --gid 1001 nodejs \
+  && adduser --system --uid 1001 nextjs
 
-# Copy package configuration
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/web/package.json ./apps/web/
-COPY packages/ui/package.json ./packages/ui/
-COPY packages/core/package.json ./packages/core/
+COPY --from=builder /app /app
 
-# Install ONLY production dependencies
-RUN npm install -g pnpm && pnpm install --frozen-lockfile --prod
-
-# Copy pre-built artifacts from host
-# Web artifacts
-COPY apps/web/.next ./apps/web/.next
-# COPY apps/web/public ./apps/web/public - Folder does not exist
-COPY apps/web/next.config.mjs ./apps/web/
-
-# Package artifacts (required for runtime imports)
-COPY packages/ui/dist ./packages/ui/dist
-COPY packages/core/dist ./packages/core/dist
-COPY packages/core/src ./packages/core/src
-
-# Correct ownership
 RUN chown -R nextjs:nodejs /app
 
 USER nextjs
-
 EXPOSE 3000
 
-# Set working directory to web app for next start
 WORKDIR /app/apps/web
+CMD ["pnpm", "start"]
 
-CMD ["npm", "run", "start"]
