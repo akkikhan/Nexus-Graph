@@ -37,7 +37,7 @@ function Invoke-Rollback {
     Write-Host "[deploy] attempting rollback to latest backup..." -ForegroundColor Yellow
     $rollbackScript = @'
 set -euo pipefail
-LATEST_BACKUP=`$(ls -1t ~/nexus-backup-*.tar.gz 2>/dev/null | head -n1 || true)
+LATEST_BACKUP="$(ls -1t ~/nexus-backup-*.tar.gz 2>/dev/null | head -n1 || true)"
 if [ -z "`$LATEST_BACKUP" ]; then
   echo "[rollback] no backup archive found"
   exit 1
@@ -79,8 +79,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "scp failed with exit code $LASTEXITCODE" }
 
     # Verify upload integrity on the VM. If this fails, do not proceed.
-    $remoteShaCmd = "python3 -c `"import hashlib; p='/home/$VmUser/nexus-deploy.tar.gz'; h=hashlib.sha256(); f=open(p,'rb'); [h.update(b) for b in iter(lambda: f.read(1048576), b'')]; print(h.hexdigest())`""
-    $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" $remoteShaCmd).Trim().ToLowerInvariant()
+    $remoteShaCmd = "python3 -c 'import hashlib; p=\"/home/$VmUser/nexus-deploy.tar.gz\"; h=hashlib.sha256(); f=open(p,\"rb\"); [h.update(b) for b in iter(lambda: f.read(1048576), b\"\")]; print(h.hexdigest())'"
+    $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "$remoteShaCmd").Trim().ToLowerInvariant()
     if ($LASTEXITCODE -ne 0) { throw "remote sha256 check failed with exit code $LASTEXITCODE" }
     if ($remoteSha -ne $localSha) {
         throw "Upload hash mismatch. local=$localSha remote=$remoteSha"
