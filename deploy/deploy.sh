@@ -109,12 +109,19 @@ if [ ! -f .env ]; then
   echo "[remote] created docker/.env from template"
 fi
 
-docker compose build
-docker compose up -d
+# Use production overrides when present (keeps DB/Redis internal, etc).
+COMPOSE=(docker compose -f docker-compose.yml)
+if [ -f docker-compose.prod.yml ]; then
+  COMPOSE+=( -f docker-compose.prod.yml )
+fi
+
+"${COMPOSE[@]}" build api
+"${COMPOSE[@]}" build web
+"${COMPOSE[@]}" up -d
 sleep 15
 curl -fsS http://localhost:3001/health >/dev/null
 curl -fsS http://localhost:3000 >/dev/null
-docker compose ps
+"${COMPOSE[@]}" ps
 echo "[remote] deployment healthy"
 REMOTE
 } || DEPLOY_FAILED=1

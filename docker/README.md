@@ -77,6 +77,16 @@ docker compose --profile production up -d
 
 Configure `nginx.conf` with your SSL certificates.
 
+### Recommended Production Networking
+
+`docker-compose.yml` publishes Postgres (`5432`) and Redis (`6379`) to the host to make local development easy.
+
+For production, keep them internal to the Docker network:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
 For direct VM exposure without nginx:
 
 - Set `WEB_URL` to your public URL (for example, `http://<vm-public-ip>:3000`)

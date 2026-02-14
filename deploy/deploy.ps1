@@ -158,10 +158,16 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
+# Use production overrides when present (keeps DB/Redis internal, etc).
+COMPOSE=(docker compose -f docker-compose.yml)
+if [ -f docker-compose.prod.yml ]; then
+  COMPOSE+=( -f docker-compose.prod.yml )
+fi
+
 # Build sequentially to reduce peak memory/CPU and avoid BuildKit cancel cascades.
-docker compose build api
-docker compose build web
-docker compose up -d
+"${COMPOSE[@]}" build api
+"${COMPOSE[@]}" build web
+"${COMPOSE[@]}" up -d
 
 # Wait for services to become reachable (Next.js can take a bit to boot).
 for i in $(seq 1 60); do
@@ -179,7 +185,7 @@ for i in $(seq 1 60); do
   sleep 2
 done
 curl -fsS http://localhost:3000 >/dev/null
-docker compose ps
+"${COMPOSE[@]}" ps
 '@
 
     $remoteScript | ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s"

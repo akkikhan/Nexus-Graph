@@ -1,0 +1,16 @@
+# Production overrides for docker-compose.yml
+#
+# Goal: keep Postgres/Redis internal to the Docker network (no public ports),
+# while still exposing the web + api services.
+
+version: '3.9'
+
+services:
+  postgres:
+    # Remove host port publishing in production.
+    ports: []
+
+  redis:
+    # Remove host port publishing in production.
+    ports: []
+

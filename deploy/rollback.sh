@@ -22,10 +22,14 @@ echo "[rollback] restoring from $LATEST_BACKUP"
 rm -rf ~/nexus
 tar -xzf "$LATEST_BACKUP" -C ~
 cd ~/nexus/docker
-docker compose up -d
+COMPOSE=(docker compose -f docker-compose.yml)
+if [ -f docker-compose.prod.yml ]; then
+  COMPOSE+=( -f docker-compose.prod.yml )
+fi
+"${COMPOSE[@]}" up -d
 sleep 10
 curl -fsS http://localhost:3001/health >/dev/null
 curl -fsS http://localhost:3000 >/dev/null
-docker compose ps
+"${COMPOSE[@]}" ps
 echo "[rollback] complete"
 REMOTE
