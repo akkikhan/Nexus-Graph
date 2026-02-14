@@ -39,8 +39,20 @@ function useHostedSsl(url: string): boolean {
     if (url.includes("sslmode=require")) return true;
     try {
         const host = new URL(url).hostname.toLowerCase();
-        if (host === "localhost" || host === "127.0.0.1" || host === "::1") return false;
-        return true;
+        // Treat docker-compose service names / local hosts as non-hosted (no SSL by default).
+        if (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "::1" ||
+            host === "postgres" ||
+            !host.includes(".")
+        ) {
+            return false;
+        }
+        // Known hosted Postgres providers.
+        if (host.endsWith(".supabase.co")) return true;
+        if (host.endsWith(".postgres.database.azure.com")) return true;
+        return false;
     } catch {
         return false;
     }
