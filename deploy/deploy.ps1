@@ -162,8 +162,22 @@ fi
 docker compose build api
 docker compose build web
 docker compose up -d
-sleep 15
+
+# Wait for services to become reachable (Next.js can take a bit to boot).
+for i in $(seq 1 60); do
+  if curl -fsS http://localhost:3001/health >/dev/null; then
+    break
+  fi
+  sleep 2
+done
 curl -fsS http://localhost:3001/health >/dev/null
+
+for i in $(seq 1 60); do
+  if curl -fsS http://localhost:3000 >/dev/null; then
+    break
+  fi
+  sleep 2
+done
 curl -fsS http://localhost:3000 >/dev/null
 docker compose ps
 '@
