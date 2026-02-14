@@ -34,8 +34,7 @@ COPY . .
 RUN pnpm --filter @nexus/db build \
   && pnpm --filter @nexus/ai build \
   && node scripts/docker/gen-stub-dts.mjs \
-  && pnpm --filter @nexus/api build \
-  && pnpm prune --prod
+  && pnpm --filter @nexus/api build
 
 FROM node:20-alpine AS runner
 

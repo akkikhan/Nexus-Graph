@@ -28,8 +28,7 @@ COPY . .
 
 RUN pnpm --filter @nexus/core build \
   && pnpm --filter @nexus/ui build \
-  && pnpm --filter @nexus/web build \
-  && pnpm prune --prod
+  && pnpm --filter @nexus/web build
 
 FROM node:20-alpine AS runner
 
