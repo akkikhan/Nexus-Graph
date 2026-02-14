@@ -1,0 +1,15 @@
+# Development overrides for docker-compose.yml
+#
+# Goal: publish Postgres/Redis to the host for easy local debugging.
+
+version: "3.9"
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+

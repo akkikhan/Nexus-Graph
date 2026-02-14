@@ -13,8 +13,7 @@ services:
       POSTGRES_USER: nexus
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_secret}
       POSTGRES_DB: nexus
-    ports:
-      - "5432:5432"
+    # Note: for local development, use docker-compose.dev.yml to publish ports.
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,8 +27,7 @@ services:
     image: redis:7-alpine
     container_name: nexus-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # Note: for local development, use docker-compose.dev.yml to publish ports.
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
