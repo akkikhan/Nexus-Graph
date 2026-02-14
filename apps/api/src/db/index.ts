@@ -20,12 +20,20 @@ function shouldUseHostedSsl(connectionString: string): boolean {
     try {
         const url = new URL(connectionString);
         const host = (url.hostname || "").toLowerCase();
-        if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+        // Treat docker-compose service names / LAN hosts as non-hosted (no SSL by default).
+        if (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "::1" ||
+            host === "postgres" ||
+            !host.includes(".")
+        ) {
             return false;
         }
         if (host.endsWith(".supabase.co")) return true;
         if (host.endsWith(".postgres.database.azure.com")) return true;
-        return true;
+        // Default to no-SSL unless we *know* it's a hosted provider.
+        return false;
     } catch {
         return false;
     }
