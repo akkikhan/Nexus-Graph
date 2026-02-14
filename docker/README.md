@@ -110,7 +110,7 @@ docker compose pull
 docker compose up -d
 
 # Run migrations (if needed)
-docker compose exec api pnpm db:migrate
+docker exec nexus-api sh -lc 'cd /app/packages/db && /app/node_modules/.bin/drizzle-kit migrate'
 ```
 
 ## Backup

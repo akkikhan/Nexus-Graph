@@ -67,7 +67,14 @@ if (!hasAiKey) {
 
 requireEnv("GITHUB_APP_ID");
 requireEnv("GITHUB_APP_PRIVATE_KEY");
-requireEnv("GITHUB_APP_WEBHOOK_SECRET");
+// API webhook router expects `GITHUB_WEBHOOK_SECRET` (GitHub signing secret).
+if (hasValue(process.env.GITHUB_WEBHOOK_SECRET)) {
+    requireEnv("GITHUB_WEBHOOK_SECRET");
+} else if (hasValue(process.env.GITHUB_APP_WEBHOOK_SECRET)) {
+    warnings.push("GITHUB_APP_WEBHOOK_SECRET is set but GITHUB_WEBHOOK_SECRET is missing (prefer GITHUB_WEBHOOK_SECRET)");
+} else {
+    failures.push("GITHUB_WEBHOOK_SECRET is missing");
+}
 
 optionalEnv("SENTRY_DSN", "error tracking is not configured");
 optionalEnv("ALERT_WEBHOOK_URL", "no alert destination configured");

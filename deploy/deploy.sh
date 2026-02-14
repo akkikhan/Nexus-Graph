@@ -120,6 +120,10 @@ fi
 "${COMPOSE[@]}" up -d
 sleep 15
 curl -fsS http://localhost:3001/health >/dev/null
+
+echo "[remote] running db migrations..."
+docker exec nexus-api sh -lc 'cd /app/packages/db && /app/node_modules/.bin/drizzle-kit migrate'
+
 curl -fsS http://localhost:3000 >/dev/null
 "${COMPOSE[@]}" ps
 echo "[remote] deployment healthy"
