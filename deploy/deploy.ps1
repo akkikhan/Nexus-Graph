@@ -158,7 +158,9 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
-docker compose build
+# Build sequentially to reduce peak memory/CPU and avoid BuildKit cancel cascades.
+docker compose build api
+docker compose build web
 docker compose up -d
 sleep 15
 curl -fsS http://localhost:3001/health >/dev/null
