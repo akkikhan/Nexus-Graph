@@ -6,6 +6,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache libc6-compat curl git
 
+# Used by apps/web/next.config.mjs to bake the API rewrite target at build time.
+ARG API_PROXY_TARGET
+ENV API_PROXY_TARGET=${API_PROXY_TARGET}
+
 ENV NODE_OPTIONS="--max-old-space-size=3072"
 ENV NEXUS_BUILD_DTS="false"
 ENV NEXUS_BUILD_SOURCEMAP="false"

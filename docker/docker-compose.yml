@@ -81,6 +81,9 @@ services:
     build:
       context: ../
       dockerfile: docker/Dockerfile.web
+      args:
+        # Next.js rewrites are baked at build-time; pass through the target so /api/v1/* works in Docker.
+        API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:3001}
     container_name: nexus-web
     restart: unless-stopped
     # Don't rely on `pnpm` in the runtime image.
