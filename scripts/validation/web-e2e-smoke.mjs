@@ -2,6 +2,7 @@
 
 const WEB_BASE_URL = (process.env.WEB_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
 const REQUIRE_PLAYWRIGHT = process.env.REQUIRE_PLAYWRIGHT === "true";
+const REQUIRE_HEALTHY = process.env.REQUIRE_HEALTHY === "true";
 
 function assert(condition, message) {
     if (!condition) {
@@ -44,6 +45,7 @@ async function browserSmoke(playwrightModule) {
         const inboxError = page.getByText(/Error loading PRs/i).first();
         if (await inboxError.isVisible().catch(() => false)) {
             process.stdout.write("[web-smoke] Inbox degraded path detected (DB unavailable)\n");
+            assert(!REQUIRE_HEALTHY, "Inbox is degraded (DB unavailable) but REQUIRE_HEALTHY=true");
         } else {
             const search = page.locator('input[placeholder*="Search pull requests"]').first();
             if ((await search.count()) > 0) {
