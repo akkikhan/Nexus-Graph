@@ -51,4 +51,5 @@ USER nextjs
 EXPOSE 3000
 
 WORKDIR /app/apps/web
-CMD ["pnpm", "start"]
+# Avoid relying on pnpm/corepack availability in the runtime image.
+CMD ["node", "node_modules/next/dist/bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
