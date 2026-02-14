@@ -28,32 +28,14 @@ function Get-LocalSha256([string]$Path) {
     return (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
 }
 
-function Get-RemoteSha256([string]$RemotePath) {
-    $cmd = @"
-python3 - <<'PY'
-import hashlib, sys
-p = sys.argv[1]
-h = hashlib.sha256()
-with open(p, 'rb') as f:
-    for b in iter(lambda: f.read(1024*1024), b''):
-        h.update(b)
-print(h.hexdigest())
-PY
-"@
-    return (ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" "python3 - <<'PY'
-import hashlib, sys
-p = '$RemotePath'
-h = hashlib.sha256()
-with open(p, 'rb') as f:
-    for b in iter(lambda: f.read(1024*1024), b''):
-        h.update(b)
-print(h.hexdigest())
-PY").Trim().ToLowerInvariant()
+function To-Lf([string]$Text) {
+    # When sending scripts over SSH, ensure LF newlines so bash doesn't see `\r`.
+    return ($Text -replace "`r`n", "`n") -replace "`r", ""
 }
 
 function Invoke-Rollback {
     Write-Host "[deploy] attempting rollback to latest backup..." -ForegroundColor Yellow
-    ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" @"
+    $rollbackScript = @'
 set -euo pipefail
 LATEST_BACKUP=`$(ls -1t ~/nexus-backup-*.tar.gz 2>/dev/null | head -n1 || true)
 if [ -z "`$LATEST_BACKUP" ]; then
@@ -68,7 +50,9 @@ sleep 10
 curl -fsS http://localhost:3001/health >/dev/null
 curl -fsS http://localhost:3000 >/dev/null
 echo "[rollback] restore successful"
-"@
+'@
+
+    To-Lf $rollbackScript | ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" "bash -s"
 }
 
 try {
@@ -95,17 +79,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "scp failed with exit code $LASTEXITCODE" }
 
     # Verify upload integrity on the VM. If this fails, do not proceed.
-    $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" @"
-python3 - <<'PY'
-import hashlib
-p = '/home/$VmUser/nexus-deploy.tar.gz'
-h = hashlib.sha256()
-with open(p, 'rb') as f:
-    for b in iter(lambda: f.read(1024*1024), b''):
-        h.update(b)
-print(h.hexdigest())
-PY
-"@).Trim().ToLowerInvariant()
+    $remoteShaCmd = "python3 -c `"import hashlib; p='/home/$VmUser/nexus-deploy.tar.gz'; h=hashlib.sha256(); f=open(p,'rb'); [h.update(b) for b in iter(lambda: f.read(1048576), b'')]; print(h.hexdigest())`""
+    $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" $remoteShaCmd).Trim().ToLowerInvariant()
     if ($LASTEXITCODE -ne 0) { throw "remote sha256 check failed with exit code $LASTEXITCODE" }
     if ($remoteSha -ne $localSha) {
         throw "Upload hash mismatch. local=$localSha remote=$remoteSha"
@@ -188,7 +163,7 @@ curl -fsS http://localhost:3000 >/dev/null
 "${COMPOSE[@]}" ps
 '@
 
-    $remoteScript | ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s"
+    To-Lf $remoteScript | ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s"
     if ($LASTEXITCODE -ne 0) { throw "remote deployment failed with exit code $LASTEXITCODE" }
 
     Write-Host "[deploy] Deployment complete." -ForegroundColor Green
