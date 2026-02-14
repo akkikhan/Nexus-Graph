@@ -7,10 +7,11 @@ version: '3.9'
 
 services:
   postgres:
-    # Remove host port publishing in production.
-    ports: []
+    # Keep Postgres off the public interface (still reachable on the VM via localhost).
+    ports:
+      - "127.0.0.1:5432:5432"
 
   redis:
-    # Remove host port publishing in production.
-    ports: []
-
+    # Keep Redis off the public interface (still reachable on the VM via localhost).
+    ports:
+      - "127.0.0.1:6379:6379"
