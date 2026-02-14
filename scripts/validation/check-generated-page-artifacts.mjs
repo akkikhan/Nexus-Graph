@@ -4,7 +4,16 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 const ROOT = join(process.cwd(), "apps", "web", "src", "app");
-const FORBIDDEN = new Set(["page.js", "page.js.map", "page.d.ts", "page.d.ts.map"]);
+const FORBIDDEN = new Set([
+    "page.js",
+    "page.js.map",
+    "page.d.ts",
+    "page.d.ts.map",
+    "layout.js",
+    "layout.js.map",
+    "layout.d.ts",
+    "layout.d.ts.map",
+]);
 
 async function walk(dir, out) {
     const entries = await readdir(dir, { withFileTypes: true });
