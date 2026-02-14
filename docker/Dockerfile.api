@@ -52,6 +52,11 @@ RUN addgroup --system --gid 1001 nodejs \
 # Copy runtime + prod node_modules from builder
 COPY --from=builder --chown=nexus:nodejs /app /app
 
+# `COPY --chown` does not change the ownership of the WORKDIR directory itself.
+# The API writes local stack snapshots under `/app/.nexus`, so ensure `/app` is writable.
+RUN mkdir -p /app/.nexus \
+  && chown nexus:nodejs /app /app/.nexus
+
 USER nexus
 EXPOSE 3001
 
