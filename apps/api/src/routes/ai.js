@@ -7,28 +7,43 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { createNexusAI } from "@nexus/ai";
 const aiRouter = new Hono();
+function hasKey(key) {
+    return typeof key === "string" && key.trim().length > 0;
+}
+// Prefer a provider that is actually configured. This makes single-provider
+// setups (for example only GOOGLE_AI_API_KEY) work out of the box.
+const hasAnthropic = hasKey(process.env.ANTHROPIC_API_KEY);
+const hasOpenAI = hasKey(process.env.OPENAI_API_KEY);
+const hasGoogle = hasKey(process.env.GOOGLE_AI_API_KEY);
+const defaultProvider = hasAnthropic
+    ? "anthropic"
+    : hasOpenAI
+        ? "openai"
+        : hasGoogle
+            ? "google"
+            : "anthropic";
 // Initialize NEXUS AI (in production, this would be configured per-org)
 const nexusAI = createNexusAI({
     providers: {
         anthropic: {
             apiKey: process.env.ANTHROPIC_API_KEY || "",
-            model: "claude-3-5-sonnet-20241022"
+            model: process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-20241022"
         },
         openai: {
             apiKey: process.env.OPENAI_API_KEY || "",
-            model: "gpt-4-turbo-preview"
+            model: process.env.OPENAI_MODEL || "gpt-4-turbo-preview"
         },
         google: {
             apiKey: process.env.GOOGLE_AI_API_KEY || "",
-            model: "gemini-pro"
+            model: process.env.GOOGLE_AI_MODEL || "gemini-pro"
         }
     },
-    defaultProvider: "anthropic",
+    defaultProvider,
     routing: {
-        codeReview: "anthropic",
-        summarization: "openai",
-        suggestions: "anthropic",
-        riskAssessment: "anthropic"
+        codeReview: hasAnthropic ? "anthropic" : defaultProvider,
+        summarization: hasOpenAI ? "openai" : defaultProvider,
+        suggestions: hasAnthropic ? "anthropic" : defaultProvider,
+        riskAssessment: hasAnthropic ? "anthropic" : defaultProvider
     }
 });
 // Helper to ensure DiffContext compliance
