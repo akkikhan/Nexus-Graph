@@ -287,20 +287,34 @@ async function handleInstallationEvent(payload: any) {
         repoIds.push(repoId);
     }
 
-    // For installation_repositories, GitHub sends adds/removes. We'll re-store current known adds
-    // as "replacement" only if it contains a full list (payload.repositories). Otherwise we do best-effort.
+    // For installation_repositories, GitHub sends adds/removes. We'll re-store current known list
+    // as "replacement" only if it contains a full list (payload.repositories). Otherwise we do add/remove.
     if (Array.isArray(payload?.repositories)) {
         await githubRepository.replaceInstallationRepos({
             githubInstallationId,
             repoIds,
         });
     } else {
-        // Best effort: insert adds and delete removes.
         if (repoIds.length > 0) {
-            // Replace is simplest and safe for MVP; but if we don't have full list, we don't want to delete all.
-            // So we do nothing here for now. Manual sync can reconcile later.
+            await githubRepository.addInstallationRepos({ githubInstallationId, repoIds });
         }
-        void repositoriesRemoved;
+
+        const removedIds: string[] = [];
+        for (const r of [...repositoriesRemoved].filter(Boolean)) {
+            // Ensure repo exists locally so we can map id -> repoId.
+            const { repoId } = await githubRepository.upsertRepository({
+                orgId,
+                externalRepoId: r.id,
+                name: r.name,
+                fullName: r.full_name,
+                defaultBranch: r.default_branch,
+                private: r.private,
+            });
+            removedIds.push(repoId);
+        }
+        if (removedIds.length > 0) {
+            await githubRepository.removeInstallationRepos({ githubInstallationId, repoIds: removedIds });
+        }
     }
 }
 

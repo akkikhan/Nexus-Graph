@@ -153,6 +153,36 @@ export const githubRepository = {
         );
     },
 
+    async addInstallationRepos(input: { githubInstallationId: string; repoIds: string[] }) {
+        if (input.repoIds.length === 0) return;
+        // Insert individually; unique index prevents duplicates.
+        for (const repoId of input.repoIds) {
+            const existing = await db.query.githubInstallationRepositories.findFirst({
+                where: and(
+                    eq(githubInstallationRepositories.githubInstallationId, input.githubInstallationId),
+                    eq(githubInstallationRepositories.repoId, repoId)
+                ),
+            });
+            if (existing) continue;
+            await db.insert(githubInstallationRepositories).values({
+                githubInstallationId: input.githubInstallationId,
+                repoId,
+            });
+        }
+    },
+
+    async removeInstallationRepos(input: { githubInstallationId: string; repoIds: string[] }) {
+        if (input.repoIds.length === 0) return;
+        await db
+            .delete(githubInstallationRepositories)
+            .where(
+                and(
+                    eq(githubInstallationRepositories.githubInstallationId, input.githubInstallationId),
+                    inArray(githubInstallationRepositories.repoId, input.repoIds)
+                )
+            );
+    },
+
     async getInstallationByExternalId(installationId: number) {
         return db.query.githubInstallations.findFirst({
             where: eq(githubInstallations.externalId, String(installationId)),
@@ -166,7 +196,7 @@ export const githubRepository = {
         const links = await db.query.githubInstallationRepositories.findMany({
             where: eq(githubInstallationRepositories.githubInstallationId, installation.id),
         });
-        const repoIds = links.map((l) => l.repoId);
+        const repoIds = links.map((l: { repoId: string }) => l.repoId);
         if (repoIds.length === 0) return [];
 
         const repos = await db.query.repositories.findMany({
@@ -175,4 +205,3 @@ export const githubRepository = {
         return repos;
     },
 };
-
