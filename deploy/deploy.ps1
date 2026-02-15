@@ -164,7 +164,7 @@ for i in $(seq 1 60); do
   sleep 2
 done
 curl -fsS http://localhost:3000 >/dev/null
-"${COMPOSE[@]}" ps
+true
 '@
 
     To-Lf $remoteScript | ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s"
