@@ -1,4 +1,4 @@
-# =============================================================
+﻿# =============================================================
 # NEXUS Platform - Oracle Cloud Deployment (Windows)
 # - Creates remote backup before deployment
 # - Auto-rolls back on deployment failure
@@ -33,6 +33,27 @@ function To-Lf([string]$Text) {
     return ($Text -replace "`r`n", "`n") -replace "`r", ""
 }
 
+function Invoke-RemoteBash([string]$Script, [switch]$KeepAlive) {
+    # PowerShell pipelines normalize newlines when writing to native process stdin.
+    # Write LF-only bytes to a temp file, then redirect stdin into ssh so bash doesn't see \r.
+    $tmp = Join-Path $env:TEMP ("nexus-remote-" + [Guid]::NewGuid().ToString("N") + ".sh")
+    try {
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::WriteAllText($tmp, (To-Lf $Script), $utf8NoBom)
+
+        if ($KeepAlive) {
+            ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s" < $tmp
+        } else {
+            ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" "bash -s" < $tmp
+        }
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "remote bash script failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $tmp
+    }
+}
 function Invoke-Rollback {
     Write-Host "[deploy] attempting rollback to latest backup..." -ForegroundColor Yellow
     $rollbackScript = @'
@@ -52,7 +73,7 @@ curl -fsS http://localhost:3000 >/dev/null
 echo "[rollback] restore successful"
 '@
 
-    To-Lf $rollbackScript | ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" "bash -s"
+    Invoke-RemoteBash -Script $rollbackScript
 }
 
 try {
@@ -164,10 +185,10 @@ for i in $(seq 1 60); do
   sleep 2
 done
 curl -fsS http://localhost:3000 >/dev/null
-true
+"${COMPOSE[@]}" ps
 '@
 
-    To-Lf $remoteScript | ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s"
+    Invoke-RemoteBash -Script $remoteScript -KeepAlive
     if ($LASTEXITCODE -ne 0) { throw "remote deployment failed with exit code $LASTEXITCODE" }
 
     Write-Host "[deploy] Deployment complete." -ForegroundColor Green
@@ -189,3 +210,4 @@ finally {
         Remove-Item $ArchivePath -ErrorAction SilentlyContinue
     }
 }
+

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$VmIp,
     [string]$VmUser = "ubuntu",
@@ -31,6 +31,7 @@ fi
 sleep 10
 curl -fsS http://localhost:3001/health >/dev/null
 curl -fsS http://localhost:3000 >/dev/null
-true
+"${COMPOSE[@]}" ps
 echo "[rollback] complete"
 "@
+
