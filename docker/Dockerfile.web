@@ -50,6 +50,7 @@ RUN addgroup --system --gid 1001 nodejs \
 # This avoids copying the entire monorepo (including dev deps and caches) which can exhaust disk on small VMs.
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone /app
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static /app/apps/web/.next/static
+# `public/` may not exist in some environments; copy it only if it exists.
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public /app/apps/web/public
 
 # Ensure the app root is writable (e.g. for runtime caches/logs if needed).
