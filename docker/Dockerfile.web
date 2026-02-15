@@ -46,7 +46,11 @@ RUN apk add --no-cache libc6-compat curl
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
 
-COPY --from=builder --chown=nextjs:nodejs /app /app
+# Copy only Next.js standalone output to keep the runtime image small.
+# This avoids copying the entire monorepo (including dev deps and caches) which can exhaust disk on small VMs.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone /app
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static /app/apps/web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public /app/apps/web/public
 
 # Ensure the app root is writable (e.g. for runtime caches/logs if needed).
 RUN chown nextjs:nodejs /app
@@ -54,6 +58,5 @@ RUN chown nextjs:nodejs /app
 USER nextjs
 EXPOSE 3000
 
-WORKDIR /app/apps/web
-# Avoid relying on pnpm/corepack availability in the runtime image.
-CMD ["node", "node_modules/next/dist/bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
+# `next build` with `output: "standalone"` emits a self-contained server at `/app/apps/web/server.js`.
+CMD ["node", "apps/web/server.js"]

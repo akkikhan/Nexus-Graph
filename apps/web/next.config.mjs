@@ -5,7 +5,7 @@ const apiProxyTarget = (process.env.API_PROXY_TARGET || "http://localhost:3001")
 );
 
 const nextConfig = {
-  // output: "standalone",
+  output: "standalone",
   reactStrictMode: true,
   pageExtensions: ["tsx", "ts"],
   transpilePackages: ["@nexus/ui", "@nexus/core"],

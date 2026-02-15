@@ -61,12 +61,12 @@ function Invoke-Rollback {
     $rollbackScript = @'
 set -euo pipefail
 LATEST_BACKUP="$(ls -1t ~/nexus-backup-*.tar.gz 2>/dev/null | head -n1 || true)"
-if [ -z "`$LATEST_BACKUP" ]; then
+if [ -z "$LATEST_BACKUP" ]; then
   echo "[rollback] no backup archive found"
   exit 1
 fi
 rm -rf ~/nexus
-tar -xzf "`$LATEST_BACKUP" -C ~
+tar -xzf "$LATEST_BACKUP" -C ~
 cd ~/nexus/docker
 docker compose up -d
 sleep 10
@@ -124,6 +124,16 @@ if ! docker compose version >/dev/null 2>&1; then
   sudo apt-get update -y
   sudo apt-get install -y docker-compose-plugin
 fi
+
+# Free up space on small VMs before building images.
+echo "[deploy] disk before cleanup:"
+df -h / || true
+docker system prune -af >/dev/null 2>&1 || true
+docker builder prune -af >/dev/null 2>&1 || true
+# Keep only the 3 most recent backups.
+ls -1t ~/nexus-backup-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f || true
+echo "[deploy] disk after cleanup:"
+df -h / || true
 
 TS="$(date +%Y%m%d%H%M%S)"
 if [ -d ~/nexus ]; then

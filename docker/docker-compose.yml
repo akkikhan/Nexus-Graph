@@ -86,8 +86,7 @@ services:
         API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:3001}
     container_name: nexus-web
     restart: unless-stopped
-    # Don't rely on `pnpm` in the runtime image.
-    command: ["node", "node_modules/next/dist/bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
+    # Dockerfile.web uses Next standalone output (apps/web/server.js).
     environment:
       NODE_ENV: production
       API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:3001}
