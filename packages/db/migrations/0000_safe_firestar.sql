@@ -1,10 +1,38 @@
-CREATE TYPE "public"."plan" AS ENUM('hobby', 'starter', 'team', 'enterprise');--> statement-breakpoint
-CREATE TYPE "public"."platform" AS ENUM('github', 'gitlab', 'bitbucket', 'azure');--> statement-breakpoint
-CREATE TYPE "public"."pr_status" AS ENUM('draft', 'open', 'approved', 'changes_requested', 'merged', 'closed');--> statement-breakpoint
-CREATE TYPE "public"."queue_status" AS ENUM('pending', 'running', 'passed', 'failed', 'merged');--> statement-breakpoint
-CREATE TYPE "public"."review_status" AS ENUM('approved', 'changes_requested', 'commented');--> statement-breakpoint
-CREATE TYPE "public"."risk_level" AS ENUM('low', 'medium', 'high', 'critical');--> statement-breakpoint
-CREATE TYPE "public"."role" AS ENUM('owner', 'admin', 'member');--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."plan" AS ENUM('hobby', 'starter', 'team', 'enterprise');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."platform" AS ENUM('github', 'gitlab', 'bitbucket', 'azure');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."pr_status" AS ENUM('draft', 'open', 'approved', 'changes_requested', 'merged', 'closed');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."queue_status" AS ENUM('pending', 'running', 'passed', 'failed', 'merged');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."review_status" AS ENUM('approved', 'changes_requested', 'commented');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."risk_level" AS ENUM('low', 'medium', 'high', 'critical');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."role" AS ENUM('owner', 'admin', 'member');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "ai_rules" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
