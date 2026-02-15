@@ -32,6 +32,15 @@ function run(command, env = process.env) {
     });
 }
 
+function ensureHostedSslmodeRequire(input) {
+    if (!input) return input;
+    if (/(?:\?|&)sslmode=\w+/i.test(input)) return input;
+    const looksSupabase = /\\.supabase\\.co\\b/i.test(input);
+    const looksAzure = /\\.postgres\\.database\\.azure\\.com\\b/i.test(input);
+    if (!looksSupabase && !looksAzure) return input;
+    return input.includes("?") ? `${input}&sslmode=require` : `${input}?sslmode=require`;
+}
+
 async function main() {
     await run(`node scripts/validation/db-env-preflight.mjs --target=${target}`);
 
@@ -39,6 +48,13 @@ async function main() {
     if (target === "azure" && env.AZURE_POSTGRES_URL) {
         env.DATABASE_URL = env.AZURE_POSTGRES_URL;
         delete env.SUPABASE_DATABASE_URL;
+    }
+
+    if (target === "supabase" && env.SUPABASE_DATABASE_URL) {
+        env.SUPABASE_DATABASE_URL = ensureHostedSslmodeRequire(env.SUPABASE_DATABASE_URL);
+    }
+    if (target === "azure" && env.DATABASE_URL) {
+        env.DATABASE_URL = ensureHostedSslmodeRequire(env.DATABASE_URL);
     }
 
     try {

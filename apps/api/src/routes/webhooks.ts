@@ -47,14 +47,31 @@ webhookRouter.post("/github", async (c) => {
     const rawBody = await c.req.text();
     const secret = process.env.GITHUB_WEBHOOK_SECRET || "";
 
-    // Verify signature in production
-    if (secret && signature && !verifyGitHubSignature(rawBody, signature, secret)) {
-        return c.json({ error: "Invalid signature" }, 401);
+    // If a secret is configured, require and verify the signature.
+    let signatureStatus: "skipped" | "ok" | "missing" | "invalid" = "skipped";
+    if (secret) {
+        if (!signature) {
+            signatureStatus = "missing";
+            console.warn(
+                `[GitHub Webhook] Missing signature. Event: ${event}, Delivery: ${deliveryId}`
+            );
+            return c.json({ error: "Missing signature" }, 401);
+        }
+        if (!verifyGitHubSignature(rawBody, signature, secret)) {
+            signatureStatus = "invalid";
+            console.warn(
+                `[GitHub Webhook] Invalid signature. Event: ${event}, Delivery: ${deliveryId}`
+            );
+            return c.json({ error: "Invalid signature" }, 401);
+        }
+        signatureStatus = "ok";
     }
 
     const payload = JSON.parse(rawBody);
 
-    console.log(`[GitHub Webhook] Event: ${event}, Delivery: ${deliveryId}`);
+    console.log(
+        `[GitHub Webhook] Event: ${event}, Delivery: ${deliveryId}, Signature: ${signatureStatus}`
+    );
 
     // Handle different events
     switch (event) {

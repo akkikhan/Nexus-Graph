@@ -11,12 +11,15 @@ if (!allowedTargets.has(target)) {
 }
 
 function maskUrl(raw) {
+    // Avoid leaking secrets in logs. We intentionally do not print full URLs.
+    // URL parsing can also fail if passwords include reserved characters that aren't percent-encoded.
     try {
         const parsed = new URL(raw);
-        if (parsed.password) parsed.password = "****";
-        return parsed.toString();
+        const host = parsed.host || "<unknown-host>";
+        const sslmode = (parsed.searchParams.get("sslmode") || "").toLowerCase();
+        return `postgres://****@${host}/****${sslmode ? `?sslmode=${sslmode}` : ""}`;
     } catch {
-        return "<invalid-url>";
+        return "<redacted>";
     }
 }
 
@@ -25,13 +28,15 @@ function isPostgresUrl(value) {
 }
 
 function hasRequiredSsl(url) {
-    try {
-        const parsed = new URL(url);
-        const sslmode = (parsed.searchParams.get("sslmode") || "").toLowerCase();
-        return sslmode === "require" || sslmode === "verify-ca" || sslmode === "verify-full";
-    } catch {
-        return false;
-    }
+    // Prefer a string check; URL parsing may fail if the password isn't percent-encoded.
+    return /(?:\?|&)sslmode=(require|verify-ca|verify-full)\b/i.test(url);
+}
+
+function looksLikeKnownHostedProvider(url) {
+    return (
+        /\\.supabase\\.co\\b/i.test(url) ||
+        /\\.postgres\\.database\\.azure\\.com\\b/i.test(url)
+    );
 }
 
 function resolveTargetUrl() {
@@ -86,10 +91,17 @@ if (!isPostgresUrl(resolved.value)) {
 }
 
 if (resolved.hosted && !hasRequiredSsl(resolved.value)) {
-    process.stderr.write(
-        `[db-preflight] FAIL: hosted DB URL must include sslmode=require|verify-ca|verify-full\n`
+    // Allow missing sslmode for known providers because our runtime/CLI lanes enforce SSL separately.
+    // For unknown hosted providers, remain strict.
+    if (!looksLikeKnownHostedProvider(resolved.value)) {
+        process.stderr.write(
+            `[db-preflight] FAIL: hosted DB URL must include sslmode=require|verify-ca|verify-full\n`
+        );
+        process.exit(1);
+    }
+    process.stdout.write(
+        `[db-preflight] WARN: hosted DB URL missing sslmode=...; continuing (known provider)\n`
     );
-    process.exit(1);
 }
 
 process.stdout.write(`[db-preflight] PASS target=${target}\n`);
