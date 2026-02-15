@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const CI = !!process.env.CI;
+const WEB_PORT = Number(process.env.WEB_PORT || "3100");
+const WEB_BASE_URL = process.env.WEB_BASE_URL || `http://127.0.0.1:${WEB_PORT}`;
 
 export default defineConfig({
     testDir: ".",
@@ -9,7 +11,7 @@ export default defineConfig({
     workers: CI ? 1 : undefined,
     reporter: [["list"], ["html", { outputFolder: "output/playwright-report", open: "never" }]],
     use: {
-        baseURL: process.env.WEB_BASE_URL || "http://127.0.0.1:3000",
+        baseURL: WEB_BASE_URL,
         trace: "retain-on-failure",
         screenshot: "only-on-failure",
         video: "retain-on-failure",
@@ -22,9 +24,10 @@ export default defineConfig({
         },
     ],
     webServer: {
-        command: "pnpm --filter @nexus/web dev",
-        url: process.env.WEB_BASE_URL || "http://127.0.0.1:3000",
-        reuseExistingServer: !CI,
+        command: `pnpm --filter @nexus/web exec next dev -p ${WEB_PORT}`,
+        url: WEB_BASE_URL,
+        // Deterministic runs: always start the expected web server (avoids accidentally reusing a different app on 3000).
+        reuseExistingServer: false,
         stdout: "pipe",
         stderr: "pipe",
         timeout: 180000,

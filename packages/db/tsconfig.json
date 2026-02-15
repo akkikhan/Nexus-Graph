@@ -2,7 +2,11 @@
     "extends": "../../tsconfig.json",
     "compilerOptions": {
         "outDir": "./dist",
-        "rootDir": "./src"
+        "rootDir": "./src",
+        // The repo root tsconfig enables composite+incremental for apps.
+        // For this package, keep declaration generation simple and compatible with tsup's dts builder.
+        "composite": false,
+        "incremental": false
     },
     "include": [
         "src/**/*"

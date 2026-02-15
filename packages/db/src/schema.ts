@@ -110,6 +110,42 @@ export const repositories = pgTable("repositories", {
 }));
 
 // ============================================================================
+// GITHUB APP INSTALLATIONS
+// ============================================================================
+
+export const githubInstallations = pgTable("github_installations", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    externalId: text("external_id").notNull(), // GitHub installation id
+    accountLogin: text("account_login").notNull(),
+    accountId: text("account_id"),
+    accountType: text("account_type"),
+    suspended: boolean("suspended").default(false).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    orgIdx: index("github_installations_org_idx").on(table.orgId),
+    externalIdx: uniqueIndex("github_installations_external_idx").on(table.externalId),
+}));
+
+export const githubInstallationRepositories = pgTable("github_installation_repositories", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    githubInstallationId: uuid("github_installation_id")
+        .notNull()
+        .references(() => githubInstallations.id, { onDelete: "cascade" }),
+    repoId: uuid("repo_id")
+        .notNull()
+        .references(() => repositories.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    installRepoIdx: uniqueIndex("github_installation_repositories_install_repo_idx").on(
+        table.githubInstallationId,
+        table.repoId
+    ),
+    repoIdx: index("github_installation_repositories_repo_idx").on(table.repoId),
+}));
+
+// ============================================================================
 // STACKS & BRANCHES
 // ============================================================================
 
@@ -191,6 +227,22 @@ export const pullRequests = pgTable("pull_requests", {
     repoNumberIdx: uniqueIndex("pull_requests_repo_number_idx").on(table.repoId, table.number),
     authorIdx: index("pull_requests_author_idx").on(table.authorId),
     statusIdx: index("pull_requests_status_idx").on(table.status),
+}));
+
+export const pullRequestFiles = pgTable("pull_request_files", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    prId: uuid("pr_id").notNull().references(() => pullRequests.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    status: text("status"),
+    additions: integer("additions").default(0).notNull(),
+    deletions: integer("deletions").default(0).notNull(),
+    changes: integer("changes").default(0).notNull(),
+    sha: text("sha"),
+    patch: text("patch"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    prIdx: index("pull_request_files_pr_idx").on(table.prId),
+    prPathIdx: uniqueIndex("pull_request_files_pr_path_idx").on(table.prId, table.path),
 }));
 
 // ============================================================================
@@ -347,6 +399,7 @@ export const usersRelations = relations(users, ({ many }) => ({
 export const organizationsRelations = relations(organizations, ({ many }) => ({
     members: many(orgMembers),
     repositories: many(repositories),
+    githubInstallations: many(githubInstallations),
     aiRules: many(aiRules),
     automations: many(automations),
 }));
@@ -367,11 +420,34 @@ export const repositoriesRelations = relations(repositories, ({ one, many }) => 
         fields: [repositories.orgId],
         references: [organizations.id],
     }),
+    githubInstallations: many(githubInstallationRepositories),
     stacks: many(stacks),
     branches: many(branches),
     pullRequests: many(pullRequests),
     mergeQueue: many(mergeQueue),
 }));
+
+export const githubInstallationsRelations = relations(githubInstallations, ({ one, many }) => ({
+    organization: one(organizations, {
+        fields: [githubInstallations.orgId],
+        references: [organizations.id],
+    }),
+    repositories: many(githubInstallationRepositories),
+}));
+
+export const githubInstallationRepositoriesRelations = relations(
+    githubInstallationRepositories,
+    ({ one }) => ({
+        githubInstallation: one(githubInstallations, {
+            fields: [githubInstallationRepositories.githubInstallationId],
+            references: [githubInstallations.id],
+        }),
+        repository: one(repositories, {
+            fields: [githubInstallationRepositories.repoId],
+            references: [repositories.id],
+        }),
+    })
+);
 
 export const stacksRelations = relations(stacks, ({ one, many }) => ({
     repository: one(repositories, {
@@ -415,8 +491,16 @@ export const pullRequestsRelations = relations(pullRequests, ({ one, many }) => 
         fields: [pullRequests.authorId],
         references: [users.id],
     }),
+    files: many(pullRequestFiles),
     reviews: many(reviews),
     comments: many(comments),
+}));
+
+export const pullRequestFilesRelations = relations(pullRequestFiles, ({ one }) => ({
+    pullRequest: one(pullRequests, {
+        fields: [pullRequestFiles.prId],
+        references: [pullRequests.id],
+    }),
 }));
 
 export const reviewsRelations = relations(reviews, ({ one, many }) => ({

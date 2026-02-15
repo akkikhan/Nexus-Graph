@@ -47,7 +47,9 @@ async function main() {
         process.stdout.write(
             `[db-bootstrap] migrate failed (${error instanceof Error ? error.message : String(error)}). Falling back to db:push.\n`
         );
-        await run("pnpm --filter @nexus/db db:push", env);
+        // drizzle-kit push can prompt; force avoids hanging in CI/non-interactive shells.
+        // Use `exec` so args are passed directly to drizzle-kit (pnpm script args can be finicky).
+        await run("pnpm --filter @nexus/db exec drizzle-kit push --force", env);
     }
 
     if (target === "supabase" || shouldSeed) {

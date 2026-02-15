@@ -47,3 +47,9 @@ coverage/
 apps/api/.nexus/
 tests/validation/output/
 deploy/.env.production
+
+# Do not check in generated artifacts inside the DB package source folder
+packages/db/src/*.d.ts
+packages/db/src/*.d.ts.map
+packages/db/src/*.js
+packages/db/src/*.js.map

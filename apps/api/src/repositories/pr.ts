@@ -99,6 +99,40 @@ export const prRepository = {
     },
 
     /**
+     * Upsert PR by (repoId, number) unique key.
+     */
+    async upsertByRepoAndNumber(input: CreatePRInput & UpdatePRInput) {
+        const existing = await this.findByRepoAndNumber(input.repoId, input.number);
+        if (existing) {
+            return this.update(existing.id, {
+                title: input.title,
+                description: input.description,
+                status: input.status || (input.isDraft ? "draft" : "open"),
+                isDraft: input.isDraft,
+                aiSummary: input.aiSummary,
+                riskScore: input.riskScore,
+                riskLevel: input.riskLevel,
+                riskFactors: input.riskFactors,
+                estimatedReviewMinutes: input.estimatedReviewMinutes,
+            });
+        }
+        return this.create({
+            repoId: input.repoId,
+            branchId: input.branchId,
+            authorId: input.authorId,
+            number: input.number,
+            externalId: input.externalId,
+            title: input.title!,
+            description: input.description,
+            url: input.url!,
+            isDraft: input.isDraft,
+            linesAdded: input.linesAdded,
+            linesRemoved: input.linesRemoved,
+            filesChanged: input.filesChanged,
+        });
+    },
+
+    /**
      * List PRs with filters
      */
     async list(options: {

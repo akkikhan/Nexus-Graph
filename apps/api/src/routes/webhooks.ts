@@ -5,6 +5,13 @@
 
 import { Hono } from "hono";
 import { createHmac, timingSafeEqual } from "crypto";
+import { githubRepository } from "../repositories/github.js";
+import { prRepository } from "../repositories/pr.js";
+import { userRepository } from "../repositories/user.js";
+import { prFilesRepository } from "../repositories/prFiles.js";
+import { createInstallationAccessToken } from "../github/app.js";
+import { listPullRequestFiles } from "../github/client.js";
+import { computeRisk } from "../services/risk.js";
 
 const webhookRouter = new Hono();
 
@@ -51,6 +58,10 @@ webhookRouter.post("/github", async (c) => {
 
     // Handle different events
     switch (event) {
+        case "installation":
+        case "installation_repositories":
+            await handleInstallationEvent(payload);
+            break;
         case "pull_request":
             await handlePullRequestEvent(payload);
             break;
@@ -118,41 +129,178 @@ async function handlePullRequestEvent(payload: any) {
 
     console.log(`[PR Event] ${action} - ${repository.full_name}#${pr.number}`);
 
-    switch (action) {
-        case "opened":
-        case "reopened":
-            // 1. Create/update PR in database
-            // 2. Trigger AI review
-            // 3. Calculate risk score
-            // 4. Update stack if part of one
-            // 5. Send notifications
-            console.log(`[PR Event] Triggering AI review for PR #${pr.number}`);
-            break;
+    // Only process actions that matter for DB state.
+    const supportedActions = new Set([
+        "opened",
+        "reopened",
+        "synchronize",
+        "edited",
+        "ready_for_review",
+        "closed",
+    ]);
+    if (!supportedActions.has(action)) return;
 
-        case "synchronize":
-            // PR was updated (new commits)
-            // 1. Re-run AI review on new changes
-            // 2. Update risk score
-            // 3. Check for resolved comments
-            console.log(`[PR Event] Re-reviewing PR #${pr.number}`);
-            break;
+    // Ensure repo exists and is mapped to an org.
+    const accountLogin =
+        repository?.owner?.login ||
+        payload?.installation?.account?.login ||
+        "github";
+    const { orgId } = await githubRepository.upsertOrgFromGitHubAccount({
+        login: accountLogin,
+        avatarUrl: repository?.owner?.avatar_url || null,
+    });
+    const { repoId } = await githubRepository.upsertRepository({
+        orgId,
+        externalRepoId: repository.id,
+        name: repository.name,
+        fullName: repository.full_name,
+        defaultBranch: repository.default_branch,
+        private: repository.private,
+    });
 
-        case "closed":
-            if (pr.merged) {
-                // PR was merged
-                // 1. Update stack (rebase dependent branches)
-                // 2. Update metrics
-                // 3. Cleanup
-                console.log(`[PR Event] PR #${pr.number} merged`);
-            }
-            break;
+    const author = pr?.user;
+    const { userId: authorId } = await userRepository.upsertGitHubUser({
+        githubId: author?.id,
+        login: author?.login,
+        avatarUrl: author?.avatar_url,
+        name: author?.login,
+    });
 
-        case "review_requested":
-            // Someone was requested to review
-            // 1. Send notification
-            // 2. Update reviewer workload tracking
-            console.log(`[PR Event] Review requested for PR #${pr.number}`);
-            break;
+    const status = pr.merged
+        ? "merged"
+        : pr.state === "closed"
+            ? "closed"
+            : pr.draft
+                ? "draft"
+                : "open";
+
+    // Fetch PR file list for better scoring, if we can.
+    const installationId: number | undefined = payload?.installation?.id;
+    let filePaths: string[] = [];
+    let prFiles: any[] = [];
+    if (installationId && process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY) {
+        try {
+            const token = await createInstallationAccessToken(installationId);
+            const [owner, repo] = String(repository.full_name || "/").split("/");
+            const files = await listPullRequestFiles({
+                owner,
+                repo,
+                pullNumber: pr.number,
+                token,
+            });
+            prFiles = files;
+            filePaths = files.map((f) => f.filename);
+        } catch (e: any) {
+            console.warn(`[PR Event] Could not fetch PR files: ${e?.message || e}`);
+        }
+    }
+
+    const linesAdded = Number(pr.additions ?? 0);
+    const linesRemoved = Number(pr.deletions ?? 0);
+    const filesChanged = Number(pr.changed_files ?? prFiles.length ?? 0);
+
+    const risk = computeRisk({
+        title: pr.title,
+        filesChanged,
+        linesAdded,
+        linesRemoved,
+        repoFullName: repository.full_name,
+        filePaths,
+    });
+
+    const upserted = await prRepository.upsertByRepoAndNumber({
+        repoId,
+        authorId,
+        number: pr.number,
+        externalId: String(pr.id),
+        title: pr.title,
+        description: pr.body || "",
+        url: pr.html_url,
+        isDraft: !!pr.draft,
+        status: status as any,
+        linesAdded,
+        linesRemoved,
+        filesChanged,
+        aiSummary: risk.aiSummary,
+        riskScore: risk.riskScore,
+        riskLevel: risk.riskLevel,
+        riskFactors: risk.riskFactors,
+        estimatedReviewMinutes: Math.max(5, Math.round((linesAdded + linesRemoved) / 80)),
+    } as any);
+
+    if (upserted?.id && prFiles.length > 0) {
+        await prFilesRepository.upsertMany(
+            upserted.id,
+            prFiles.map((f) => ({
+                prId: upserted.id,
+                path: f.filename,
+                status: f.status || null,
+                additions: f.additions ?? 0,
+                deletions: f.deletions ?? 0,
+                changes: f.changes ?? 0,
+                sha: f.sha || null,
+                patch: f.patch || null,
+            }))
+        );
+    }
+}
+
+async function handleInstallationEvent(payload: any) {
+    const eventAction = payload?.action;
+    const installation = payload?.installation;
+    const repositoriesAdded = payload?.repositories_added || payload?.repositories || [];
+    const repositoriesRemoved = payload?.repositories_removed || [];
+
+    const account = installation?.account || payload?.sender || {};
+    const installationId = installation?.id;
+    if (!installationId) {
+        console.warn("[Install Event] Missing installation.id");
+        return;
+    }
+
+    const login = account?.login || "github";
+    const { orgId } = await githubRepository.upsertOrgFromGitHubAccount({
+        login,
+        avatarUrl: account?.avatar_url || null,
+    });
+
+    const { githubInstallationId } = await githubRepository.upsertInstallation({
+        orgId,
+        installationId,
+        accountLogin: login,
+        accountId: account?.id ?? null,
+        accountType: account?.type ?? null,
+        suspended: eventAction === "suspend",
+    });
+
+    const toUpsert = [...repositoriesAdded].filter(Boolean);
+    const repoIds: string[] = [];
+    for (const r of toUpsert) {
+        const { repoId } = await githubRepository.upsertRepository({
+            orgId,
+            externalRepoId: r.id,
+            name: r.name,
+            fullName: r.full_name,
+            defaultBranch: r.default_branch,
+            private: r.private,
+        });
+        repoIds.push(repoId);
+    }
+
+    // For installation_repositories, GitHub sends adds/removes. We'll re-store current known adds
+    // as "replacement" only if it contains a full list (payload.repositories). Otherwise we do best-effort.
+    if (Array.isArray(payload?.repositories)) {
+        await githubRepository.replaceInstallationRepos({
+            githubInstallationId,
+            repoIds,
+        });
+    } else {
+        // Best effort: insert adds and delete removes.
+        if (repoIds.length > 0) {
+            // Replace is simplest and safe for MVP; but if we don't have full list, we don't want to delete all.
+            // So we do nothing here for now. Manual sync can reconcile later.
+        }
+        void repositoriesRemoved;
     }
 }
 

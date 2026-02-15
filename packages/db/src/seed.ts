@@ -9,6 +9,7 @@ import {
     stacks,
     branches,
     pullRequests,
+    pullRequestFiles,
     comments,
     reviews,
     mergeQueue,
@@ -70,6 +71,7 @@ async function seed() {
         await db.delete(comments);
         await db.delete(reviews);
         await db.delete(mergeQueue);
+        await db.delete(pullRequestFiles);
         await db.delete(pullRequests);
         await db.delete(branches);
         await db.delete(stacks);
