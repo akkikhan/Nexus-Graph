@@ -154,7 +154,8 @@ curl -fsS http://localhost:3001/health >/dev/null
 
 # Run DB migrations (idempotent) after API is up.
 echo "[deploy] running db migrations..."
-docker exec nexus-api sh -lc 'cd /app/packages/db && /app/node_modules/.bin/drizzle-kit migrate'
+  # drizzle-kit is installed in packages/db/node_modules (not at repo root)
+  docker exec nexus-api sh -lc 'cd /app/packages/db && ./node_modules/.bin/drizzle-kit migrate'
 
 for i in $(seq 1 60); do
   if curl -fsS http://localhost:3000 >/dev/null; then
