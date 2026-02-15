@@ -43,6 +43,21 @@ export interface PRListResponse {
     offset: number;
 }
 
+export interface AiRule {
+    id: string;
+    orgId: string;
+    repoId: string | null;
+    name: string;
+    description?: string | null;
+    prompt: string;
+    regexPattern?: string | null;
+    filePatterns?: string[];
+    severity: "info" | "warning" | "high" | "critical" | string;
+    enabled: boolean;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
 const API_BASE_URL = "/api/v1";
 
 async function parseResponse<T>(res: Response, fallbackMessage: string): Promise<T> {
@@ -93,6 +108,44 @@ export async function requestPRReview(id: string): Promise<{ success: boolean; m
         res,
         "Failed to request AI review"
     );
+}
+
+export async function fetchAiRules(): Promise<AiRule[]> {
+    const res = await fetch(`${API_BASE_URL}/ai-rules`);
+    const data = await parseResponse<{ rules: AiRule[] }>(res, "Failed to fetch AI rules");
+    return data.rules || [];
+}
+
+export async function createAiRule(input: {
+    name: string;
+    prompt: string;
+    description?: string;
+    repoId?: string;
+    regexPattern?: string;
+    filePatterns?: string[];
+    severity?: "info" | "warning" | "high" | "critical";
+    enabled?: boolean;
+}): Promise<{ rule: AiRule }> {
+    const res = await fetch(`${API_BASE_URL}/ai-rules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{ rule: AiRule }>(res, "Failed to create AI rule");
+}
+
+export async function setAiRuleEnabled(input: { id: string; enabled: boolean }): Promise<{ rule: AiRule }> {
+    const res = await fetch(`${API_BASE_URL}/ai-rules/${input.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: input.enabled }),
+    });
+    return parseResponse<{ rule: AiRule }>(res, "Failed to update AI rule");
+}
+
+export async function deleteAiRule(id: string): Promise<{ success: boolean }> {
+    const res = await fetch(`${API_BASE_URL}/ai-rules/${id}`, { method: "DELETE" });
+    return parseResponse<{ success: boolean }>(res, "Failed to delete AI rule");
 }
 
 export interface ActivityItem {

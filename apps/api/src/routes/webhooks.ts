@@ -12,6 +12,8 @@ import { prFilesRepository } from "../repositories/prFiles.js";
 import { createInstallationAccessToken } from "../github/app.js";
 import { listPullRequestFiles } from "../github/client.js";
 import { computeRisk } from "../services/risk.js";
+import { aiRules, db } from "../db/index.js";
+import { and, eq, isNull, or } from "drizzle-orm";
 
 const webhookRouter = new Hono();
 
@@ -216,6 +218,31 @@ async function handlePullRequestEvent(payload: any) {
     const linesRemoved = Number(pr.deletions ?? 0);
     const filesChanged = Number(pr.changed_files ?? prFiles.length ?? 0);
 
+    // Pull org/repo AI rules (if any) to influence deterministic risk scoring.
+    let ruleRows: any[] = [];
+    try {
+        ruleRows = await db
+            .select({
+                id: aiRules.id,
+                name: aiRules.name,
+                prompt: aiRules.prompt,
+                regexPattern: aiRules.regexPattern,
+                filePatterns: aiRules.filePatterns,
+                severity: aiRules.severity,
+                enabled: aiRules.enabled,
+            })
+            .from(aiRules)
+            .where(
+                and(
+                    eq(aiRules.orgId, orgId),
+                    or(eq(aiRules.repoId, repoId), isNull(aiRules.repoId)),
+                    eq(aiRules.enabled, true)
+                )
+            );
+    } catch (e: any) {
+        console.warn(`[PR Event] Could not load AI rules: ${e?.message || e}`);
+    }
+
     const risk = computeRisk({
         title: pr.title,
         filesChanged,
@@ -223,6 +250,7 @@ async function handlePullRequestEvent(payload: any) {
         linesRemoved,
         repoFullName: repository.full_name,
         filePaths,
+        aiRules: ruleRows,
     });
 
     const upserted = await prRepository.upsertByRepoAndNumber({

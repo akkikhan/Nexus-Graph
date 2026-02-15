@@ -6,6 +6,49 @@
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 
+export type AiRuleSeverity = "info" | "warning" | "high" | "critical";
+
+export interface AiRuleForRisk {
+    id: string;
+    name: string;
+    prompt: string;
+    regexPattern?: string | null;
+    filePatterns?: string[] | null;
+    severity?: AiRuleSeverity | string | null;
+    enabled?: boolean | null;
+}
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+}
+
+function severityWeight(sev: string | null | undefined): number {
+    const s = String(sev || "warning").toLowerCase();
+    if (s === "critical") return 28;
+    if (s === "high") return 18;
+    if (s === "info") return 5;
+    return 10; // warning/default
+}
+
+function globToRegExp(glob: string): RegExp | null {
+    const raw = String(glob || "").trim();
+    if (!raw) return null;
+    // Very small glob subset: '*' and '?' are supported. Everything else is treated literally.
+    // This is enough for patterns like "auth/*", "**/*.sql", "migrations/*".
+    const escaped = raw.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    const rxSource = "^" +
+        escaped
+            .replace(/\\\*\\\*/g, ".*")
+            .replace(/\\\*/g, ".*")
+            .replace(/\\\?/g, ".") +
+        "$";
+    try {
+        return new RegExp(rxSource);
+    } catch {
+        return null;
+    }
+}
+
 export function computeRisk(input: {
     filesChanged: number;
     linesAdded: number;
@@ -13,6 +56,7 @@ export function computeRisk(input: {
     title?: string;
     repoFullName?: string;
     filePaths?: string[];
+    aiRules?: AiRuleForRisk[];
 }): { riskScore: number; riskLevel: RiskLevel; aiSummary: string; riskFactors: any[] } {
     const files = Math.max(0, input.filesChanged || 0);
     const added = Math.max(0, input.linesAdded || 0);
@@ -68,7 +112,53 @@ export function computeRisk(input: {
         }
     }
 
-    score = Math.max(0, Math.min(100, score));
+    // Apply org/repo-defined AI rules as an additional deterministic signal.
+    const rules = Array.isArray(input.aiRules) ? input.aiRules : [];
+    const matchedRuleNames: string[] = [];
+
+    for (const rule of rules) {
+        if (rule && rule.enabled === false) continue;
+        const regexRaw = rule?.regexPattern || "";
+        const fileGlobs = Array.isArray(rule?.filePatterns) ? rule.filePatterns : [];
+        let matched = false;
+
+        if (regexRaw) {
+            try {
+                const rx = new RegExp(regexRaw);
+                if (rx.test(input.title || "") || paths.some((p) => rx.test(p))) matched = true;
+            } catch {
+                // Ignore invalid user regex patterns.
+            }
+        }
+
+        if (!matched && fileGlobs.length > 0) {
+            const globs = fileGlobs
+                .map((g) => globToRegExp(g))
+                .filter((x): x is RegExp => Boolean(x));
+            if (globs.length > 0) {
+                matched = paths.some((p) => globs.some((rx) => rx.test(p)));
+            }
+        }
+
+        // Small heuristic: match on name keywords too (useful for simple rules without regex/globs).
+        if (!matched) {
+            const name = String(rule?.name || "").toLowerCase();
+            if (name && lowerTitle.includes(name)) matched = true;
+        }
+
+        if (matched) {
+            const w = severityWeight(rule?.severity);
+            score += w;
+            matchedRuleNames.push(String(rule?.name || rule?.id || "rule"));
+            factors.push({
+                key: "ai_rule",
+                weight: w,
+                detail: `Rule matched: ${rule?.name || rule?.id}`,
+            });
+        }
+    }
+
+    score = clamp(score, 0, 100);
 
     let level: RiskLevel = "low";
     if (score >= 85) level = "critical";
@@ -82,7 +172,11 @@ export function computeRisk(input: {
         `${removed} deletions`,
     ];
 
-    const aiSummary = summaryParts.join(". ") + ".";
+    const suffix =
+        matchedRuleNames.length > 0
+            ? ` Matched rules: ${matchedRuleNames.slice(0, 3).join(", ")}.`
+            : "";
+    const aiSummary = summaryParts.join(". ") + "." + suffix;
 
     return {
         riskScore: score,
@@ -91,4 +185,3 @@ export function computeRisk(input: {
         riskFactors: factors,
     };
 }
-
