@@ -41,10 +41,12 @@ function Invoke-RemoteBash([string]$Script, [switch]$KeepAlive) {
         $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
         [System.IO.File]::WriteAllText($tmp, (To-Lf $Script), $utf8NoBom)
 
+        # PowerShell doesn't support `< file` redirection; use `cmd.exe` for stdin redirection.
+        $target = "$VmUser@$VmIp"
         if ($KeepAlive) {
-            ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s" < $tmp
+            cmd /c "ssh -i ""$SshKey"" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 ""$target"" ""bash -s"" < ""$tmp"""
         } else {
-            ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" "bash -s" < $tmp
+            cmd /c "ssh -i ""$SshKey"" -o StrictHostKeyChecking=no ""$target"" ""bash -s"" < ""$tmp"""
         }
 
         if ($LASTEXITCODE -ne 0) {
