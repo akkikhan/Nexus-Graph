@@ -196,7 +196,7 @@ export const githubRepository = {
         const links = await db.query.githubInstallationRepositories.findMany({
             where: eq(githubInstallationRepositories.githubInstallationId, installation.id),
         });
-        const repoIds = links.map((l: { repoId: string }) => l.repoId);
+        const repoIds = links.map((l) => l.repoId as string);
         if (repoIds.length === 0) return [];
 
         const repos = await db.query.repositories.findMany({
