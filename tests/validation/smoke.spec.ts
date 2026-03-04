@@ -504,6 +504,21 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                 await route.fulfill(jsonResponse(404, { error: "Webhook event not found" }));
                 return;
             }
+            const payload = route.request().postDataJSON() as { simulateFailure?: boolean } | null;
+            const simulateFailure = payload?.simulateFailure === true;
+            if (simulateFailure) {
+                event.attempts += 1;
+                event.status = event.attempts >= event.maxAttempts ? "dead_letter" : "failed";
+                event.updatedAt = new Date().toISOString();
+                await route.fulfill(
+                    jsonResponse(200, {
+                        success: true,
+                        reason: "failed",
+                        event,
+                    })
+                );
+                return;
+            }
             event.status = "processed";
             event.attempts += 1;
             event.processedAt = new Date().toISOString();
@@ -628,10 +643,11 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });
-    await page.getByRole("button", { name: /^Process$/i }).first().click();
-    await expect(page.getByText(/is now processed/i)).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /^Fail$/i }).first().click();
+    await expect(page.getByText("Webhook wh-ext-1 is now failed.", { exact: true })).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Retry Due/i }).click();
-    await expect(page.getByText(/Retried/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText("Retried 2 due webhook event(s).", { exact: true })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Recent Actions/i)).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Export JSON/i }).click();
     await page.getByRole("button", { name: /Export CSV/i }).click();
 

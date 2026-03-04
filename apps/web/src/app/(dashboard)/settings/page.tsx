@@ -241,6 +241,7 @@ function statusClass(status: "connected" | "disconnected" | "coming_soon"): stri
 type AuthProviderFilter = "all" | "slack" | "linear" | "jira";
 type AuthOutcomeFilter = "all" | "rejected" | "config_error";
 type WebhookStatusFilter = "all" | "received" | "processed" | "failed" | "dead_letter";
+type WebhookActionMode = "process" | "fail";
 
 const WEBHOOK_DIAGNOSTICS_PAGE_SIZE = 12;
 const WEBHOOK_RECOVERY_PAGE_SIZE = 8;
@@ -285,9 +286,15 @@ export default function SettingsPage() {
     const [authPage, setAuthPage] = useState(0);
     const [webhookStatusFilter, setWebhookStatusFilter] = useState<WebhookStatusFilter>("all");
     const [retryingDueWebhooks, setRetryingDueWebhooks] = useState(false);
-    const [processingWebhookId, setProcessingWebhookId] = useState<string | null>(null);
+    const [processingWebhookAction, setProcessingWebhookAction] = useState<{
+        id: string;
+        mode: WebhookActionMode;
+    } | null>(null);
     const [webhookActionMessage, setWebhookActionMessage] = useState("");
     const [webhookActionError, setWebhookActionError] = useState("");
+    const [webhookActionHistory, setWebhookActionHistory] = useState<
+        Array<{ at: string; level: "success" | "error"; message: string }>
+    >([]);
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
     const [exportError, setExportError] = useState("");
 
@@ -485,6 +492,7 @@ export default function SettingsPage() {
         setWebhookStatusFilter("all");
         setWebhookActionMessage("");
         setWebhookActionError("");
+        setWebhookActionHistory([]);
     };
 
     const downloadBlob = (filename: string, blob: Blob) => {
@@ -517,29 +525,58 @@ export default function SettingsPage() {
         setRetryingDueWebhooks(true);
         try {
             const result = await retryDueIntegrationWebhooks(20);
-            setWebhookActionMessage(`Retried ${result.processed} due webhook event(s).`);
+            const message = `Retried ${result.processed} due webhook event(s).`;
+            setWebhookActionMessage(message);
+            setWebhookActionHistory((prev) => [
+                { at: new Date().toISOString(), level: "success", message },
+                ...prev.slice(0, 4),
+            ]);
             await Promise.all([refetchWebhookEvents(), refetchIntegrationMetrics(), refetchIntegrationAlerts()]);
         } catch (error) {
-            setWebhookActionError(getErrorMessage(error, "Failed to retry due webhooks."));
+            const message = getErrorMessage(error, "Failed to retry due webhooks.");
+            setWebhookActionError(message);
+            setWebhookActionHistory((prev) => [
+                { at: new Date().toISOString(), level: "error", message },
+                ...prev.slice(0, 4),
+            ]);
         } finally {
             setRetryingDueWebhooks(false);
         }
     };
 
-    const onProcessWebhook = async (eventId: string) => {
+    const onProcessWebhook = async (event: IntegrationWebhookEvent, mode: WebhookActionMode) => {
         setWebhookActionMessage("");
         setWebhookActionError("");
-        setProcessingWebhookId(eventId);
+        setProcessingWebhookAction({
+            id: event.id,
+            mode,
+        });
         try {
-            const result = await processIntegrationWebhookEvent(eventId, {});
-            setWebhookActionMessage(
-                `Webhook ${result.event.externalEventId} is now ${formatWebhookStatus(result.event.status)}.`
+            const result = await processIntegrationWebhookEvent(
+                event.id,
+                mode === "fail"
+                    ? {
+                          simulateFailure: true,
+                          errorMessage: "Manual failure drill from settings recovery queue",
+                      }
+                    : {}
             );
+            const message = `Webhook ${result.event.externalEventId} is now ${formatWebhookStatus(result.event.status)}.`;
+            setWebhookActionMessage(message);
+            setWebhookActionHistory((prev) => [
+                { at: new Date().toISOString(), level: "success", message },
+                ...prev.slice(0, 4),
+            ]);
             await Promise.all([refetchWebhookEvents(), refetchIntegrationMetrics(), refetchIntegrationAlerts()]);
         } catch (error) {
-            setWebhookActionError(getErrorMessage(error, "Failed to process webhook event."));
+            const message = getErrorMessage(error, "Failed to process webhook event.");
+            setWebhookActionError(message);
+            setWebhookActionHistory((prev) => [
+                { at: new Date().toISOString(), level: "error", message },
+                ...prev.slice(0, 4),
+            ]);
         } finally {
-            setProcessingWebhookId(null);
+            setProcessingWebhookAction(null);
         }
     };
 
@@ -859,7 +896,7 @@ export default function SettingsPage() {
                                 ) : (
                                     <div className="rounded border border-zinc-800 overflow-x-auto">
                                         <div className="min-w-[860px]">
-                                            <div className="grid grid-cols-[90px_140px_1fr_110px_120px_120px] gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500 bg-zinc-950/60">
+                                            <div className="grid grid-cols-[90px_140px_1fr_110px_120px_170px] gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500 bg-zinc-950/60">
                                                 <span>Provider</span>
                                                 <span>Status</span>
                                                 <span>Event</span>
@@ -874,7 +911,7 @@ export default function SettingsPage() {
                                                     return (
                                                         <div
                                                             key={event.id}
-                                                            className="grid grid-cols-[90px_140px_1fr_110px_120px_120px] gap-2 px-3 py-2 text-sm text-zinc-200 items-center"
+                                                            className="grid grid-cols-[90px_140px_1fr_110px_120px_170px] gap-2 px-3 py-2 text-sm text-zinc-200 items-center"
                                                         >
                                                             <span className="capitalize">{event.provider}</span>
                                                             <span
@@ -900,13 +937,28 @@ export default function SettingsPage() {
                                                             <span className="text-xs text-zinc-400">
                                                                 {formatAuthTimestamp(event.createdAt)}
                                                             </span>
-                                                            <button
-                                                                onClick={() => onProcessWebhook(event.id)}
-                                                                disabled={!actionable || processingWebhookId === event.id}
-                                                                className="px-2 py-1 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
-                                                            >
-                                                                {processingWebhookId === event.id ? "Processing..." : "Process"}
-                                                            </button>
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={() => onProcessWebhook(event, "process")}
+                                                                    disabled={!actionable || processingWebhookAction?.id === event.id}
+                                                                    className="px-2 py-1 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                                                >
+                                                                    {processingWebhookAction?.id === event.id &&
+                                                                    processingWebhookAction.mode === "process"
+                                                                        ? "Processing..."
+                                                                        : "Process"}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => onProcessWebhook(event, "fail")}
+                                                                    disabled={!actionable || processingWebhookAction?.id === event.id}
+                                                                    className="px-2 py-1 rounded border border-red-800/60 text-xs text-red-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-red-900/40 transition-colors"
+                                                                >
+                                                                    {processingWebhookAction?.id === event.id &&
+                                                                    processingWebhookAction.mode === "fail"
+                                                                        ? "Failing..."
+                                                                        : "Fail"}
+                                                                </button>
+                                                            </div>
                                                         </div>
                                                     );
                                                 })}
@@ -923,6 +975,21 @@ export default function SettingsPage() {
                                 {webhookActionError ? (
                                     <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
                                         {webhookActionError}
+                                    </div>
+                                ) : null}
+                                {webhookActionHistory.length > 0 ? (
+                                    <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 space-y-1">
+                                        <div className="text-[11px] uppercase tracking-wide text-zinc-500">Recent Actions</div>
+                                        {webhookActionHistory.map((entry) => (
+                                            <div
+                                                key={`${entry.at}-${entry.message}`}
+                                                className={`text-xs ${
+                                                    entry.level === "success" ? "text-zinc-300" : "text-red-300"
+                                                }`}
+                                            >
+                                                {formatAuthTimestamp(entry.at)} - {entry.message}
+                                            </div>
+                                        ))}
                                     </div>
                                 ) : null}
                             </div>

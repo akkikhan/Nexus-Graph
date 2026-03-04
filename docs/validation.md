@@ -126,7 +126,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Insights dashboard load
 - Settings diagnostics panel load (webhook auth events + filter path)
 - Settings integrations operations snapshot (connections + metrics + alerts)
-- Settings webhook recovery actions (list/process/retry controls)
+- Settings webhook recovery actions (list/process/fail/retry controls + recent action feed)
 - Settings diagnostics export controls (JSON/CSV) render and trigger server-side export requests
 
 Prerequisite:
