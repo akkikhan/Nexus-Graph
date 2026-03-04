@@ -1210,11 +1210,25 @@ async function run() {
                 "integration metrics must include totals.webhookEvents"
             );
             assert(
+                typeof integrationsMetrics.payload?.totals?.webhookAuthFailures === "number",
+                "integration metrics must include totals.webhookAuthFailures"
+            );
+            assert(
                 typeof integrationsMetrics.payload?.totals?.issueSyncAttempts === "number",
                 "integration metrics must include totals.issueSyncAttempts"
             );
+            assert(
+                typeof integrationsMetrics.payload?.webhookAuth?.failureRatePct === "number",
+                "integration metrics must include webhookAuth.failureRatePct"
+            );
+            assert(
+                typeof integrationsMetrics.payload?.webhookAuth?.failuresByReason === "object",
+                "integration metrics must include webhookAuth.failuresByReason"
+            );
 
-            const integrationsAlerts = await request(`/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}`);
+            const integrationsAlerts = await request(
+                `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60`
+            );
             printResult("GET /api/v1/integrations/alerts", integrationsAlerts);
             assert(integrationsAlerts.response.status === 200, "integration alerts must return 200");
             assert(
@@ -1232,6 +1246,15 @@ async function run() {
             assert(
                 typeof integrationsAlerts.payload?.thresholds?.maxRetryQueueAgeSeconds === "number",
                 "integration alerts must include thresholds.maxRetryQueueAgeSeconds"
+            );
+            assert(
+                typeof integrationsAlerts.payload?.thresholds?.maxWebhookAuthFailures === "number",
+                "integration alerts must include thresholds.maxWebhookAuthFailures"
+            );
+            assert(
+                Array.isArray(integrationsAlerts.payload?.alerts) &&
+                    integrationsAlerts.payload.alerts.some((alert) => alert.code === "webhook_auth_failures_high"),
+                "integration alerts must surface webhook auth failure alert when threshold is zero"
             );
         }
 

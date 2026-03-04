@@ -3,7 +3,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, inArray, lte } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import * as nexusDb from "../db/index.js";
 
 const { db } = nexusDb;
@@ -12,6 +12,7 @@ const issueLinks = (nexusDb as any).issueLinks;
 const notificationDeliveries = (nexusDb as any).notificationDeliveries;
 const notificationDeliveryAttempts = (nexusDb as any).notificationDeliveryAttempts;
 const integrationWebhookEvents = (nexusDb as any).integrationWebhookEvents;
+const integrationWebhookAuthEvents = (nexusDb as any).integrationWebhookAuthEvents;
 const issueLinkSyncEvents = (nexusDb as any).issueLinkSyncEvents;
 
 type IntegrationProvider = "slack" | "linear" | "jira";
@@ -19,6 +20,7 @@ type IntegrationConnectionStatus = "active" | "disabled" | "error";
 type IssueLinkStatus = "linked" | "sync_pending" | "sync_failed";
 type NotificationDeliveryStatus = "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
 type IntegrationWebhookStatus = "received" | "processed" | "failed" | "dead_letter";
+type IntegrationWebhookAuthOutcome = "rejected" | "config_error";
 type IssueLinkSyncStatus = "pending" | "synced" | "failed" | "dead_letter";
 type IntegrationAlertSeverity = "warning" | "critical";
 type IntegrationAlertStatus = "healthy" | "warning" | "critical";
@@ -43,6 +45,21 @@ const DEFAULT_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS =
     Number.isFinite(RAW_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS) && RAW_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS >= 30
         ? Math.min(Math.max(Math.round(RAW_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS), 30), 86_400)
         : 300;
+const RAW_WEBHOOK_AUTH_ALERT_WINDOW_MINUTES = Number(process.env.NEXUS_WEBHOOK_AUTH_ALERT_WINDOW_MINUTES ?? 60);
+const DEFAULT_WEBHOOK_AUTH_ALERT_WINDOW_MINUTES =
+    Number.isFinite(RAW_WEBHOOK_AUTH_ALERT_WINDOW_MINUTES) && RAW_WEBHOOK_AUTH_ALERT_WINDOW_MINUTES >= 5
+        ? Math.min(Math.max(Math.round(RAW_WEBHOOK_AUTH_ALERT_WINDOW_MINUTES), 5), 1_440)
+        : 60;
+const RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURES = Number(process.env.NEXUS_WEBHOOK_AUTH_ALERT_MAX_FAILURES ?? 5);
+const DEFAULT_WEBHOOK_AUTH_ALERT_MAX_FAILURES =
+    Number.isFinite(RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURES) && RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURES >= 0
+        ? Math.min(Math.max(Math.round(RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURES), 0), 100_000)
+        : 5;
+const RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT = Number(process.env.NEXUS_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT ?? 5);
+const DEFAULT_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT =
+    Number.isFinite(RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT) && RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT >= 0
+        ? Math.min(Math.max(Math.round(RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT), 0), 100)
+        : 5;
 
 const SECRET_FIELD_PATTERN = /(?:token|secret|password|api[_-]?key|authorization|auth[_-]?header)/i;
 const SECRET_PATTERNS: RegExp[] = [
@@ -185,6 +202,26 @@ function normalizeIssueLinkSyncEvent(row: any) {
         errorMessage: row.errorMessage || undefined,
         responseCode: row.responseCode || undefined,
         latencyMs: row.latencyMs || undefined,
+        details: row.details || {},
+        createdAt: toIso(row.createdAt),
+    };
+}
+
+function normalizeWebhookAuthEvent(row: any) {
+    return {
+        id: row.id,
+        provider: row.provider,
+        repoId: row.repoId || undefined,
+        eventType: row.eventType,
+        externalEventId: row.externalEventId,
+        outcome: row.outcome,
+        reason: row.reason,
+        statusCode: Number(row.statusCode || 0),
+        signaturePresent: Boolean(row.signaturePresent),
+        timestampPresent: Boolean(row.timestampPresent),
+        requestTimestamp: row.requestTimestamp ? toIso(row.requestTimestamp) : undefined,
+        requestSkewSeconds:
+            typeof row.requestSkewSeconds === "number" ? Number(row.requestSkewSeconds) : undefined,
         details: row.details || {},
         createdAt: toIso(row.createdAt),
     };
@@ -784,6 +821,58 @@ export const integrationsRepository = {
         };
     },
 
+    async recordWebhookAuthFailure(input: {
+        provider: string;
+        repoId?: string;
+        eventType: string;
+        externalEventId: string;
+        outcome?: IntegrationWebhookAuthOutcome;
+        reason: string;
+        statusCode: number;
+        signaturePresent?: boolean;
+        timestampPresent?: boolean;
+        requestTimestampSeconds?: number;
+        requestSkewSeconds?: number;
+        details?: Record<string, unknown>;
+    }) {
+        const provider = normalizeProvider(input.provider);
+        if (!provider) return { reason: "invalid_provider" as const };
+
+        const now = new Date();
+        const requestTimestamp =
+            Number.isFinite(Number(input.requestTimestampSeconds)) && Number(input.requestTimestampSeconds) > 0
+                ? new Date(Number(input.requestTimestampSeconds) * 1000)
+                : null;
+
+        const [inserted] = await db
+            .insert(integrationWebhookAuthEvents)
+            .values({
+                provider,
+                repoId: input.repoId || null,
+                eventType: input.eventType.trim(),
+                externalEventId: input.externalEventId.trim(),
+                outcome: input.outcome || "rejected",
+                reason: input.reason.trim(),
+                statusCode: clampInteger(Number(input.statusCode), 100, 599),
+                signaturePresent: input.signaturePresent === true,
+                timestampPresent: input.timestampPresent === true,
+                requestTimestamp,
+                requestSkewSeconds:
+                    Number.isFinite(Number(input.requestSkewSeconds))
+                        ? clampInteger(Number(input.requestSkewSeconds), -31_536_000, 31_536_000)
+                        : null,
+                details: sanitizeUnknown(input.details || {}),
+                createdAt: now,
+            })
+            .returning();
+
+        if (!inserted) return { reason: "insert_failed" as const };
+        return {
+            reason: "ok" as const,
+            event: normalizeWebhookAuthEvent(inserted),
+        };
+    },
+
     async enqueueNotification(input: {
         connectionId: string;
         repoId: string;
@@ -1007,11 +1096,13 @@ export const integrationsRepository = {
         const issueConditions = [];
         const deliveryConditions = [];
         const webhookConditions = [];
+        const webhookAuthConditions = [];
         if (repoId) {
             connectionConditions.push(eq(integrationConnections.repoId, repoId));
             issueConditions.push(eq(issueLinks.repoId, repoId));
             deliveryConditions.push(eq(notificationDeliveries.repoId, repoId));
             webhookConditions.push(eq(integrationWebhookEvents.repoId, repoId));
+            webhookAuthConditions.push(eq(integrationWebhookAuthEvents.repoId, repoId));
         }
 
         const [connectionsCountRow] = await db
@@ -1035,6 +1126,10 @@ export const integrationsRepository = {
             .from(issueLinkSyncEvents)
             .leftJoin(issueLinks, eq(issueLinkSyncEvents.issueLinkId, issueLinks.id))
             .where(issueConditions.length > 0 ? and(...issueConditions) : undefined);
+        const [webhookAuthFailuresCountRow] = await db
+            .select({ value: count() })
+            .from(integrationWebhookAuthEvents)
+            .where(webhookAuthConditions.length > 0 ? and(...webhookAuthConditions) : undefined);
 
         const deliveryStatusRows = await db
             .select({
@@ -1072,6 +1167,30 @@ export const integrationsRepository = {
             .from(integrationConnections)
             .where(connectionConditions.length > 0 ? and(...connectionConditions) : undefined)
             .groupBy(integrationConnections.provider);
+        const webhookAuthProviderRows = await db
+            .select({
+                provider: integrationWebhookAuthEvents.provider,
+                value: count(),
+            })
+            .from(integrationWebhookAuthEvents)
+            .where(webhookAuthConditions.length > 0 ? and(...webhookAuthConditions) : undefined)
+            .groupBy(integrationWebhookAuthEvents.provider);
+        const webhookAuthReasonRows = await db
+            .select({
+                reason: integrationWebhookAuthEvents.reason,
+                value: count(),
+            })
+            .from(integrationWebhookAuthEvents)
+            .where(webhookAuthConditions.length > 0 ? and(...webhookAuthConditions) : undefined)
+            .groupBy(integrationWebhookAuthEvents.reason);
+        const webhookAuthOutcomeRows = await db
+            .select({
+                outcome: integrationWebhookAuthEvents.outcome,
+                value: count(),
+            })
+            .from(integrationWebhookAuthEvents)
+            .where(webhookAuthConditions.length > 0 ? and(...webhookAuthConditions) : undefined)
+            .groupBy(integrationWebhookAuthEvents.outcome);
 
         const notificationRetryQueueRows = await db
             .select({
@@ -1140,10 +1259,26 @@ export const integrationsRepository = {
         for (const row of providerRows) {
             providerCounts[row.provider] = Number(row.value || 0);
         }
+        const webhookAuthProviderCounts: Record<string, number> = {};
+        for (const row of webhookAuthProviderRows) {
+            webhookAuthProviderCounts[row.provider] = Number(row.value || 0);
+        }
+        const webhookAuthReasonCounts: Record<string, number> = {};
+        for (const row of webhookAuthReasonRows) {
+            webhookAuthReasonCounts[row.reason] = Number(row.value || 0);
+        }
+        const webhookAuthOutcomeCounts: Record<string, number> = {};
+        for (const row of webhookAuthOutcomeRows) {
+            webhookAuthOutcomeCounts[row.outcome] = Number(row.value || 0);
+        }
 
         const delivered = deliveryStatusCounts.delivered || 0;
         const failed = (deliveryStatusCounts.failed || 0) + (deliveryStatusCounts.dead_letter || 0);
         const denominator = delivered + failed;
+        const webhookAuthFailures = Number(webhookAuthFailuresCountRow?.value || 0);
+        const webhookAuthDenominator = webhookAuthFailures + Number(webhookEventsCountRow?.value || 0);
+        const webhookAuthFailureRatePct =
+            webhookAuthDenominator > 0 ? Math.round((webhookAuthFailures / webhookAuthDenominator) * 100) : 0;
 
         return {
             totals: {
@@ -1151,6 +1286,8 @@ export const integrationsRepository = {
                 issueLinks: Number(issueLinksCountRow?.value || 0),
                 deliveries: Number(deliveriesCountRow?.value || 0),
                 webhookEvents: Number(webhookEventsCountRow?.value || 0),
+                webhookAuthFailures,
+                webhookAuthConfigErrors: webhookAuthOutcomeCounts.config_error || 0,
                 issueSyncAttempts: Number(issueSyncAttemptsCountRow?.value || 0),
                 pending: deliveryStatusCounts.pending || 0,
                 retrying: deliveryStatusCounts.retrying || 0,
@@ -1167,6 +1304,11 @@ export const integrationsRepository = {
                 issueSyncDeadLetter: issueSyncStatusCounts.dead_letter || 0,
             },
             providers: providerCounts,
+            webhookAuth: {
+                failuresByProvider: webhookAuthProviderCounts,
+                failuresByReason: webhookAuthReasonCounts,
+                failureRatePct: webhookAuthFailureRatePct,
+            },
             retryQueue: {
                 notificationQueued: Number(notificationRetryQueueRows[0]?.value || 0),
                 webhookQueued: Number(webhookRetryQueueRows[0]?.value || 0),
@@ -1184,6 +1326,9 @@ export const integrationsRepository = {
         repoId?: string;
         minSuccessRatePct?: number;
         maxRetryQueueAgeSeconds?: number;
+        webhookAuthWindowMinutes?: number;
+        maxWebhookAuthFailures?: number;
+        maxWebhookAuthFailureRatePct?: number;
     } = {}) {
         const minSuccessRatePct = clampInteger(
             Number(input.minSuccessRatePct ?? DEFAULT_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT),
@@ -1195,9 +1340,56 @@ export const integrationsRepository = {
             30,
             86_400
         );
+        const webhookAuthWindowMinutes = clampInteger(
+            Number(input.webhookAuthWindowMinutes ?? DEFAULT_WEBHOOK_AUTH_ALERT_WINDOW_MINUTES),
+            5,
+            1_440
+        );
+        const maxWebhookAuthFailures = clampInteger(
+            Number(input.maxWebhookAuthFailures ?? DEFAULT_WEBHOOK_AUTH_ALERT_MAX_FAILURES),
+            0,
+            100_000
+        );
+        const maxWebhookAuthFailureRatePct = clampInteger(
+            Number(input.maxWebhookAuthFailureRatePct ?? DEFAULT_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT),
+            0,
+            100
+        );
 
         const metrics = await this.metrics(input.repoId);
         const now = new Date();
+        const webhookAuthWindowStart = new Date(now.getTime() - webhookAuthWindowMinutes * 60_000);
+        const webhookAuthRecentConditions = [gte(integrationWebhookAuthEvents.createdAt, webhookAuthWindowStart)];
+        const webhookIngestionRecentConditions = [gte(integrationWebhookEvents.createdAt, webhookAuthWindowStart)];
+        if (input.repoId) {
+            webhookAuthRecentConditions.push(eq(integrationWebhookAuthEvents.repoId, input.repoId));
+            webhookIngestionRecentConditions.push(eq(integrationWebhookEvents.repoId, input.repoId));
+        }
+        const [webhookAuthRecentCountRow] = await db
+            .select({ value: count() })
+            .from(integrationWebhookAuthEvents)
+            .where(and(...webhookAuthRecentConditions));
+        const [webhookIngestionRecentCountRow] = await db
+            .select({ value: count() })
+            .from(integrationWebhookEvents)
+            .where(and(...webhookIngestionRecentConditions));
+        const [webhookAuthRecentConfigErrorRow] = await db
+            .select({ value: count() })
+            .from(integrationWebhookAuthEvents)
+            .where(
+                and(
+                    ...webhookAuthRecentConditions,
+                    eq(integrationWebhookAuthEvents.outcome, "config_error")
+                )
+            );
+        const webhookAuthRecentFailures = Number(webhookAuthRecentCountRow?.value || 0);
+        const webhookIngestionRecent = Number(webhookIngestionRecentCountRow?.value || 0);
+        const webhookAuthRecentDenominator = webhookAuthRecentFailures + webhookIngestionRecent;
+        const webhookAuthRecentFailureRatePct =
+            webhookAuthRecentDenominator > 0
+                ? Math.round((webhookAuthRecentFailures / webhookAuthRecentDenominator) * 100)
+                : 0;
+        const webhookAuthRecentConfigErrors = Number(webhookAuthRecentConfigErrorRow?.value || 0);
         const alerts: Array<{
             code: string;
             severity: IntegrationAlertSeverity;
@@ -1242,6 +1434,33 @@ export const integrationsRepository = {
                 threshold: minSuccessRatePct,
             });
         }
+        if (webhookAuthRecentFailures > maxWebhookAuthFailures) {
+            alerts.push({
+                code: "webhook_auth_failures_high",
+                severity: "warning",
+                message: "Webhook auth failure count is above threshold.",
+                value: webhookAuthRecentFailures,
+                threshold: maxWebhookAuthFailures,
+            });
+        }
+        if (webhookAuthRecentFailureRatePct > maxWebhookAuthFailureRatePct) {
+            alerts.push({
+                code: "webhook_auth_failure_rate_high",
+                severity: "warning",
+                message: "Webhook auth failure rate is above threshold.",
+                value: webhookAuthRecentFailureRatePct,
+                threshold: maxWebhookAuthFailureRatePct,
+            });
+        }
+        if (webhookAuthRecentConfigErrors > 0) {
+            alerts.push({
+                code: "webhook_auth_config_error",
+                severity: "critical",
+                message: "Webhook auth configuration errors detected.",
+                value: webhookAuthRecentConfigErrors,
+                threshold: 0,
+            });
+        }
 
         const oldestNotificationRetryAgeSeconds = retryAgeSeconds(now, metrics.retryQueue.oldestNotificationDueAt);
         if (
@@ -1283,10 +1502,20 @@ export const integrationsRepository = {
             thresholds: {
                 minSuccessRatePct,
                 maxRetryQueueAgeSeconds,
+                webhookAuthWindowMinutes,
+                maxWebhookAuthFailures,
+                maxWebhookAuthFailureRatePct,
             },
             queueAges: {
                 oldestNotificationRetryAgeSeconds,
                 oldestWebhookRetryAgeSeconds,
+            },
+            webhookAuthWindow: {
+                startAt: webhookAuthWindowStart.toISOString(),
+                failures: webhookAuthRecentFailures,
+                ingested: webhookIngestionRecent,
+                failureRatePct: webhookAuthRecentFailureRatePct,
+                configErrors: webhookAuthRecentConfigErrors,
             },
             generatedAt: now.toISOString(),
         };

@@ -58,6 +58,10 @@ export const integrationWebhookStatusEnum = pgEnum("integration_webhook_status",
     "dead_letter",
 ]);
 export const issueLinkSyncStatusEnum = pgEnum("issue_link_sync_status", ["pending", "synced", "failed", "dead_letter"]);
+export const integrationWebhookAuthOutcomeEnum = pgEnum("integration_webhook_auth_outcome", [
+    "rejected",
+    "config_error",
+]);
 
 // ============================================================================
 // USERS & ORGANIZATIONS
@@ -514,6 +518,27 @@ export const integrationWebhookEvents = pgTable("integration_webhook_events", {
     correlationUniqueIdx: uniqueIndex("integration_webhook_events_correlation_unique_idx").on(table.correlationId),
 }));
 
+export const integrationWebhookAuthEvents = pgTable("integration_webhook_auth_events", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: integrationProviderEnum("provider").notNull(),
+    repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "set null" }),
+    eventType: text("event_type").notNull(),
+    externalEventId: text("external_event_id").notNull(),
+    outcome: integrationWebhookAuthOutcomeEnum("outcome").default("rejected").notNull(),
+    reason: text("reason").notNull(),
+    statusCode: integer("status_code").notNull(),
+    signaturePresent: boolean("signature_present").default(false).notNull(),
+    timestampPresent: boolean("timestamp_present").default(false).notNull(),
+    requestTimestamp: timestamp("request_timestamp"),
+    requestSkewSeconds: integer("request_skew_seconds"),
+    details: jsonb("details").default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    providerCreatedIdx: index("integration_webhook_auth_events_provider_created_idx").on(table.provider, table.createdAt),
+    reasonCreatedIdx: index("integration_webhook_auth_events_reason_created_idx").on(table.reason, table.createdAt),
+    repoCreatedIdx: index("integration_webhook_auth_events_repo_created_idx").on(table.repoId, table.createdAt),
+}));
+
 export const issueLinkSyncEvents = pgTable("issue_link_sync_events", {
     id: uuid("id").primaryKey().defaultRandom(),
     issueLinkId: uuid("issue_link_id").notNull().references(() => issueLinks.id, { onDelete: "cascade" }),
@@ -648,6 +673,7 @@ export const repositoriesRelations = relations(repositories, ({ one, many }) => 
     issueLinks: many(issueLinks),
     notificationDeliveries: many(notificationDeliveries),
     integrationWebhookEvents: many(integrationWebhookEvents),
+    integrationWebhookAuthEvents: many(integrationWebhookAuthEvents),
 }));
 
 export const stacksRelations = relations(stacks, ({ one, many }) => ({
@@ -841,6 +867,13 @@ export const notificationDeliveryAttemptsRelations = relations(notificationDeliv
 export const integrationWebhookEventsRelations = relations(integrationWebhookEvents, ({ one }) => ({
     repository: one(repositories, {
         fields: [integrationWebhookEvents.repoId],
+        references: [repositories.id],
+    }),
+}));
+
+export const integrationWebhookAuthEventsRelations = relations(integrationWebhookAuthEvents, ({ one }) => ({
+    repository: one(repositories, {
+        fields: [integrationWebhookAuthEvents.repoId],
         references: [repositories.id],
     }),
 }));

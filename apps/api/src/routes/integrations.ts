@@ -147,10 +147,34 @@ const alertsSchema = z.object({
     repoId: z.string().optional(),
     minSuccessRatePct: z.coerce.number().min(1).max(100).optional(),
     maxRetryQueueAgeSeconds: z.coerce.number().int().min(30).max(86_400).optional(),
+    webhookAuthWindowMinutes: z.coerce.number().int().min(5).max(1_440).optional(),
+    maxWebhookAuthFailures: z.coerce.number().int().min(0).max(100_000).optional(),
+    maxWebhookAuthFailureRatePct: z.coerce.number().min(0).max(100).optional(),
 });
 
 function details(error: unknown): string {
     return integrationsRepository.errorMessage(error);
+}
+
+async function recordWebhookAuthFailure(input: {
+    provider: "slack" | "linear" | "jira";
+    repoId?: string;
+    eventType: string;
+    externalEventId: string;
+    outcome?: "rejected" | "config_error";
+    reason: string;
+    statusCode: number;
+    signaturePresent?: boolean;
+    timestampPresent?: boolean;
+    requestTimestampSeconds?: number;
+    requestSkewSeconds?: number;
+    details?: Record<string, unknown>;
+}) {
+    try {
+        await integrationsRepository.recordWebhookAuthFailure(input);
+    } catch {
+        // Best effort: rejection response should not depend on auth-event telemetry persistence.
+    }
 }
 
 integrationsRouter.get("/connections", zValidator("query", listConnectionsSchema), async (c) => {
@@ -374,6 +398,22 @@ integrationsRouter.post("/webhooks/provider/:provider", zValidator("json", inges
             timestampHeader: timestamp,
         });
         if (!verified.ok) {
+            await recordWebhookAuthFailure({
+                provider: verification.data,
+                repoId: body.repoId,
+                eventType: body.eventType,
+                externalEventId: body.externalEventId,
+                outcome: verified.reason === "missing_secret" ? "config_error" : "rejected",
+                reason: verified.reason,
+                statusCode: verified.status,
+                signaturePresent: verified.metadata.signaturePresent,
+                timestampPresent: verified.metadata.timestampPresent,
+                requestTimestampSeconds: verified.metadata.parsedTimestampSeconds,
+                requestSkewSeconds: verified.metadata.requestSkewSeconds,
+                details: {
+                    route: "integrations.webhooks.provider",
+                },
+            });
             return c.json(
                 {
                     error:
@@ -478,6 +518,22 @@ integrationsRouter.post("/slack/actions", zValidator("json", slackActionSchema),
         timestampHeader: timestamp,
     });
     if (!verified.ok) {
+        await recordWebhookAuthFailure({
+            provider: "slack",
+            repoId: body.repoId,
+            eventType: `slack.action.${body.actionType}`,
+            externalEventId: body.externalEventId,
+            outcome: verified.reason === "missing_secret" ? "config_error" : "rejected",
+            reason: verified.reason,
+            statusCode: verified.status,
+            signaturePresent: verified.metadata.signaturePresent,
+            timestampPresent: verified.metadata.timestampPresent,
+            requestTimestampSeconds: verified.metadata.parsedTimestampSeconds,
+            requestSkewSeconds: verified.metadata.requestSkewSeconds,
+            details: {
+                route: "integrations.slack.actions",
+            },
+        });
         return c.json(
             {
                 error:

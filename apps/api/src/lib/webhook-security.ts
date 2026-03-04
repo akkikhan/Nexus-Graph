@@ -3,12 +3,18 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 type IntegrationWebhookProvider = "slack" | "linear" | "jira";
 
 type VerificationFailureReason =
-    | "signature_not_required"
     | "missing_signature_headers"
     | "invalid_timestamp"
     | "timestamp_out_of_window"
     | "missing_secret"
     | "invalid_signature";
+
+type VerificationMetadata = {
+    signaturePresent: boolean;
+    timestampPresent: boolean;
+    parsedTimestampSeconds?: number;
+    requestSkewSeconds?: number;
+};
 
 type VerificationResult =
     | {
@@ -20,6 +26,7 @@ type VerificationResult =
           ok: false;
           status: 401 | 503;
           reason: VerificationFailureReason;
+          metadata: VerificationMetadata;
       };
 
 const PROVIDER_SECRET_ENV: Record<IntegrationWebhookProvider, string> = {
@@ -105,20 +112,26 @@ export function verifyIntegrationWebhookSignature(input: {
         signature: input.signatureHeader,
         timestamp: input.timestampHeader,
     });
+    const metadata: VerificationMetadata = {
+        signaturePresent: Boolean(headers.signature),
+        timestampPresent: Boolean(headers.timestamp),
+    };
     if (!headers.signature || !headers.timestamp) {
-        return { ok: false, status: 401, reason: "missing_signature_headers" };
+        return { ok: false, status: 401, reason: "missing_signature_headers", metadata };
     }
 
     const timestampSeconds = parseTimestampSeconds(headers.timestamp);
-    if (!timestampSeconds) return { ok: false, status: 401, reason: "invalid_timestamp" };
+    if (!timestampSeconds) return { ok: false, status: 401, reason: "invalid_timestamp", metadata };
+    metadata.parsedTimestampSeconds = timestampSeconds;
 
     const nowSeconds = Math.floor(Date.now() / 1000);
+    metadata.requestSkewSeconds = nowSeconds - timestampSeconds;
     if (Math.abs(nowSeconds - timestampSeconds) > SIGNATURE_TOLERANCE_SECONDS) {
-        return { ok: false, status: 401, reason: "timestamp_out_of_window" };
+        return { ok: false, status: 401, reason: "timestamp_out_of_window", metadata };
     }
 
     const secretConfig = resolveSigningSecret(input.provider);
-    if (!secretConfig) return { ok: false, status: 503, reason: "missing_secret" };
+    if (!secretConfig) return { ok: false, status: 503, reason: "missing_secret", metadata };
 
     const payloadHash = createHash("sha256").update(stableStringify(input.body), "utf8").digest("hex");
     const canonical = [
@@ -131,7 +144,7 @@ export function verifyIntegrationWebhookSignature(input: {
     const expectedSignature = `v1=${createHmac("sha256", secretConfig.secret).update(canonical, "utf8").digest("hex")}`;
     const valid = verifySignature(expectedSignature, headers.signature);
 
-    if (!valid) return { ok: false, status: 401, reason: "invalid_signature" };
+    if (!valid) return { ok: false, status: 401, reason: "invalid_signature", metadata };
     return {
         ok: true,
         timestampSeconds,

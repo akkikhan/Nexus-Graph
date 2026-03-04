@@ -50,6 +50,13 @@
       "when": 1772634750400,
       "tag": "0006_thick_steve_rogers",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1772635990419,
+      "tag": "0007_daily_captain_marvel",
+      "breakpoints": true
     }
   ]
 }
