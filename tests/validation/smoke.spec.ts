@@ -319,6 +319,7 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
 
     await page.route("**/api/v1/integrations/webhook-auth-events**", async (route) => {
         const url = new URL(route.request().url());
+        const isExport = url.pathname.endsWith("/webhook-auth-events/export");
         const provider = url.searchParams.get("provider");
         const reason = url.searchParams.get("reason");
         const events = [
@@ -351,6 +352,37 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
             if (reason && !event.reason.includes(reason)) return false;
             return true;
         });
+
+        if (isExport) {
+            const format = (url.searchParams.get("format") || "json").toLowerCase();
+            if (format === "csv") {
+                const csv = [
+                    "\"id\",\"provider\",\"outcome\",\"reason\",\"statusCode\"",
+                    ...events.map(
+                        (event) =>
+                            `"${event.id}","${event.provider}","${event.outcome}","${event.reason}","${event.statusCode}"`
+                    ),
+                ].join("\n");
+                await route.fulfill({
+                    status: 200,
+                    headers: {
+                        "content-type": "text/csv; charset=utf-8",
+                        "content-disposition": "attachment; filename=\"nexus-webhook-auth-events-smoke.csv\"",
+                    },
+                    body: csv,
+                });
+                return;
+            }
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    "content-type": "application/json; charset=utf-8",
+                    "content-disposition": "attachment; filename=\"nexus-webhook-auth-events-smoke.json\"",
+                },
+                body: JSON.stringify(events),
+            });
+            return;
+        }
 
         await route.fulfill(
             jsonResponse(200, {

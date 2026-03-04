@@ -414,6 +414,8 @@ export interface IntegrationWebhookAuthEventsResponse {
     offset: number;
 }
 
+export type IntegrationWebhookAuthEventExportFormat = "json" | "csv";
+
 export async function fetchIntegrationWebhookAuthEvents(
     options: IntegrationWebhookAuthEventListOptions = {}
 ): Promise<IntegrationWebhookAuthEventsResponse> {
@@ -428,4 +430,51 @@ export async function fetchIntegrationWebhookAuthEvents(
     const query = params.toString();
     const res = await fetch(`${API_BASE_URL}/integrations/webhook-auth-events${query ? `?${query}` : ""}`);
     return parseResponse<IntegrationWebhookAuthEventsResponse>(res, "Failed to fetch webhook auth events");
+}
+
+function parseContentDispositionFilename(header: string | null, fallback: string): string {
+    if (!header) return fallback;
+    const encodedMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
+    if (encodedMatch?.[1]) {
+        try {
+            return decodeURIComponent(encodedMatch[1]);
+        } catch {
+            // Fall through to plain filename parsing.
+        }
+    }
+    const plainMatch = header.match(/filename="?([^";]+)"?/i);
+    if (plainMatch?.[1]) return plainMatch[1];
+    return fallback;
+}
+
+export async function exportIntegrationWebhookAuthEvents(
+    options: IntegrationWebhookAuthEventListOptions = {},
+    format: IntegrationWebhookAuthEventExportFormat = "json"
+): Promise<{ blob: Blob; filename: string }> {
+    const params = new URLSearchParams();
+    if (options.provider) params.set("provider", options.provider);
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.outcome) params.set("outcome", options.outcome);
+    if (options.reason) params.set("reason", options.reason);
+    if (typeof options.sinceMinutes === "number") params.set("sinceMinutes", String(options.sinceMinutes));
+    params.set("format", format);
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/webhook-auth-events/export${query ? `?${query}` : ""}`);
+    if (!res.ok) {
+        let payload: any = null;
+        try {
+            payload = await res.json();
+        } catch {
+            // Ignore non-JSON error bodies.
+        }
+        const error = typeof payload?.error === "string" ? payload.error : "";
+        const details = typeof payload?.details === "string" ? payload.details : "";
+        const message = [error, details].filter(Boolean).join(": ");
+        throw new Error(message || "Failed to export webhook auth events");
+    }
+    const blob = await res.blob();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const fallback = `nexus-webhook-auth-events-${stamp}.${format}`;
+    const filename = parseContentDispositionFilename(res.headers.get("content-disposition"), fallback);
+    return { blob, filename };
 }

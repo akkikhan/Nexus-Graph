@@ -69,6 +69,7 @@ Checks:
 - `POST /api/v1/integrations/webhooks/provider/:provider` (durable webhook ingestion with idempotency)
 - `GET /api/v1/integrations/webhooks`
 - `GET /api/v1/integrations/webhook-auth-events` (auth rejection/config-error telemetry listing)
+- `GET /api/v1/integrations/webhook-auth-events/export` (server-side JSON/CSV export of filtered auth-event telemetry)
 - `POST /api/v1/integrations/webhooks/:id/process`
 - `POST /api/v1/integrations/webhooks/retry`
 - `POST /api/v1/integrations/slack/actions` (callback ingestion + processing)
@@ -124,7 +125,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Activity filter switching
 - Insights dashboard load
 - Settings diagnostics panel load (webhook auth events + filter path)
-- Settings diagnostics export controls (JSON/CSV) render and trigger
+- Settings diagnostics export controls (JSON/CSV) render and trigger server-side export requests
 
 Prerequisite:
 

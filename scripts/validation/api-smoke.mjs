@@ -1170,6 +1170,35 @@ async function run() {
                 "webhook auth events list must include timestamp_out_of_window rejection"
             );
 
+            const exportWebhookAuthEventsJson = await request(
+                `/api/v1/integrations/webhook-auth-events/export?repoId=${encodeURIComponent(firstRepoId)}&sinceMinutes=60&format=json`
+            );
+            printResult("GET /api/v1/integrations/webhook-auth-events/export?format=json", exportWebhookAuthEventsJson);
+            assert(exportWebhookAuthEventsJson.response.status === 200, "webhook auth events json export must return 200");
+            assert(
+                Array.isArray(exportWebhookAuthEventsJson.payload),
+                "webhook auth events json export must return a JSON array payload"
+            );
+            assert(
+                exportWebhookAuthEventsJson.response.headers.get("content-disposition")?.includes("attachment"),
+                "webhook auth events json export should set attachment content-disposition"
+            );
+
+            const exportWebhookAuthEventsCsv = await request(
+                `/api/v1/integrations/webhook-auth-events/export?repoId=${encodeURIComponent(firstRepoId)}&sinceMinutes=60&format=csv`
+            );
+            printResult("GET /api/v1/integrations/webhook-auth-events/export?format=csv", exportWebhookAuthEventsCsv);
+            assert(exportWebhookAuthEventsCsv.response.status === 200, "webhook auth events csv export must return 200");
+            assert(
+                String(exportWebhookAuthEventsCsv.response.headers.get("content-type") || "").includes("text/csv"),
+                "webhook auth events csv export should return text/csv content type"
+            );
+            assert(
+                typeof exportWebhookAuthEventsCsv.payload === "string" &&
+                    exportWebhookAuthEventsCsv.payload.includes("missing_signature_headers"),
+                "webhook auth events csv export should include expected rejection rows"
+            );
+
             const syncIssueLinkFail = await request(`/api/v1/integrations/issue-links/${issueLinkId}/sync`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },

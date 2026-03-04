@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import {
     IntegrationWebhookAuthEventListOptions,
+    exportIntegrationWebhookAuthEvents,
     fetchIntegrationWebhookAuthEvents,
     fetchSystemHealth,
     IntegrationWebhookAuthEvent,
@@ -242,48 +243,6 @@ function formatAuthTimestamp(value: string): string {
     return date.toLocaleString();
 }
 
-function buildCsv(events: IntegrationWebhookAuthEvent[]): string {
-    const headers = [
-        "id",
-        "provider",
-        "outcome",
-        "reason",
-        "statusCode",
-        "signaturePresent",
-        "timestampPresent",
-        "eventType",
-        "externalEventId",
-        "repoId",
-        "requestTimestamp",
-        "requestSkewSeconds",
-        "createdAt",
-    ];
-
-    const escapeCell = (value: unknown): string => {
-        const raw = value === undefined || value === null ? "" : String(value);
-        return `"${raw.replace(/"/g, "\"\"")}"`;
-    };
-
-    const rows = events.map((event) => [
-        event.id,
-        event.provider,
-        event.outcome,
-        event.reason,
-        event.statusCode,
-        event.signaturePresent,
-        event.timestampPresent,
-        event.eventType,
-        event.externalEventId,
-        event.repoId || "",
-        event.requestTimestamp || "",
-        event.requestSkewSeconds ?? "",
-        event.createdAt,
-    ]);
-
-    const lines = [headers, ...rows].map((row) => row.map((cell) => escapeCell(cell)).join(","));
-    return lines.join("\n");
-}
-
 export default function SettingsPage() {
     const [values, setValues] = useState(initialValues);
     const [saveMessage, setSaveMessage] = useState<string>("");
@@ -404,29 +363,7 @@ export default function SettingsPage() {
         setAuthPage(0);
     };
 
-    const fetchAllAuthEventsForExport = async (): Promise<IntegrationWebhookAuthEvent[]> => {
-        const pageSize = 200;
-        const maxPages = 25;
-        const allEvents: IntegrationWebhookAuthEvent[] = [];
-
-        for (let page = 0; page < maxPages; page += 1) {
-            const offset = page * pageSize;
-            const response = await fetchIntegrationWebhookAuthEvents({
-                ...diagnosticsQuery,
-                limit: pageSize,
-                offset,
-            });
-
-            if (!Array.isArray(response.events) || response.events.length === 0) break;
-            allEvents.push(...response.events);
-            if (response.events.length < pageSize) break;
-        }
-
-        return allEvents;
-    };
-
-    const downloadBlob = (filename: string, data: string, contentType: string) => {
-        const blob = new Blob([data], { type: contentType });
+    const downloadBlob = (filename: string, blob: Blob) => {
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = url;
@@ -441,21 +378,8 @@ export default function SettingsPage() {
         setExportError("");
         setExportingFormat(format);
         try {
-            const events = await fetchAllAuthEventsForExport();
-            const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-            if (format === "json") {
-                downloadBlob(
-                    `nexus-webhook-auth-events-${stamp}.json`,
-                    JSON.stringify(events, null, 2),
-                    "application/json"
-                );
-            } else {
-                downloadBlob(
-                    `nexus-webhook-auth-events-${stamp}.csv`,
-                    buildCsv(events),
-                    "text/csv;charset=utf-8"
-                );
-            }
+            const { blob, filename } = await exportIntegrationWebhookAuthEvents(diagnosticsQuery, format);
+            downloadBlob(filename, blob);
         } catch (error) {
             setExportError((error as Error).message || "Failed to export diagnostics.");
         } finally {

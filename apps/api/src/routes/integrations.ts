@@ -119,6 +119,16 @@ const listWebhookAuthEventsSchema = z.object({
     offset: z.coerce.number().int().min(0).default(0),
 });
 
+const exportWebhookAuthEventsSchema = z.object({
+    provider: providerSchema.optional(),
+    repoId: z.string().optional(),
+    outcome: webhookAuthOutcomeSchema.optional(),
+    reason: z.string().optional(),
+    sinceMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
+    format: z.enum(["json", "csv"]).default("json"),
+    maxRows: z.coerce.number().int().min(1).max(5_000).default(5_000),
+});
+
 const ingestWebhookSchema = z.object({
     eventType: z.string().min(1),
     externalEventId: z.string().min(1),
@@ -165,6 +175,61 @@ const alertsSchema = z.object({
 
 function details(error: unknown): string {
     return integrationsRepository.errorMessage(error);
+}
+
+type WebhookAuthEventExportRow = {
+    id: string;
+    provider: "slack" | "linear" | "jira";
+    outcome: "rejected" | "config_error";
+    reason: string;
+    statusCode: number;
+    signaturePresent: boolean;
+    timestampPresent: boolean;
+    eventType: string;
+    externalEventId: string;
+    repoId?: string;
+    requestTimestamp?: string;
+    requestSkewSeconds?: number;
+    createdAt: string;
+};
+
+function buildWebhookAuthEventsCsv(events: WebhookAuthEventExportRow[]): string {
+    const headers = [
+        "id",
+        "provider",
+        "outcome",
+        "reason",
+        "statusCode",
+        "signaturePresent",
+        "timestampPresent",
+        "eventType",
+        "externalEventId",
+        "repoId",
+        "requestTimestamp",
+        "requestSkewSeconds",
+        "createdAt",
+    ];
+    const escapeCell = (value: unknown): string => {
+        const raw = value === undefined || value === null ? "" : String(value);
+        return `"${raw.replace(/"/g, "\"\"")}"`;
+    };
+    const rows = events.map((event) => [
+        event.id,
+        event.provider,
+        event.outcome,
+        event.reason,
+        event.statusCode,
+        event.signaturePresent,
+        event.timestampPresent,
+        event.eventType,
+        event.externalEventId,
+        event.repoId || "",
+        event.requestTimestamp || "",
+        event.requestSkewSeconds ?? "",
+        event.createdAt,
+    ]);
+    const lines = [headers, ...rows].map((row) => row.map((cell) => escapeCell(cell)).join(","));
+    return lines.join("\n");
 }
 
 async function recordWebhookAuthFailure(input: {
@@ -407,6 +472,57 @@ integrationsRouter.get("/webhook-auth-events", zValidator("query", listWebhookAu
         return c.json(
             {
                 error: "Database unavailable for integration webhook auth-event listing",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/webhook-auth-events/export", zValidator("query", exportWebhookAuthEventsSchema), async (c) => {
+    const query = c.req.valid("query");
+    const events: WebhookAuthEventExportRow[] = [];
+    const pageSize = 200;
+    let offset = 0;
+    try {
+        while (events.length < query.maxRows) {
+            const batchLimit = Math.min(pageSize, query.maxRows - events.length);
+            const batch = await integrationsRepository.listWebhookAuthEvents({
+                provider: query.provider,
+                repoId: query.repoId,
+                outcome: query.outcome,
+                reason: query.reason,
+                sinceMinutes: query.sinceMinutes,
+                limit: batchLimit,
+                offset,
+            });
+            if (batch.length === 0) break;
+            events.push(...(batch as WebhookAuthEventExportRow[]));
+            if (batch.length < batchLimit) break;
+            offset += batch.length;
+        }
+
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const commonHeaders = {
+            "cache-control": "no-store",
+        };
+        if (query.format === "csv") {
+            const csv = buildWebhookAuthEventsCsv(events);
+            return c.body(csv, 200, {
+                ...commonHeaders,
+                "content-type": "text/csv; charset=utf-8",
+                "content-disposition": `attachment; filename=\"nexus-webhook-auth-events-${stamp}.csv\"`,
+            });
+        }
+        return c.body(JSON.stringify(events, null, 2), 200, {
+            ...commonHeaders,
+            "content-type": "application/json; charset=utf-8",
+            "content-disposition": `attachment; filename=\"nexus-webhook-auth-events-${stamp}.json\"`,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration webhook auth-event export",
                 details: details(error),
             },
             503
