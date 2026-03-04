@@ -5,6 +5,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import { reviewRepository } from "../repositories/review.js";
 
 const reviewRouter = new Hono();
 
@@ -13,6 +14,7 @@ const createReviewSchema = z.object({
     prId: z.string(),
     action: z.enum(["approve", "request_changes", "comment"]),
     body: z.string().optional(),
+    userId: z.string().optional(),
     comments: z
         .array(
             z.object({
@@ -30,70 +32,36 @@ const commentSchema = z.object({
     body: z.string(),
     path: z.string().optional(),
     line: z.number().optional(),
+    side: z.enum(["LEFT", "RIGHT"]).optional(),
+    userId: z.string().optional(),
     replyTo: z.string().optional(),
 });
 
-// Routes
+const pendingSchema = z.object({
+    limit: z.coerce.number().min(1).max(100).default(20),
+});
+
+function details(error: unknown): string {
+    return reviewRepository.errorMessage(error);
+}
 
 /**
  * GET /reviews/pr/:prId - Get reviews for a PR
  */
 reviewRouter.get("/pr/:prId", async (c) => {
     const prId = c.req.param("prId");
-
-    const mockReviews = [
-        {
-            id: "review-1",
-            prId,
-            author: { username: "reviewer1", avatar: "" },
-            action: "comment",
-            body: "Looks good overall, just a few suggestions",
-            comments: [
-                {
-                    id: "comment-1",
-                    path: "src/auth/login.ts",
-                    line: 42,
-                    body: "Consider adding rate limiting here",
-                },
-            ],
-            isAI: false,
-            createdAt: new Date().toISOString(),
-        },
-        {
-            id: "review-ai-1",
-            prId,
-            author: { username: "NEXUS AI", avatar: "" },
-            action: "comment",
-            body: "AI Analysis Complete",
-            comments: [
-                {
-                    id: "ai-comment-1",
-                    path: "src/auth/jwt.ts",
-                    line: 15,
-                    body: "⚠️ SECURITY: Consider using a stronger algorithm than HS256",
-                    severity: "warning",
-                    category: "security",
-                },
-                {
-                    id: "ai-comment-2",
-                    path: "src/auth/login.ts",
-                    line: 67,
-                    body: "🔍 This error message may leak implementation details",
-                    severity: "info",
-                    category: "security",
-                },
-            ],
-            isAI: true,
-            aiMetadata: {
-                model: "claude-sonnet-4-20250514",
-                confidence: 0.89,
-                processingTimeMs: 2340,
+    try {
+        const reviews = await reviewRepository.listByPR(prId);
+        return c.json({ reviews });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for review listing",
+                details: details(error),
             },
-            createdAt: new Date().toISOString(),
-        },
-    ];
-
-    return c.json({ reviews: mockReviews });
+            503
+        );
+    }
 });
 
 /**
@@ -102,20 +70,26 @@ reviewRouter.get("/pr/:prId", async (c) => {
 reviewRouter.post("/", zValidator("json", createReviewSchema), async (c) => {
     const body = c.req.valid("json");
 
-    const review = {
-        id: `review-${Date.now()}`,
-        ...body,
-        author: { username: "current-user" }, // Would come from auth
-        createdAt: new Date().toISOString(),
-    };
+    try {
+        const prExists = await reviewRepository.pullRequestExists(body.prId);
+        if (!prExists) {
+            return c.json({ error: "Pull request not found" }, 404);
+        }
 
-    // In production:
-    // 1. Save to database
-    // 2. Post to GitHub/GitLab
-    // 3. Update PR status
-    // 4. Send notifications
-
-    return c.json({ review }, 201);
+        const review = await reviewRepository.create(body);
+        if (!review) {
+            return c.json({ error: "Failed to create review" }, 500);
+        }
+        return c.json({ review }, 201);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for review creation",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -124,14 +98,26 @@ reviewRouter.post("/", zValidator("json", createReviewSchema), async (c) => {
 reviewRouter.post("/comment", zValidator("json", commentSchema), async (c) => {
     const body = c.req.valid("json");
 
-    const comment = {
-        id: `comment-${Date.now()}`,
-        ...body,
-        author: { username: "current-user" },
-        createdAt: new Date().toISOString(),
-    };
+    try {
+        const prExists = await reviewRepository.pullRequestExists(body.prId);
+        if (!prExists) {
+            return c.json({ error: "Pull request not found" }, 404);
+        }
 
-    return c.json({ comment }, 201);
+        const comment = await reviewRepository.addComment(body);
+        if (!comment) {
+            return c.json({ error: "Failed to create comment" }, 500);
+        }
+        return c.json({ comment }, 201);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for comment creation",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -140,44 +126,45 @@ reviewRouter.post("/comment", zValidator("json", commentSchema), async (c) => {
 reviewRouter.post("/:id/resolve", async (c) => {
     const id = c.req.param("id");
 
-    return c.json({
-        success: true,
-        comment: {
-            id,
-            resolved: true,
-            resolvedAt: new Date().toISOString(),
-        },
-    });
+    try {
+        const comment = await reviewRepository.resolveComment(id);
+        if (!comment) {
+            return c.json({ error: "Comment not found" }, 404);
+        }
+        return c.json({
+            success: true,
+            comment,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for comment resolution",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 /**
  * GET /reviews/pending - Get PRs awaiting your review
  */
-reviewRouter.get("/pending", async (c) => {
-    const mockPending = [
-        {
-            prId: "pr-123",
-            prNumber: 123,
-            prTitle: "Add user authentication",
-            repository: { name: "nexus/platform" },
-            author: { username: "johndoe" },
-            requestedAt: new Date().toISOString(),
-            urgency: "high",
-            riskScore: 72,
-        },
-        {
-            prId: "pr-124",
-            prNumber: 124,
-            prTitle: "Update dependencies",
-            repository: { name: "nexus/platform" },
-            author: { username: "dependabot" },
-            requestedAt: new Date().toISOString(),
-            urgency: "low",
-            riskScore: 15,
-        },
-    ];
+reviewRouter.get("/pending", zValidator("query", pendingSchema), async (c) => {
+    const query = c.req.valid("query");
 
-    return c.json({ pending: mockPending });
+    try {
+        const pending = await reviewRepository.pending(query.limit);
+        return c.json({ pending });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for pending reviews",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 export { reviewRouter };
+

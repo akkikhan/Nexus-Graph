@@ -41,6 +41,16 @@ Checks:
 - `GET /api/v1/activity?limit=5`
 - `GET /api/v1/insights/dashboard`
 - `GET /api/v1/queue`
+- `POST /api/v1/queue/pause` + `GET /api/v1/queue` state assertion
+- `POST /api/v1/queue/resume`
+- `POST /api/v1/queue/turbo` + `GET /api/v1/queue` state assertion
+- `POST /api/v1/queue/:id/retry` (when active item exists)
+- `DELETE /api/v1/queue/:id` (when active item exists)
+- `GET /api/v1/reviews/pr/:prId` (using first PR from list)
+- `POST /api/v1/reviews`
+- `POST /api/v1/reviews/comment`
+- `POST /api/v1/reviews/:id/resolve` (using newly created comment)
+- `GET /api/v1/reviews/pending?limit=5`
 
 Degraded-mode behavior:
 

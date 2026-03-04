@@ -140,8 +140,10 @@ async function run() {
         const prs = await request("/api/v1/prs?limit=5");
         printResult("GET /api/v1/prs?limit=5", prs);
         assert(allowStatus("prs", prs.response.status, 200), "prs endpoint status mismatch");
+        let firstPrId = null;
         if (prs.response.status === 200) {
             assert(prs.payload && Array.isArray(prs.payload.prs), "prs payload must include prs[]");
+            firstPrId = prs.payload.prs[0]?.id || null;
         } else {
             assertErrorPayload("prs", prs.payload);
         }
@@ -181,6 +183,116 @@ async function run() {
         printResult("GET /api/v1/queue", queue);
         assert(queue.response.status === 200, "queue must return 200");
         assert(queue.payload && Array.isArray(queue.payload.active), "queue payload must include active[]");
+        assert(
+            queue.payload && queue.payload.controls && typeof queue.payload.controls.paused === "boolean",
+            "queue payload must include controls.paused"
+        );
+        assert(
+            queue.payload && queue.payload.controls && typeof queue.payload.controls.turbo === "boolean",
+            "queue payload must include controls.turbo"
+        );
+
+        const pause = await request("/api/v1/queue/pause", { method: "POST" });
+        printResult("POST /api/v1/queue/pause", pause);
+        assert(pause.response.status === 200, "queue pause must return 200");
+        assert(pause.payload?.paused === true, "queue pause must set paused=true");
+
+        const queuePaused = await request("/api/v1/queue");
+        printResult("GET /api/v1/queue (paused)", queuePaused);
+        assert(queuePaused.response.status === 200, "queue (paused) must return 200");
+        assert(queuePaused.payload?.controls?.paused === true, "queue snapshot must reflect paused state");
+
+        const resume = await request("/api/v1/queue/resume", { method: "POST" });
+        printResult("POST /api/v1/queue/resume", resume);
+        assert(resume.response.status === 200, "queue resume must return 200");
+        assert(resume.payload?.paused === false, "queue resume must set paused=false");
+
+        const turboOn = await request("/api/v1/queue/turbo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: true }),
+        });
+        printResult("POST /api/v1/queue/turbo", turboOn);
+        assert(turboOn.response.status === 200, "queue turbo must return 200");
+        assert(turboOn.payload?.turbo === true, "queue turbo must set turbo=true");
+
+        const queueTurbo = await request("/api/v1/queue");
+        printResult("GET /api/v1/queue (turbo)", queueTurbo);
+        assert(queueTurbo.response.status === 200, "queue (turbo) must return 200");
+        assert(queueTurbo.payload?.controls?.turbo === true, "queue snapshot must reflect turbo state");
+
+        const activeQueueId = queueTurbo.payload?.active?.[0]?.id;
+        if (activeQueueId) {
+            const retry = await request(`/api/v1/queue/${activeQueueId}/retry`, {
+                method: "POST",
+            });
+            printResult(`POST /api/v1/queue/${activeQueueId}/retry`, retry);
+            assert(retry.response.status === 200, "queue retry must return 200");
+
+            const remove = await request(`/api/v1/queue/${activeQueueId}`, {
+                method: "DELETE",
+            });
+            printResult(`DELETE /api/v1/queue/${activeQueueId}`, remove);
+            assert(remove.response.status === 200, "queue remove must return 200");
+        }
+
+        if (firstPrId) {
+            const reviews = await request(`/api/v1/reviews/pr/${firstPrId}`);
+            printResult(`GET /api/v1/reviews/pr/${firstPrId}`, reviews);
+            assert(reviews.response.status === 200, "reviews by PR must return 200");
+            assert(reviews.payload && Array.isArray(reviews.payload.reviews), "reviews payload must include reviews[]");
+
+            const createReview = await request("/api/v1/reviews", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    prId: firstPrId,
+                    action: "comment",
+                    body: "Smoke review comment",
+                    comments: [
+                        {
+                            path: "src/auth/middleware.ts",
+                            line: 10,
+                            body: "Looks good, verify edge case.",
+                            side: "RIGHT",
+                        },
+                    ],
+                }),
+            });
+            printResult("POST /api/v1/reviews", createReview);
+            assert(createReview.response.status === 201, "create review must return 201");
+            assert(createReview.payload?.review?.id, "create review must return review.id");
+
+            const createComment = await request("/api/v1/reviews/comment", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    prId: firstPrId,
+                    body: "Smoke inline comment",
+                    path: "src/auth/middleware.ts",
+                    line: 12,
+                    side: "RIGHT",
+                }),
+            });
+            printResult("POST /api/v1/reviews/comment", createComment);
+            assert(createComment.response.status === 201, "create comment must return 201");
+            assert(createComment.payload?.comment?.id, "create comment must return comment.id");
+
+            const commentId = createComment.payload?.comment?.id;
+            if (commentId) {
+                const resolve = await request(`/api/v1/reviews/${commentId}/resolve`, {
+                    method: "POST",
+                });
+                printResult(`POST /api/v1/reviews/${commentId}/resolve`, resolve);
+                assert(resolve.response.status === 200, "resolve comment must return 200");
+                assert(resolve.payload?.success === true, "resolve comment must return success=true");
+            }
+
+            const pending = await request("/api/v1/reviews/pending?limit=5");
+            printResult("GET /api/v1/reviews/pending?limit=5", pending);
+            assert(pending.response.status === 200, "pending reviews must return 200");
+            assert(pending.payload && Array.isArray(pending.payload.pending), "pending payload must include pending[]");
+        }
 
         process.stdout.write("[api-smoke] PASS\n");
     } finally {

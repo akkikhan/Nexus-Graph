@@ -26,6 +26,11 @@ const PR_101_ID = "60000000-0000-4000-8000-000000000101";
 const PR_102_ID = "60000000-0000-4000-8000-000000000102";
 const PR_103_ID = "60000000-0000-4000-8000-000000000103";
 const PR_104_ID = "60000000-0000-4000-8000-000000000104";
+const QUEUE_RUNNING_ID = "70000000-0000-4000-8000-000000000101";
+const QUEUE_PENDING_HIGH_ID = "70000000-0000-4000-8000-000000000102";
+const QUEUE_PENDING_ID = "70000000-0000-4000-8000-000000000103";
+const QUEUE_MERGED_ID = "70000000-0000-4000-8000-000000000104";
+const QUEUE_FAILED_ID = "70000000-0000-4000-8000-000000000105";
 
 function connectionString(): string {
     return (
@@ -242,6 +247,70 @@ async function seed() {
                 riskLevel: "critical",
                 createdAt: new Date("2026-01-11T10:30:00.000Z"),
                 updatedAt: new Date("2026-01-12T14:05:00.000Z"),
+            },
+        ]);
+
+        await db.insert(mergeQueue).values([
+            {
+                id: QUEUE_RUNNING_ID,
+                repoId: REPO_ID,
+                prId: PR_104_ID,
+                position: 1,
+                priority: 0,
+                status: "running",
+                ciStatus: "in_progress",
+                attempts: 1,
+                startedAt: new Date("2026-01-12T14:06:00.000Z"),
+                createdAt: new Date("2026-01-12T14:05:40.000Z"),
+            },
+            {
+                id: QUEUE_PENDING_HIGH_ID,
+                repoId: REPO_ID,
+                prId: PR_101_ID,
+                position: 2,
+                priority: 1,
+                status: "pending",
+                ciStatus: "waiting",
+                attempts: 0,
+                createdAt: new Date("2026-01-12T14:07:00.000Z"),
+            },
+            {
+                id: QUEUE_PENDING_ID,
+                repoId: REPO_ID,
+                prId: PR_103_ID,
+                position: 3,
+                priority: 0,
+                status: "pending",
+                ciStatus: "waiting",
+                attempts: 0,
+                createdAt: new Date("2026-01-12T14:08:00.000Z"),
+            },
+            {
+                id: QUEUE_MERGED_ID,
+                repoId: REPO_ID,
+                prId: PR_102_ID,
+                position: 0,
+                priority: 0,
+                status: "merged",
+                ciStatus: "passed",
+                attempts: 1,
+                startedAt: new Date("2026-01-12T13:40:00.000Z"),
+                completedAt: new Date("2026-01-12T13:44:00.000Z"),
+                createdAt: new Date("2026-01-12T13:39:00.000Z"),
+            },
+            {
+                id: QUEUE_FAILED_ID,
+                repoId: REPO_ID,
+                prId: PR_101_ID,
+                position: 0,
+                priority: 0,
+                status: "failed",
+                ciStatus: "failed",
+                attempts: 3,
+                errorMessage: "Flaky test in payment module",
+                startedAt: new Date("2026-01-12T12:00:00.000Z"),
+                completedAt: new Date("2026-01-12T12:06:00.000Z"),
+                createdAt: new Date("2026-01-12T11:58:00.000Z"),
             },
         ]);
 

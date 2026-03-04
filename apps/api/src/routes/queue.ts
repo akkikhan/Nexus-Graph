@@ -3,227 +3,149 @@
  */
 
 import { Hono } from "hono";
-
-type QueueItemStatus = "running" | "pending";
-type QueueCiStatus = "in_progress" | "waiting";
-type QueuePriority = "high";
-
-interface QueueItem {
-    id: string;
-    position: number;
-    pr: {
-        number: number;
-        title: string;
-        author: { username: string; avatar: string };
-        repository: string;
-    };
-    status: QueueItemStatus;
-    ciStatus: QueueCiStatus;
-    ciProgress?: number;
-    estimatedTimeRemaining: string;
-    addedAt: string;
-    attempts: number;
-    priority?: QueuePriority;
-}
-
-interface RecentQueueResult {
-    pr: { number: number; title: string };
-    status: "merged" | "failed";
-    mergedAt?: string;
-    failedAt?: string;
-    duration?: string;
-    reason?: string;
-    attempts?: number;
-}
+import { queueRepository } from "../repositories/queue.js";
 
 const queueRouter = new Hono();
 
-const queueState: {
-    paused: boolean;
-    turbo: boolean;
-    active: QueueItem[];
-    recent: RecentQueueResult[];
-} = {
-    paused: false,
-    turbo: false,
-    active: [
-        {
-            id: "queue-1",
-            position: 1,
-            pr: {
-                number: 234,
-                title: "Add user authentication with OAuth",
-                author: { username: "johndoe", avatar: "" },
-                repository: "nexus/platform",
-            },
-            status: "running",
-            ciStatus: "in_progress",
-            ciProgress: 65,
-            estimatedTimeRemaining: "4m",
-            addedAt: "10 minutes ago",
-            attempts: 1,
-        },
-        {
-            id: "queue-2",
-            position: 2,
-            pr: {
-                number: 231,
-                title: "Fix payment race condition",
-                author: { username: "janedoe", avatar: "" },
-                repository: "nexus/billing",
-            },
-            status: "pending",
-            ciStatus: "waiting",
-            estimatedTimeRemaining: "~12m",
-            addedAt: "8 minutes ago",
-            attempts: 0,
-            priority: "high",
-        },
-        {
-            id: "queue-3",
-            position: 3,
-            pr: {
-                number: 228,
-                title: "Update dependencies",
-                author: { username: "dependabot", avatar: "" },
-                repository: "nexus/platform",
-            },
-            status: "pending",
-            ciStatus: "waiting",
-            estimatedTimeRemaining: "~18m",
-            addedAt: "5 minutes ago",
-            attempts: 0,
-        },
-    ],
-    recent: [
-        {
-            pr: { number: 220, title: "Add error boundaries" },
-            status: "merged",
-            mergedAt: "15 minutes ago",
-            duration: "3m 42s",
-        },
-        {
-            pr: { number: 218, title: "Fix memory leak in worker" },
-            status: "merged",
-            mergedAt: "32 minutes ago",
-            duration: "5m 18s",
-        },
-        {
-            pr: { number: 215, title: "Optimize database queries" },
-            status: "failed",
-            failedAt: "1 hour ago",
-            reason: "Flaky test in payment module",
-            attempts: 3,
-        },
-    ],
-};
-
-function syncQueueHeadState() {
-    queueState.active = queueState.active
-        .sort((a, b) => a.position - b.position)
-        .map((item, index) => ({ ...item, position: index + 1 }));
-
-    if (queueState.paused) {
-        queueState.active = queueState.active.map((item) => ({
-            ...item,
-            status: "pending",
-            ciStatus: "waiting",
-        }));
-        return;
-    }
-
-    queueState.active = queueState.active.map((item, index) => {
-        if (index === 0) {
-            return {
-                ...item,
-                status: "running",
-                ciStatus: "in_progress",
-                ciProgress: item.ciProgress || (queueState.turbo ? 85 : 55),
-            };
-        }
-
-        return {
-            ...item,
-            status: "pending",
-            ciStatus: "waiting",
-        };
-    });
+function details(error: unknown): string {
+    return queueRepository.errorMessage(error);
 }
 
-function queueStats() {
-    const queueLength = queueState.active.length;
-    const merged = queueState.recent.filter((item) => item.status === "merged").length;
-    const totalRecent = Math.max(queueState.recent.length, 1);
-
-    return {
-        queueLength,
-        avgWaitTime: queueState.turbo ? "5m" : "8m",
-        successRate: Math.round((merged / totalRecent) * 100),
-        throughput: queueState.turbo ? "31/day" : "24/day",
-    };
+async function resolveRepoId(queryRepoId?: string): Promise<string | null> {
+    return queueRepository.resolveRepoId(queryRepoId);
 }
 
 queueRouter.get("/", async (c) => {
-    syncQueueHeadState();
-    return c.json({
-        active: queueState.active,
-        recent: queueState.recent,
-        controls: {
-            paused: queueState.paused,
-            turbo: queueState.turbo,
-        },
-        stats: queueStats(),
-    });
+    const repoId = c.req.query("repoId");
+    try {
+        return c.json(await queueRepository.snapshot(repoId));
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for queue snapshot",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 queueRouter.post("/pause", async (c) => {
-    queueState.paused = true;
-    syncQueueHeadState();
-    return c.json({ success: true, paused: queueState.paused });
+    const repoId = await resolveRepoId(c.req.query("repoId"));
+    if (!repoId) {
+        return c.json({ error: "No repository available for queue operations" }, 404);
+    }
+
+    try {
+        const controls = await queueRepository.pause(repoId);
+        return c.json({ success: true, paused: controls.paused });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for queue pause",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 queueRouter.post("/resume", async (c) => {
-    queueState.paused = false;
-    syncQueueHeadState();
-    return c.json({ success: true, paused: queueState.paused });
+    const repoId = await resolveRepoId(c.req.query("repoId"));
+    if (!repoId) {
+        return c.json({ error: "No repository available for queue operations" }, 404);
+    }
+
+    try {
+        const controls = await queueRepository.resume(repoId);
+        return c.json({ success: true, paused: controls.paused });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for queue resume",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 queueRouter.post("/turbo", async (c) => {
     const payload = await c.req.json().catch(() => ({}));
-    if (typeof payload?.enabled === "boolean") {
-        queueState.turbo = payload.enabled;
-    } else {
-        queueState.turbo = !queueState.turbo;
+    const repoId =
+        await resolveRepoId(
+            c.req.query("repoId") ||
+                (typeof payload?.repoId === "string" ? payload.repoId : undefined)
+        );
+    if (!repoId) {
+        return c.json({ error: "No repository available for queue operations" }, 404);
     }
-    syncQueueHeadState();
-    return c.json({ success: true, turbo: queueState.turbo });
+
+    try {
+        const current = await queueRepository.snapshot(repoId);
+        const enabled =
+            typeof payload?.enabled === "boolean"
+                ? payload.enabled
+                : !current.controls.turbo;
+        const controls = await queueRepository.setTurbo(repoId, enabled);
+        return c.json({ success: true, turbo: controls.turbo });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for queue turbo update",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 queueRouter.post("/:id/retry", async (c) => {
     const id = c.req.param("id");
-    const target = queueState.active.find((item) => item.id === id);
-    if (!target) {
-        return c.json({ error: "Queue item not found" }, 404);
+    const repoId = await resolveRepoId(c.req.query("repoId"));
+    if (!repoId) {
+        return c.json({ error: "No repository available for queue operations" }, 404);
     }
 
-    target.attempts += 1;
-    target.addedAt = "just now";
-    target.ciProgress = queueState.turbo ? 20 : 10;
-
-    syncQueueHeadState();
-    return c.json({ success: true, item: target });
+    try {
+        const retried = await queueRepository.retry(repoId, id);
+        if (!retried) {
+            return c.json({ error: "Queue item not found" }, 404);
+        }
+        return c.json({ success: true });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for queue retry",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 queueRouter.delete("/:id", async (c) => {
     const id = c.req.param("id");
-    const before = queueState.active.length;
-    queueState.active = queueState.active.filter((item) => item.id !== id);
-    if (queueState.active.length === before) {
-        return c.json({ error: "Queue item not found" }, 404);
+    const repoId = await resolveRepoId(c.req.query("repoId"));
+    if (!repoId) {
+        return c.json({ error: "No repository available for queue operations" }, 404);
     }
 
-    syncQueueHeadState();
-    return c.json({ success: true, removedId: id });
+    try {
+        const removed = await queueRepository.remove(repoId, id);
+        if (!removed) {
+            return c.json({ error: "Queue item not found" }, 404);
+        }
+        return c.json({ success: true, removedId: id });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for queue removal",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 export { queueRouter };
