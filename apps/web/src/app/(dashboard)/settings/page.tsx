@@ -16,6 +16,7 @@ import {
     ShieldAlert,
 } from "lucide-react";
 import {
+    IntegrationWebhookAuthEventListOptions,
     fetchIntegrationWebhookAuthEvents,
     fetchSystemHealth,
     IntegrationWebhookAuthEvent,
@@ -241,6 +242,48 @@ function formatAuthTimestamp(value: string): string {
     return date.toLocaleString();
 }
 
+function buildCsv(events: IntegrationWebhookAuthEvent[]): string {
+    const headers = [
+        "id",
+        "provider",
+        "outcome",
+        "reason",
+        "statusCode",
+        "signaturePresent",
+        "timestampPresent",
+        "eventType",
+        "externalEventId",
+        "repoId",
+        "requestTimestamp",
+        "requestSkewSeconds",
+        "createdAt",
+    ];
+
+    const escapeCell = (value: unknown): string => {
+        const raw = value === undefined || value === null ? "" : String(value);
+        return `"${raw.replace(/"/g, "\"\"")}"`;
+    };
+
+    const rows = events.map((event) => [
+        event.id,
+        event.provider,
+        event.outcome,
+        event.reason,
+        event.statusCode,
+        event.signaturePresent,
+        event.timestampPresent,
+        event.eventType,
+        event.externalEventId,
+        event.repoId || "",
+        event.requestTimestamp || "",
+        event.requestSkewSeconds ?? "",
+        event.createdAt,
+    ]);
+
+    const lines = [headers, ...rows].map((row) => row.map((cell) => escapeCell(cell)).join(","));
+    return lines.join("\n");
+}
+
 export default function SettingsPage() {
     const [values, setValues] = useState(initialValues);
     const [saveMessage, setSaveMessage] = useState<string>("");
@@ -250,6 +293,8 @@ export default function SettingsPage() {
     const [authSinceMinutes, setAuthSinceMinutes] = useState<number>(60);
     const [authRepoId, setAuthRepoId] = useState("");
     const [authPage, setAuthPage] = useState(0);
+    const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
+    const [exportError, setExportError] = useState("");
 
     const { data: health, isLoading: healthLoading } = useQuery({
         queryKey: ["system", "health"],
@@ -258,6 +303,13 @@ export default function SettingsPage() {
     });
 
     const authOffset = authPage * WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
+    const diagnosticsQuery: IntegrationWebhookAuthEventListOptions = {
+        provider: authProvider === "all" ? undefined : authProvider,
+        outcome: authOutcome === "all" ? undefined : authOutcome,
+        reason: authReason.trim() || undefined,
+        sinceMinutes: authSinceMinutes,
+        repoId: authRepoId.trim() || undefined,
+    };
     const {
         data: authEventsData,
         isLoading: authEventsLoading,
@@ -277,11 +329,7 @@ export default function SettingsPage() {
         ],
         queryFn: () =>
             fetchIntegrationWebhookAuthEvents({
-                provider: authProvider === "all" ? undefined : authProvider,
-                outcome: authOutcome === "all" ? undefined : authOutcome,
-                reason: authReason.trim() || undefined,
-                sinceMinutes: authSinceMinutes,
-                repoId: authRepoId.trim() || undefined,
+                ...diagnosticsQuery,
                 limit: WEBHOOK_DIAGNOSTICS_PAGE_SIZE,
                 offset: authOffset,
             }),
@@ -354,6 +402,65 @@ export default function SettingsPage() {
         setAuthSinceMinutes(60);
         setAuthRepoId("");
         setAuthPage(0);
+    };
+
+    const fetchAllAuthEventsForExport = async (): Promise<IntegrationWebhookAuthEvent[]> => {
+        const pageSize = 200;
+        const maxPages = 25;
+        const allEvents: IntegrationWebhookAuthEvent[] = [];
+
+        for (let page = 0; page < maxPages; page += 1) {
+            const offset = page * pageSize;
+            const response = await fetchIntegrationWebhookAuthEvents({
+                ...diagnosticsQuery,
+                limit: pageSize,
+                offset,
+            });
+
+            if (!Array.isArray(response.events) || response.events.length === 0) break;
+            allEvents.push(...response.events);
+            if (response.events.length < pageSize) break;
+        }
+
+        return allEvents;
+    };
+
+    const downloadBlob = (filename: string, data: string, contentType: string) => {
+        const blob = new Blob([data], { type: contentType });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+    };
+
+    const onExportDiagnostics = async (format: "json" | "csv") => {
+        setExportError("");
+        setExportingFormat(format);
+        try {
+            const events = await fetchAllAuthEventsForExport();
+            const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+            if (format === "json") {
+                downloadBlob(
+                    `nexus-webhook-auth-events-${stamp}.json`,
+                    JSON.stringify(events, null, 2),
+                    "application/json"
+                );
+            } else {
+                downloadBlob(
+                    `nexus-webhook-auth-events-${stamp}.csv`,
+                    buildCsv(events),
+                    "text/csv;charset=utf-8"
+                );
+            }
+        } catch (error) {
+            setExportError((error as Error).message || "Failed to export diagnostics.");
+        } finally {
+            setExportingFormat(null);
+        }
     };
 
     return (
@@ -520,6 +627,33 @@ export default function SettingsPage() {
                         Clear Filters
                     </button>
                 </div>
+
+                <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs text-zinc-500">
+                        Export all currently filtered auth events (up to 5000 rows).
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => onExportDiagnostics("json")}
+                            disabled={Boolean(exportingFormat)}
+                            className="px-3 py-1.5 rounded border border-zinc-700 text-sm text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                        >
+                            {exportingFormat === "json" ? "Exporting..." : "Export JSON"}
+                        </button>
+                        <button
+                            onClick={() => onExportDiagnostics("csv")}
+                            disabled={Boolean(exportingFormat)}
+                            className="px-3 py-1.5 rounded border border-zinc-700 text-sm text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                        >
+                            {exportingFormat === "csv" ? "Exporting..." : "Export CSV"}
+                        </button>
+                    </div>
+                </div>
+                {exportError ? (
+                    <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                        {exportError}
+                    </div>
+                ) : null}
 
                 {authEventsLoading ? (
                     <div className="py-8 text-sm text-zinc-400">Loading diagnostic events...</div>

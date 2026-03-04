@@ -124,6 +124,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Activity filter switching
 - Insights dashboard load
 - Settings diagnostics panel load (webhook auth events + filter path)
+- Settings diagnostics export controls (JSON/CSV) render and trigger
 
 Prerequisite:
 

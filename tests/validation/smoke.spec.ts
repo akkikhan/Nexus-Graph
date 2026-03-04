@@ -366,6 +366,10 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByRole("heading", { name: /^Settings$/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Integration Diagnostics/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /Export JSON/i }).click();
+    await page.getByRole("button", { name: /Export CSV/i }).click();
 
     const reasonInput = page.getByPlaceholder("missing_signature_headers");
     await reasonInput.fill("timestamp_out_of_window");
