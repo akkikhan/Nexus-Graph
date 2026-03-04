@@ -48,6 +48,11 @@ Checks:
 - `GET /api/v1/stacks/:id` -> `404` after delete
 - `GET /api/v1/activity?limit=5`
 - `GET /api/v1/insights/dashboard`
+- `POST /api/v1/insights/predict-conflicts`
+- `POST /api/v1/insights/reviewer-fatigue`
+- `GET /api/v1/insights/velocity?period=week`
+- `GET /api/v1/insights/code-health`
+- `GET /api/v1/insights/optimal-reviewers`
 - `GET /api/v1/queue`
 - `POST /api/v1/queue/pause` + `GET /api/v1/queue` state assertion
 - `POST /api/v1/queue/resume`
@@ -63,6 +68,7 @@ Checks:
 Degraded-mode behavior:
 
 - `prs`, `stacks`, and `activity` may return `503` when DB is unavailable.
+- `insights` endpoints return `503` with `{ error, details }` when DB is unavailable.
 - Degraded `503` is accepted when payload includes an `error` field.
 - Set `ALLOW_DEGRADED=false` to require strict `200` responses.
 

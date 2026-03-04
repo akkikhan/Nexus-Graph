@@ -5,35 +5,11 @@
 import { Hono } from "hono";
 import path from "path";
 import { readFile } from "fs/promises";
-import { prRepository } from "../repositories/pr.js";
+import { activityRepository, ActivityItem } from "../repositories/activity.js";
 
 const activityRouter = new Hono();
 const SERVER_STACK_FILE = path.join(process.cwd(), ".nexus", "server-stack.json");
 const LOCAL_STACK_FILE = path.join(process.cwd(), ".nexus", "stack.json");
-
-interface ActivityItem {
-    id: string;
-    type: string;
-    icon: string;
-    color: string;
-    bgColor: string;
-    title: string;
-    description: string;
-    timestamp: string;
-    pr?: {
-        number: number;
-        title: string;
-    };
-    details?: {
-        critical: number;
-        warnings: number;
-        suggestions: number;
-    };
-    stack?: {
-        name: string;
-        branches: number;
-    };
-}
 
 interface LocalStackData {
     trunk: string;
@@ -62,54 +38,6 @@ function formatRelativeTime(dateValue: unknown): string {
     return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-function riskDetails(score: number) {
-    if (score >= 75) {
-        return { critical: 1, warnings: 2, suggestions: 0 };
-    }
-    if (score >= 50) {
-        return { critical: 0, warnings: 2, suggestions: 1 };
-    }
-    if (score >= 25) {
-        return { critical: 0, warnings: 1, suggestions: 2 };
-    }
-    return { critical: 0, warnings: 0, suggestions: 1 };
-}
-
-function mapPRToActivity(pr: any, index: number): ActivityItem {
-    const number = pr.number || 0;
-    const title = pr.title || "Untitled PR";
-    const score = Math.round(pr.riskScore || 0);
-
-    if (pr.status === "merged") {
-        return {
-            id: `act-pr-merged-${pr.id || index}`,
-            type: "pr_merged",
-            icon: "GitMerge",
-            color: "text-green-500",
-            bgColor: "bg-green-500/10",
-            title: "PR Merged",
-            description: `#${number} merged successfully`,
-            timestamp: formatRelativeTime(pr.updatedAt || pr.mergedAt || pr.createdAt),
-            pr: { number, title },
-        };
-    }
-
-    return {
-        id: `act-pr-review-${pr.id || index}`,
-        type: "ai_review",
-        icon: "Bot",
-        color: score >= 75 ? "text-red-500" : "text-purple-500",
-        bgColor: score >= 75 ? "bg-red-500/10" : "bg-purple-500/10",
-        title: "AI Review Completed",
-        description:
-            pr.aiSummary ||
-            `Risk analysis generated for "${title}"`,
-        timestamp: formatRelativeTime(pr.updatedAt || pr.createdAt),
-        pr: { number, title },
-        details: riskDetails(score),
-    };
-}
-
 async function loadLocalStackData(): Promise<LocalStackData | null> {
     for (const candidate of [SERVER_STACK_FILE, LOCAL_STACK_FILE]) {
         try {
@@ -132,8 +60,7 @@ async function loadLocalStackData(): Promise<LocalStackData | null> {
 }
 
 function errorMessage(error: unknown): string {
-    if (error instanceof Error) return error.message;
-    return "Unknown database error";
+    return activityRepository.errorMessage(error);
 }
 
 /**
@@ -149,11 +76,7 @@ activityRouter.get("/", async (c) => {
     let dbError: string | null = null;
 
     try {
-        const prs = await prRepository.list({
-            limit,
-            offset: 0,
-        });
-        activities.push(...prs.map(mapPRToActivity));
+        activities.push(...(await activityRepository.list(limit)));
     } catch (error) {
         dbError = errorMessage(error);
     }

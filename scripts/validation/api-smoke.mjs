@@ -267,6 +267,13 @@ async function run() {
                 activity.payload && Array.isArray(activity.payload.activities),
                 "activity payload must include activities[]"
             );
+            if (activity.payload.activities.length > 0) {
+                const firstActivity = activity.payload.activities[0];
+                assert(typeof firstActivity.id === "string", "activity item must include id");
+                assert(typeof firstActivity.type === "string", "activity item must include type");
+                assert(typeof firstActivity.title === "string", "activity item must include title");
+                assert(typeof firstActivity.timestamp === "string", "activity item must include timestamp");
+            }
         } else {
             assertErrorPayload("activity", activity.payload);
         }
@@ -274,6 +281,85 @@ async function run() {
         const insights = await request("/api/v1/insights/dashboard");
         printResult("GET /api/v1/insights/dashboard", insights);
         assert(insights.response.status === 200, "insights/dashboard must return 200");
+        assert(insights.payload?.velocity?.currentSprint, "insights/dashboard must include velocity.currentSprint");
+        assert(Array.isArray(insights.payload?.aiInsights), "insights/dashboard must include aiInsights[]");
+
+        if (firstRepoId) {
+            const predictConflicts = await request("/api/v1/insights/predict-conflicts", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repositoryId: firstRepoId,
+                    branch: "smoke/branch",
+                }),
+            });
+            printResult("POST /api/v1/insights/predict-conflicts", predictConflicts);
+            assert(predictConflicts.response.status === 200, "predict-conflicts must return 200");
+            assert(
+                typeof predictConflicts.payload?.conflictProbability === "number",
+                "predict-conflicts must include conflictProbability"
+            );
+            assert(
+                Array.isArray(predictConflicts.payload?.conflictingPRs),
+                "predict-conflicts must include conflictingPRs[]"
+            );
+        }
+
+        const reviewerFatigue = await request("/api/v1/insights/reviewer-fatigue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                reviewerId: "20000000-0000-4000-8000-000000000001",
+            }),
+        });
+        printResult("POST /api/v1/insights/reviewer-fatigue", reviewerFatigue);
+        assert(reviewerFatigue.response.status === 200, "reviewer-fatigue must return 200");
+        assert(
+            reviewerFatigue.payload?.analysis?.currentState,
+            "reviewer-fatigue must include analysis.currentState"
+        );
+
+        const velocityPath = firstRepoId
+            ? `/api/v1/insights/velocity?period=week&repositoryId=${encodeURIComponent(firstRepoId)}`
+            : "/api/v1/insights/velocity?period=week";
+        const velocity = await request(velocityPath);
+        printResult("GET /api/v1/insights/velocity?period=week", velocity);
+        assert(velocity.response.status === 200, "insights/velocity must return 200");
+        assert(
+            typeof velocity.payload?.current?.prsOpened === "number",
+            "insights/velocity must include current.prsOpened"
+        );
+        assert(
+            Array.isArray(velocity.payload?.trends?.prsPerDay),
+            "insights/velocity must include trends.prsPerDay[]"
+        );
+
+        const codeHealthPath = firstRepoId
+            ? `/api/v1/insights/code-health?repositoryId=${encodeURIComponent(firstRepoId)}`
+            : "/api/v1/insights/code-health";
+        const codeHealth = await request(codeHealthPath);
+        printResult("GET /api/v1/insights/code-health", codeHealth);
+        assert(codeHealth.response.status === 200, "insights/code-health must return 200");
+        assert(
+            typeof codeHealth.payload?.overallScore === "number",
+            "insights/code-health must include overallScore"
+        );
+        assert(
+            Array.isArray(codeHealth.payload?.hotspots),
+            "insights/code-health must include hotspots[]"
+        );
+
+        if (firstPrId) {
+            const optimalReviewers = await request(
+                `/api/v1/insights/optimal-reviewers?prId=${encodeURIComponent(firstPrId)}&files=src/auth/index.ts,src/api/route.ts`
+            );
+            printResult("GET /api/v1/insights/optimal-reviewers", optimalReviewers);
+            assert(optimalReviewers.response.status === 200, "optimal-reviewers must return 200");
+            assert(
+                Array.isArray(optimalReviewers.payload?.recommendations),
+                "optimal-reviewers must include recommendations[]"
+            );
+        }
 
         const queue = await request("/api/v1/queue");
         printResult("GET /api/v1/queue", queue);

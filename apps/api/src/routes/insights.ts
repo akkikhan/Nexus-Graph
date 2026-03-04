@@ -1,41 +1,39 @@
 /**
  * NEXUS API - Insights Routes
- * 10X Analytics and Intelligence
  */
 
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { createNexusAI } from "@nexus/ai";
+import { insightsRepository } from "../repositories/insights.js";
 
 const insightsRouter = new Hono();
 
-// Initialize NEXUS AI
 const nexusAI = createNexusAI({
     providers: {
         anthropic: {
             apiKey: process.env.ANTHROPIC_API_KEY || "",
-            model: "claude-3-5-sonnet-20241022"
+            model: "claude-3-5-sonnet-20241022",
         },
         openai: {
             apiKey: process.env.OPENAI_API_KEY || "",
-            model: "gpt-4-turbo-preview"
+            model: "gpt-4-turbo-preview",
         },
         google: {
             apiKey: process.env.GOOGLE_AI_API_KEY || "",
-            model: "gemini-pro"
-        }
+            model: "gemini-pro",
+        },
     },
     defaultProvider: "anthropic",
     routing: {
         codeReview: "anthropic",
         summarization: "openai",
         suggestions: "anthropic",
-        riskAssessment: "anthropic"
-    }
+        riskAssessment: "anthropic",
+    },
 });
 
-// Schemas
 const conflictPredictionSchema = z.object({
     repositoryId: z.string(),
     branch: z.string(),
@@ -51,80 +49,27 @@ const velocitySchema = z.object({
     period: z.enum(["day", "week", "sprint", "month"]).default("week"),
 });
 
-// Routes
+function details(error: unknown): string {
+    return insightsRepository.errorMessage(error);
+}
 
 /**
  * GET /insights/dashboard - Main insights dashboard data
  */
 insightsRouter.get("/dashboard", async (c) => {
-    const dashboard = {
-        velocity: {
-            currentSprint: {
-                committed: 24,
-                completed: 16,
-                predicted: 19,
-                accuracy: 0.67,
-            },
-            trend: [
-                { period: "W-3", velocity: 18 },
-                { period: "W-2", velocity: 22 },
-                { period: "W-1", velocity: 20 },
-                { period: "Current", velocity: 16 },
-            ],
-        },
-        codeHealth: {
-            score: 78,
-            trend: "+3",
-            breakdown: {
-                testCoverage: 72,
-                typeSafety: 85,
-                documentation: 45,
-                complexity: 68,
-            },
-        },
-        reviewerHealth: {
-            averageReviewTime: "4.2h",
-            fatigueAlerts: 1,
-            topReviewers: [
-                { username: "sarah", reviews: 24, quality: 0.94 },
-                { username: "mike", reviews: 18, quality: 0.89 },
-            ],
-        },
-        aiInsights: [
+    const repositoryId = c.req.query("repositoryId");
+    try {
+        const dashboard = await insightsRepository.dashboard(repositoryId || undefined);
+        return c.json(dashboard);
+    } catch (error) {
+        return c.json(
             {
-                type: "conflict_warning",
-                severity: "high",
-                message: "PR #245 may conflict with PR #242",
-                action: "coordinate_merge",
+                error: "Database unavailable for insights dashboard",
+                details: details(error),
             },
-            {
-                type: "fatigue_alert",
-                severity: "medium",
-                message: "Reviewer @sarah showing signs of fatigue",
-                action: "reassign_prs",
-            },
-            {
-                type: "velocity_prediction",
-                severity: "warning",
-                message: "Sprint completion at risk (79% predicted)",
-                action: "review_scope",
-            },
-        ],
-        bottlenecks: [
-            {
-                type: "review_wait",
-                avgHours: 18,
-                description: "PRs wait 18h for initial review",
-            },
-            {
-                type: "ci_time",
-                avgMinutes: 32,
-                description: "CI pipeline takes 32min average",
-            },
-        ],
-    };
-
-    return c.json(dashboard);
+            503
+        );
+    }
 });
 
 /**
@@ -134,36 +79,19 @@ insightsRouter.post(
     "/predict-conflicts",
     zValidator("json", conflictPredictionSchema),
     async (c) => {
-        const { repositoryId, branch } = c.req.valid("json");
-
-        // In production, this would:
-        // 1. Fetch all open PRs for the repo
-        // 2. Get file changes for each
-        // 3. Use conflict predictor
-
-        const mockPrediction = {
-            branch,
-            repositoryId,
-            conflictProbability: 0.72,
-            conflictingPRs: [
+        const body = c.req.valid("json");
+        try {
+            const prediction = await insightsRepository.predictConflicts(body);
+            return c.json(prediction);
+        } catch (error) {
+            return c.json(
                 {
-                    prNumber: 242,
-                    prTitle: "Refactor auth module",
-                    conflictingFiles: ["src/auth/login.ts", "src/auth/index.ts"],
-                    probability: 0.85,
+                    error: "Database unavailable for conflict prediction",
+                    details: details(error),
                 },
-            ],
-            safeWindow: {
-                hours: 4,
-                reason: "PR #242 likely to merge within 4 hours",
-            },
-            suggestions: [
-                "Coordinate with @johndoe who is working on PR #242",
-                "Consider rebasing after PR #242 merges",
-            ],
-        };
-
-        return c.json(mockPrediction);
+                503
+            );
+        }
     }
 );
 
@@ -176,33 +104,39 @@ insightsRouter.post(
     async (c) => {
         const { reviewerId } = c.req.valid("json");
 
-        // In production, analyze real session data
+        try {
+            const sessionData = await insightsRepository.reviewerSession(reviewerId);
+            const analysis = nexusAI.flowAnalyzer.analyzeFlowState(sessionData.session);
 
-        const mockSession = {
-            startTime: new Date(Date.now() - 3 * 60 * 60 * 1000), // 3 hours ago
-            reviewCount: 8,
-            avgReviewDuration: 12, // minutes
-            avgCommentLength: 25, // words
-            approvalRate: 0.87,
-            userId: reviewerId,
-            username: "reviewer",
-            sessionStart: new Date(Date.now() - 3 * 60 * 60 * 1000),
-            reviews: []
-        };
-
-        const analysis = nexusAI.flowAnalyzer.analyzeFlowState(mockSession);
-
-        return c.json({
-            reviewerId,
-            session: mockSession,
-            analysis,
-            recommendation:
-                analysis.suggestedAction === "take_break"
-                    ? "Reviewer should take a break before continuing"
-                    : analysis.suggestedAction === "reassign"
-                        ? "Consider reassigning remaining PRs"
-                        : "Reviewer is in good flow state",
-        });
+            return c.json({
+                reviewerId,
+                session: {
+                    reviewer: sessionData.session.username,
+                    startTime: sessionData.summary.startTime,
+                    reviewCount: sessionData.summary.reviewCount,
+                    avgReviewDuration: sessionData.summary.avgReviewDuration,
+                    avgCommentLength: sessionData.summary.avgCommentLength,
+                    approvalRate: sessionData.summary.approvalRate,
+                },
+                analysis,
+                recommendation:
+                    analysis.suggestedAction === "take_break"
+                        ? "Reviewer should take a break before continuing"
+                        : analysis.suggestedAction === "reassign"
+                            ? "Consider reassigning remaining PRs"
+                            : analysis.suggestedAction === "stop_reviewing"
+                                ? "Reviewer should pause reviews and resume later"
+                                : "Reviewer is in good flow state",
+            });
+        } catch (error) {
+            return c.json(
+                {
+                    error: "Database unavailable for reviewer fatigue analysis",
+                    details: details(error),
+                },
+                503
+            );
+        }
     }
 );
 
@@ -211,37 +145,18 @@ insightsRouter.post(
  */
 insightsRouter.get("/velocity", zValidator("query", velocitySchema), async (c) => {
     const query = c.req.valid("query");
-
-    const metrics = {
-        period: query.period,
-        current: {
-            prsOpened: 18,
-            prsMerged: 14,
-            avgTimeToMerge: "6.2h",
-            avgReviewTime: "4.1h",
-            avgIterations: 1.8,
-        },
-        trends: {
-            prsPerDay: [
-                { date: "Mon", opened: 4, merged: 3 },
-                { date: "Tue", opened: 5, merged: 4 },
-                { date: "Wed", opened: 3, merged: 2 },
-                { date: "Thu", opened: 4, merged: 3 },
-                { date: "Fri", opened: 2, merged: 2 },
-            ],
-        },
-        predictions: {
-            nextWeekVelocity: 16,
-            confidence: 0.82,
-            factors: [
-                "Based on 4-week rolling average",
-                "Adjusted for 1 team member on PTO",
-                "Accounting for sprint planning day",
-            ],
-        },
-    };
-
-    return c.json(metrics);
+    try {
+        const metrics = await insightsRepository.velocity(query);
+        return c.json(metrics);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for velocity metrics",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -249,44 +164,18 @@ insightsRouter.get("/velocity", zValidator("query", velocitySchema), async (c) =
  */
 insightsRouter.get("/code-health", async (c) => {
     const repositoryId = c.req.query("repositoryId");
-
-    const health = {
-        repositoryId: repositoryId || "all",
-        overallScore: 78,
-        trend: {
-            current: 78,
-            lastWeek: 75,
-            lastMonth: 72,
-            direction: "improving",
-        },
-        metrics: {
-            testCoverage: { score: 72, trend: "+2" },
-            typeSafety: { score: 85, trend: "+0" },
-            documentation: { score: 45, trend: "+5" },
-            complexity: { score: 68, trend: "-1" },
-            security: { score: 91, trend: "+3" },
-            maintainability: { score: 77, trend: "+1" },
-        },
-        hotspots: [
+    try {
+        const health = await insightsRepository.codeHealth(repositoryId || undefined);
+        return c.json(health);
+    } catch (error) {
+        return c.json(
             {
-                file: "src/legacy/payment.js",
-                issues: ["No types", "High complexity", "No tests"],
-                score: 23,
+                error: "Database unavailable for code health metrics",
+                details: details(error),
             },
-            {
-                file: "src/utils/helpers.ts",
-                issues: ["Low documentation"],
-                score: 55,
-            },
-        ],
-        recentImpact: [
-            { pr: "#234", impact: +4, reason: "Added unit tests" },
-            { pr: "#231", impact: -2, reason: "Increased complexity" },
-            { pr: "#228", impact: +1, reason: "Fixed type errors" },
-        ],
-    };
-
-    return c.json(health);
+            503
+        );
+    }
 });
 
 /**
@@ -294,43 +183,40 @@ insightsRouter.get("/code-health", async (c) => {
  */
 insightsRouter.get("/optimal-reviewers", async (c) => {
     const prId = c.req.query("prId");
-    const files = c.req.query("files")?.split(",") || [];
+    const files = c.req.query("files")?.split(",").map((value) => value.trim()).filter(Boolean) || [];
 
-    // In production, would use flow analyzer's scoreReviewers
+    try {
+        const input = await insightsRepository.optimalReviewerInputs(prId || undefined, files);
+        const scored = nexusAI.flowAnalyzer.scoreReviewers(input.prContext, input.candidates);
 
-    const recommendations = [
-        {
-            username: "sarah",
-            score: 0.92,
-            reasons: [
-                "Expert in auth module",
-                "Fast reviewer (avg 2.1h)",
-                "High quality (94% accuracy)",
-            ],
-            availability: "available",
-            currentLoad: 2,
-        },
-        {
-            username: "mike",
-            score: 0.78,
-            reasons: ["Familiar with codebase", "Moderate load"],
-            availability: "available",
-            currentLoad: 4,
-        },
-        {
-            username: "alex",
-            score: 0.65,
-            reasons: ["Good general reviewer"],
-            availability: "limited",
-            currentLoad: 6,
-        },
-    ];
+        const candidateById = new Map(input.candidates.map((candidate) => [candidate.userId, candidate]));
+        const recommendations = scored.slice(0, 3).map((score) => {
+            const candidate = candidateById.get(score.userId);
+            const currentLoad = candidate?.currentWorkload ?? 0;
+            return {
+                username: score.username,
+                score: score.overallScore,
+                reasons: score.reasoning.length > 0 ? score.reasoning : ["Balanced candidate profile"],
+                availability: currentLoad >= 6 ? "limited" : "available",
+                currentLoad,
+            };
+        });
 
-    return c.json({
-        prId,
-        files,
-        recommendations,
-    });
+        return c.json({
+            prId: input.metadata.prId || prId || null,
+            files: input.prContext.files,
+            recommendations,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for reviewer recommendations",
+                details: details(error),
+            },
+            503
+        );
+    }
 });
 
 export { insightsRouter };
+
