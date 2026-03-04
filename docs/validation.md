@@ -68,6 +68,7 @@ Checks:
 - `GET /api/v1/integrations/notifications/:id`
 - `POST /api/v1/integrations/webhooks/provider/:provider` (durable webhook ingestion with idempotency)
 - `GET /api/v1/integrations/webhooks`
+- `GET /api/v1/integrations/webhook-auth-events` (auth rejection/config-error telemetry listing)
 - `POST /api/v1/integrations/webhooks/:id/process`
 - `POST /api/v1/integrations/webhooks/retry`
 - `POST /api/v1/integrations/slack/actions` (callback ingestion + processing)

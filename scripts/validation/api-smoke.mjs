@@ -1151,6 +1151,25 @@ async function run() {
             printResult("POST /api/v1/integrations/slack/actions (duplicate)", slackActionDuplicate);
             assert(slackActionDuplicate.response.status === 409, "duplicate slack action callback must return 409");
 
+            const listWebhookAuthEvents = await request(
+                `/api/v1/integrations/webhook-auth-events?repoId=${encodeURIComponent(firstRepoId)}&sinceMinutes=60&limit=20`
+            );
+            printResult("GET /api/v1/integrations/webhook-auth-events", listWebhookAuthEvents);
+            assert(listWebhookAuthEvents.response.status === 200, "webhook auth events list must return 200");
+            assert(Array.isArray(listWebhookAuthEvents.payload?.events), "webhook auth events list must include events[]");
+            assert(
+                listWebhookAuthEvents.payload.events.length >= 3,
+                "webhook auth events list must include unsigned + stale rejection events"
+            );
+            assert(
+                listWebhookAuthEvents.payload.events.some((event) => event.reason === "missing_signature_headers"),
+                "webhook auth events list must include missing_signature_headers rejection"
+            );
+            assert(
+                listWebhookAuthEvents.payload.events.some((event) => event.reason === "timestamp_out_of_window"),
+                "webhook auth events list must include timestamp_out_of_window rejection"
+            );
+
             const syncIssueLinkFail = await request(`/api/v1/integrations/issue-links/${issueLinkId}/sync`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },

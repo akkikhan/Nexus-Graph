@@ -680,6 +680,37 @@ export const integrationsRepository = {
         return rows.map(normalizeWebhookEvent);
     },
 
+    async listWebhookAuthEvents(filters: {
+        provider?: string;
+        repoId?: string;
+        outcome?: IntegrationWebhookAuthOutcome;
+        reason?: string;
+        sinceMinutes?: number;
+        limit?: number;
+        offset?: number;
+    }) {
+        const conditions = [];
+        const provider = normalizeProvider(filters.provider);
+        if (filters.provider && provider) conditions.push(eq(integrationWebhookAuthEvents.provider, provider));
+        if (filters.repoId) conditions.push(eq(integrationWebhookAuthEvents.repoId, filters.repoId));
+        if (filters.outcome) conditions.push(eq(integrationWebhookAuthEvents.outcome, filters.outcome));
+        if (filters.reason) conditions.push(eq(integrationWebhookAuthEvents.reason, filters.reason.trim()));
+        if (filters.sinceMinutes && Number.isFinite(filters.sinceMinutes) && filters.sinceMinutes > 0) {
+            const since = new Date(Date.now() - clampInteger(filters.sinceMinutes, 1, 43_200) * 60_000);
+            conditions.push(gte(integrationWebhookAuthEvents.createdAt, since));
+        }
+
+        const rows = await db
+            .select()
+            .from(integrationWebhookAuthEvents)
+            .where(conditions.length > 0 ? and(...conditions) : undefined)
+            .orderBy(desc(integrationWebhookAuthEvents.createdAt))
+            .limit(Math.min(Math.max(filters.limit ?? 50, 1), 200))
+            .offset(Math.max(filters.offset ?? 0, 0));
+
+        return rows.map(normalizeWebhookAuthEvent);
+    },
+
     async processWebhookEvent(
         webhookEventId: string,
         input: {

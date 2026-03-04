@@ -15,6 +15,7 @@ const connectionStatusSchema = z.enum(["active", "disabled", "error"]);
 const issueLinkStatusSchema = z.enum(["linked", "sync_pending", "sync_failed"]);
 const deliveryStatusSchema = z.enum(["pending", "retrying", "delivered", "failed", "dead_letter"]);
 const webhookStatusSchema = z.enum(["received", "processed", "failed", "dead_letter"]);
+const webhookAuthOutcomeSchema = z.enum(["rejected", "config_error"]);
 
 const listConnectionsSchema = z.object({
     repoId: z.string().optional(),
@@ -105,6 +106,16 @@ const listWebhookEventsSchema = z.object({
     repoId: z.string().optional(),
     status: webhookStatusSchema.optional(),
     limit: z.coerce.number().int().min(1).max(100).default(20),
+    offset: z.coerce.number().int().min(0).default(0),
+});
+
+const listWebhookAuthEventsSchema = z.object({
+    provider: providerSchema.optional(),
+    repoId: z.string().optional(),
+    outcome: webhookAuthOutcomeSchema.optional(),
+    reason: z.string().optional(),
+    sinceMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
     offset: z.coerce.number().int().min(0).default(0),
 });
 
@@ -375,6 +386,27 @@ integrationsRouter.get("/webhooks", zValidator("query", listWebhookEventsSchema)
         return c.json(
             {
                 error: "Database unavailable for integration webhook listing",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/webhook-auth-events", zValidator("query", listWebhookAuthEventsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const events = await integrationsRepository.listWebhookAuthEvents(query);
+        return c.json({
+            events,
+            total: events.length,
+            limit: query.limit,
+            offset: query.offset,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration webhook auth-event listing",
                 details: details(error),
             },
             503
