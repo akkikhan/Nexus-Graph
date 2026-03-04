@@ -779,6 +779,175 @@ async function run() {
                 failingRunToFailed.payload?.run?.errorMessage?.includes("[REDACTED_SECRET]"),
                 "failed run error message must redact secrets"
             );
+
+            const createSlackConnection = await request("/api/v1/integrations/connections", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    provider: "slack",
+                    displayName: "Smoke Slack",
+                    tokenRef: `xoxb-${rawSecret}`,
+                    config: {
+                        defaultChannel: "C123SMOKE",
+                    },
+                }),
+            });
+            printResult("POST /api/v1/integrations/connections (slack)", createSlackConnection);
+            assert(
+                createSlackConnection.response.status === 201 || createSlackConnection.response.status === 409,
+                "slack integration connection create must return 201 or 409"
+            );
+            const slackConnectionId = createSlackConnection.payload?.connection?.id;
+            assert(slackConnectionId, "slack integration connection must return id");
+
+            const createLinearConnection = await request("/api/v1/integrations/connections", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    provider: "linear",
+                    displayName: "Smoke Linear",
+                    tokenRef: `linear-${rawSecret}`,
+                    config: {
+                        teamId: "team-smoke",
+                    },
+                }),
+            });
+            printResult("POST /api/v1/integrations/connections (linear)", createLinearConnection);
+            assert(
+                createLinearConnection.response.status === 201 || createLinearConnection.response.status === 409,
+                "linear integration connection create must return 201 or 409"
+            );
+
+            const duplicateSlackConnection = await request("/api/v1/integrations/connections", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    provider: "slack",
+                    displayName: "Duplicate Slack",
+                }),
+            });
+            printResult("POST /api/v1/integrations/connections (duplicate)", duplicateSlackConnection);
+            assert(duplicateSlackConnection.response.status === 409, "duplicate integration connection create must return 409");
+
+            const listConnections = await request(`/api/v1/integrations/connections?repoId=${encodeURIComponent(firstRepoId)}&limit=10`);
+            printResult("GET /api/v1/integrations/connections", listConnections);
+            assert(listConnections.response.status === 200, "integration connections list must return 200");
+            assert(Array.isArray(listConnections.payload?.connections), "integration connections list must include connections[]");
+            assert(
+                listConnections.payload.connections.some((connection) => connection.id === slackConnectionId),
+                "integration connections list must include created slack connection"
+            );
+
+            const createIssueLink = await request("/api/v1/integrations/issue-links", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    prId: createdPrId,
+                    provider: "linear",
+                    issueKey: `ENG-${Date.now()}`,
+                    issueTitle: "Smoke linked issue",
+                    issueUrl: "https://linear.app/nexus/issue/ENG-1/smoke",
+                }),
+            });
+            printResult("POST /api/v1/integrations/issue-links", createIssueLink);
+            assert(createIssueLink.response.status === 201, "issue link create must return 201");
+            const issueLinkId = createIssueLink.payload?.issueLink?.id;
+            assert(issueLinkId, "issue link create must return issueLink.id");
+
+            const createIssueLinkSlackProvider = await request("/api/v1/integrations/issue-links", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    prId: createdPrId,
+                    provider: "slack",
+                    issueKey: "SLACK-1",
+                }),
+            });
+            printResult("POST /api/v1/integrations/issue-links (invalid provider)", createIssueLinkSlackProvider);
+            assert(createIssueLinkSlackProvider.response.status === 400, "issue link create with slack provider must return 400");
+
+            const listIssueLinks = await request(`/api/v1/integrations/issue-links?prId=${encodeURIComponent(createdPrId)}&limit=10`);
+            printResult("GET /api/v1/integrations/issue-links", listIssueLinks);
+            assert(listIssueLinks.response.status === 200, "issue links list must return 200");
+            assert(Array.isArray(listIssueLinks.payload?.links), "issue links list must include links[]");
+            assert(
+                listIssueLinks.payload.links.some((link) => link.id === issueLinkId),
+                "issue links list must include created link"
+            );
+
+            const enqueueNotification = await request("/api/v1/integrations/notifications", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    connectionId: slackConnectionId,
+                    repoId: firstRepoId,
+                    prId: createdPrId,
+                    channel: "C123SMOKE",
+                    eventType: "review.requested",
+                    payload: {
+                        text: "Smoke delivery",
+                    },
+                    maxAttempts: 2,
+                }),
+            });
+            printResult("POST /api/v1/integrations/notifications", enqueueNotification);
+            assert(enqueueNotification.response.status === 201, "notification enqueue must return 201");
+            const notificationId = enqueueNotification.payload?.delivery?.id;
+            assert(notificationId, "notification enqueue must return delivery.id");
+
+            const deliverNotificationFailed = await request(`/api/v1/integrations/notifications/${notificationId}/deliver`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    simulateFailure: true,
+                    errorMessage: `Simulated delivery failure ${rawSecret}`,
+                }),
+            });
+            printResult(`POST /api/v1/integrations/notifications/${notificationId}/deliver (failed)`, deliverNotificationFailed);
+            assert(deliverNotificationFailed.response.status === 200, "notification delivery attempt should return 200");
+            assert(
+                deliverNotificationFailed.payload?.delivery?.status === "retrying",
+                "failed delivery attempt should move status to retrying"
+            );
+
+            const retryNotifications = await request("/api/v1/integrations/notifications/retry", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    limit: 10,
+                }),
+            });
+            printResult("POST /api/v1/integrations/notifications/retry", retryNotifications);
+            assert(retryNotifications.response.status === 200, "retry notifications endpoint must return 200");
+
+            const notificationDetail = await request(`/api/v1/integrations/notifications/${notificationId}`);
+            printResult(`GET /api/v1/integrations/notifications/${notificationId}`, notificationDetail);
+            assert(notificationDetail.response.status === 200, "notification detail must return 200");
+            assert(Array.isArray(notificationDetail.payload?.attempts), "notification detail must include attempts[]");
+            assert(notificationDetail.payload.attempts.length >= 1, "notification detail must include at least one attempt");
+            assert(
+                notificationDetail.payload?.delivery?.status === "delivered" ||
+                    notificationDetail.payload?.delivery?.status === "retrying" ||
+                    notificationDetail.payload?.delivery?.status === "dead_letter",
+                "notification detail must include valid delivery status"
+            );
+
+            const integrationsMetrics = await request(`/api/v1/integrations/metrics?repoId=${encodeURIComponent(firstRepoId)}`);
+            printResult("GET /api/v1/integrations/metrics", integrationsMetrics);
+            assert(integrationsMetrics.response.status === 200, "integration metrics must return 200");
+            assert(
+                typeof integrationsMetrics.payload?.totals?.connections === "number",
+                "integration metrics must include totals.connections"
+            );
+            assert(
+                typeof integrationsMetrics.payload?.totals?.deliveries === "number",
+                "integration metrics must include totals.deliveries"
+            );
         }
 
         if (firstRepoId && stacks.response.status === 200) {

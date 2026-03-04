@@ -55,6 +55,15 @@ Checks:
 - `POST /api/v1/agents/runs/:id/transition` (lifecycle transition checks + approval checkpoint guardrails)
 - `POST /api/v1/agents/runs/:id/audit` (audit append with redaction + budget guardrails)
 - `GET /api/v1/agents/runs/:id/audit`
+- `POST /api/v1/integrations/connections` (Slack + Linear setup)
+- `GET /api/v1/integrations/connections`
+- `POST /api/v1/integrations/issue-links` (Linear/Jira link persistence)
+- `GET /api/v1/integrations/issue-links`
+- `POST /api/v1/integrations/notifications` (durable notification enqueue)
+- `POST /api/v1/integrations/notifications/:id/deliver` (delivery attempt + retry/dead-letter transitions)
+- `POST /api/v1/integrations/notifications/retry`
+- `GET /api/v1/integrations/notifications/:id`
+- `GET /api/v1/integrations/metrics`
 - `GET /api/v1/stacks`
 - `POST /api/v1/stacks` (ephemeral smoke stack create)
 - `POST /api/v1/stacks/:id/branches` (base + child branch)

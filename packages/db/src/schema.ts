@@ -41,6 +41,16 @@ export const agentRunAuditTypeEnum = pgEnum("agent_run_audit_type", [
     "note",
     "error",
 ]);
+export const integrationProviderEnum = pgEnum("integration_provider", ["slack", "linear", "jira"]);
+export const integrationConnectionStatusEnum = pgEnum("integration_connection_status", ["active", "disabled", "error"]);
+export const issueLinkStatusEnum = pgEnum("issue_link_status", ["linked", "sync_pending", "sync_failed"]);
+export const notificationDeliveryStatusEnum = pgEnum("notification_delivery_status", [
+    "pending",
+    "retrying",
+    "delivered",
+    "failed",
+    "dead_letter",
+]);
 
 // ============================================================================
 // USERS & ORGANIZATIONS
@@ -390,6 +400,87 @@ export const agentRunAuditEvents = pgTable("agent_run_audit_events", {
 }));
 
 // ============================================================================
+// INTEGRATIONS & NOTIFICATION DELIVERY
+// ============================================================================
+
+export const integrationConnections = pgTable("integration_connections", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+    provider: integrationProviderEnum("provider").notNull(),
+    status: integrationConnectionStatusEnum("status").default("active").notNull(),
+    displayName: text("display_name").notNull(),
+    config: jsonb("config").default({}),
+    tokenRef: text("token_ref"),
+    lastValidatedAt: timestamp("last_validated_at"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    repoProviderUniqueIdx: uniqueIndex("integration_connections_repo_provider_unique_idx").on(table.repoId, table.provider),
+    providerStatusIdx: index("integration_connections_provider_status_idx").on(table.provider, table.status),
+}));
+
+export const issueLinks = pgTable("issue_links", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+    prId: uuid("pr_id").notNull().references(() => pullRequests.id, { onDelete: "cascade" }),
+    provider: integrationProviderEnum("provider").notNull(),
+    issueKey: text("issue_key").notNull(),
+    issueTitle: text("issue_title"),
+    issueUrl: text("issue_url"),
+    externalIssueId: text("external_issue_id"),
+    status: issueLinkStatusEnum("status").default("linked").notNull(),
+    metadata: jsonb("metadata").default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    prProviderIssueKeyUniqueIdx: uniqueIndex("issue_links_pr_provider_issue_key_unique_idx").on(
+        table.prId,
+        table.provider,
+        table.issueKey
+    ),
+    repoProviderIdx: index("issue_links_repo_provider_idx").on(table.repoId, table.provider),
+}));
+
+export const notificationDeliveries = pgTable("notification_deliveries", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    connectionId: uuid("connection_id").notNull().references(() => integrationConnections.id, { onDelete: "cascade" }),
+    repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+    prId: uuid("pr_id").references(() => pullRequests.id, { onDelete: "set null" }),
+    channel: text("channel").notNull(),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").default({}),
+    status: notificationDeliveryStatusEnum("status").default("pending").notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(3).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at").defaultNow().notNull(),
+    lastAttemptAt: timestamp("last_attempt_at"),
+    deliveredAt: timestamp("delivered_at"),
+    errorMessage: text("error_message"),
+    correlationId: text("correlation_id").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    statusNextAttemptIdx: index("notification_deliveries_status_next_attempt_idx").on(table.status, table.nextAttemptAt),
+    connectionCreatedIdx: index("notification_deliveries_connection_created_idx").on(table.connectionId, table.createdAt),
+    correlationUniqueIdx: uniqueIndex("notification_deliveries_correlation_unique_idx").on(table.correlationId),
+}));
+
+export const notificationDeliveryAttempts = pgTable("notification_delivery_attempts", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    deliveryId: uuid("delivery_id").notNull().references(() => notificationDeliveries.id, { onDelete: "cascade" }),
+    attemptNumber: integer("attempt_number").notNull(),
+    status: notificationDeliveryStatusEnum("status").notNull(),
+    errorMessage: text("error_message"),
+    responseCode: integer("response_code"),
+    latencyMs: integer("latency_ms"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    deliveryAttemptIdx: uniqueIndex("notification_delivery_attempts_delivery_attempt_idx").on(table.deliveryId, table.attemptNumber),
+    statusIdx: index("notification_delivery_attempts_status_idx").on(table.status),
+}));
+
+// ============================================================================
 // AI CONFIGURATION
 // ============================================================================
 
@@ -503,6 +594,9 @@ export const repositoriesRelations = relations(repositories, ({ one, many }) => 
     mergeQueue: many(mergeQueue),
     chatSessions: many(chatSessions),
     agentRuns: many(agentRuns),
+    integrationConnections: many(integrationConnections),
+    issueLinks: many(issueLinks),
+    notificationDeliveries: many(notificationDeliveries),
 }));
 
 export const stacksRelations = relations(stacks, ({ one, many }) => ({
@@ -554,6 +648,8 @@ export const pullRequestsRelations = relations(pullRequests, ({ one, many }) => 
     aiReviewJobs: many(aiReviewJobs),
     chatSessions: many(chatSessions),
     agentRuns: many(agentRuns),
+    issueLinks: many(issueLinks),
+    notificationDeliveries: many(notificationDeliveries),
 }));
 
 export const reviewsRelations = relations(reviews, ({ one, many }) => ({
@@ -645,5 +741,47 @@ export const agentRunAuditEventsRelations = relations(agentRunAuditEvents, ({ on
     run: one(agentRuns, {
         fields: [agentRunAuditEvents.runId],
         references: [agentRuns.id],
+    }),
+}));
+
+export const integrationConnectionsRelations = relations(integrationConnections, ({ one, many }) => ({
+    repository: one(repositories, {
+        fields: [integrationConnections.repoId],
+        references: [repositories.id],
+    }),
+    notificationDeliveries: many(notificationDeliveries),
+}));
+
+export const issueLinksRelations = relations(issueLinks, ({ one }) => ({
+    repository: one(repositories, {
+        fields: [issueLinks.repoId],
+        references: [repositories.id],
+    }),
+    pullRequest: one(pullRequests, {
+        fields: [issueLinks.prId],
+        references: [pullRequests.id],
+    }),
+}));
+
+export const notificationDeliveriesRelations = relations(notificationDeliveries, ({ one, many }) => ({
+    connection: one(integrationConnections, {
+        fields: [notificationDeliveries.connectionId],
+        references: [integrationConnections.id],
+    }),
+    repository: one(repositories, {
+        fields: [notificationDeliveries.repoId],
+        references: [repositories.id],
+    }),
+    pullRequest: one(pullRequests, {
+        fields: [notificationDeliveries.prId],
+        references: [pullRequests.id],
+    }),
+    attempts: many(notificationDeliveryAttempts),
+}));
+
+export const notificationDeliveryAttemptsRelations = relations(notificationDeliveryAttempts, ({ one }) => ({
+    delivery: one(notificationDeliveries, {
+        fields: [notificationDeliveryAttempts.deliveryId],
+        references: [notificationDeliveries.id],
     }),
 }));
