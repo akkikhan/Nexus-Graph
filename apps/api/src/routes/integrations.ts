@@ -7,6 +7,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { integrationsRepository } from "../repositories/integrations.js";
 import { verifyIntegrationWebhookSignature } from "../lib/webhook-security.js";
+import { getRealtimeServer } from "../realtime/websocket.js";
 
 const integrationsRouter = new Hono();
 
@@ -32,6 +33,24 @@ const createConnectionSchema = z.object({
     status: connectionStatusSchema.optional(),
     config: z.record(z.string(), z.unknown()).optional(),
     tokenRef: z.string().optional(),
+});
+
+const validateConnectionSchema = z.object({
+    simulateFailure: z.boolean().optional(),
+    responseCode: z.coerce.number().int().min(100).max(599).optional(),
+    latencyMs: z.coerce.number().int().min(0).optional(),
+    errorMessage: z.string().optional(),
+    details: z.record(z.string(), z.unknown()).optional(),
+});
+
+const updateConnectionStatusSchema = z.object({
+    status: z.enum(["active", "disabled"]),
+    reason: z.string().optional(),
+});
+
+const listConnectionActionAuditsSchema = z.object({
+    repoId: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 const listIssueLinksSchema = z.object({
@@ -316,6 +335,58 @@ async function recordIssueLinkActionAudit(input: {
     }
 }
 
+async function recordConnectionActionAudit(input: {
+    action: string;
+    repoId?: string;
+    connectionId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata?: Record<string, unknown>;
+}) {
+    try {
+        await integrationsRepository.recordConnectionActionAudit(input);
+    } catch {
+        // Best effort: connection operation should not fail due to audit insert issues.
+    }
+}
+
+type IntegrationRealtimeScope =
+    | "connection"
+    | "issue_link"
+    | "webhook"
+    | "notification"
+    | "slack_action";
+
+function notifyIntegrationUpdate(input: {
+    repoId?: string;
+    scope: IntegrationRealtimeScope;
+    action: string;
+    outcome: "success" | "error";
+    entityId?: string;
+    metadata?: Record<string, unknown>;
+}) {
+    try {
+        const realtime = getRealtimeServer();
+        if (!realtime) return;
+        const payload = {
+            scope: input.scope,
+            action: input.action,
+            outcome: input.outcome,
+            entityId: input.entityId,
+            repoId: input.repoId,
+            metadata: input.metadata || {},
+            emittedAt: new Date().toISOString(),
+        };
+        if (input.repoId) {
+            realtime.notifyIntegrationUpdate(input.repoId, payload);
+            return;
+        }
+        realtime.broadcast("integration:updated", "integrations", payload);
+    } catch {
+        // Best effort: realtime fanout should not fail request handling.
+    }
+}
+
 integrationsRouter.get("/connections", zValidator("query", listConnectionsSchema), async (c) => {
     const query = c.req.valid("query");
     try {
@@ -352,11 +423,138 @@ integrationsRouter.post("/connections", zValidator("json", createConnectionSchem
             );
         }
         if (result.reason === "insert_failed") return c.json({ error: "Failed to create integration connection" }, 500);
+        notifyIntegrationUpdate({
+            repoId: result.connection.repoId,
+            scope: "connection",
+            action: "created",
+            outcome: "success",
+            entityId: result.connection.id,
+            metadata: {
+                provider: result.connection.provider,
+                status: result.connection.status,
+            },
+        });
         return c.json({ connection: result.connection }, 201);
     } catch (error) {
         return c.json(
             {
                 error: "Database unavailable for integration connection creation",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/connections/:id/validate", zValidator("json", validateConnectionSchema), async (c) => {
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.validateConnection(id, body);
+        if (result.reason === "connection_not_found") return c.json({ error: "Integration connection not found" }, 404);
+        if (result.reason === "update_failed") return c.json({ error: "Failed to validate integration connection" }, 500);
+        await recordConnectionActionAudit({
+            action: body.simulateFailure ? "integration.connection.manual_validate_fail" : "integration.connection.manual_validate",
+            repoId: result.connection.repoId,
+            connectionId: result.connection.id,
+            outcome: result.reason === "validation_failed" ? "error" : "success",
+            summary: `Connection ${result.connection.displayName} is now ${result.connection.status}.`,
+            metadata: {
+                provider: result.connection.provider,
+                status: result.connection.status,
+                reason: result.reason,
+            },
+        });
+        notifyIntegrationUpdate({
+            repoId: result.connection.repoId,
+            scope: "connection",
+            action: body.simulateFailure ? "manual_validate_fail" : "manual_validate",
+            outcome: result.reason === "validation_failed" ? "error" : "success",
+            entityId: result.connection.id,
+            metadata: {
+                provider: result.connection.provider,
+                status: result.connection.status,
+                reason: result.reason,
+            },
+        });
+        return c.json({
+            success: true,
+            reason: result.reason,
+            connection: result.connection,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration connection validation",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/connections/:id/status", zValidator("json", updateConnectionStatusSchema), async (c) => {
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.setConnectionStatus(id, body.status, {
+            reason: body.reason,
+        });
+        if (result.reason === "connection_not_found") return c.json({ error: "Integration connection not found" }, 404);
+        if (result.reason === "update_failed") return c.json({ error: "Failed to update integration connection status" }, 500);
+        await recordConnectionActionAudit({
+            action: "integration.connection.set_status",
+            repoId: result.connection.repoId,
+            connectionId: result.connection.id,
+            outcome: "success",
+            summary: `Connection ${result.connection.displayName} status set to ${result.connection.status}.`,
+            metadata: {
+                provider: result.connection.provider,
+                status: result.connection.status,
+                reason: body.reason,
+            },
+        });
+        notifyIntegrationUpdate({
+            repoId: result.connection.repoId,
+            scope: "connection",
+            action: "set_status",
+            outcome: "success",
+            entityId: result.connection.id,
+            metadata: {
+                provider: result.connection.provider,
+                status: result.connection.status,
+                reason: result.reason,
+            },
+        });
+        return c.json({
+            success: true,
+            reason: result.reason,
+            connection: result.connection,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration connection status update",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/connection-action-audits", zValidator("query", listConnectionActionAuditsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const events = await integrationsRepository.listConnectionActionAudits(query);
+        return c.json({
+            events,
+            total: events.length,
+            limit: query.limit,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration connection action-audit listing",
                 details: details(error),
             },
             503
@@ -405,6 +603,18 @@ integrationsRouter.post("/issue-links", zValidator("json", createIssueLinkSchema
             );
         }
         if (result.reason === "insert_failed") return c.json({ error: "Failed to create issue link" }, 500);
+        notifyIntegrationUpdate({
+            repoId: result.issueLink.repoId,
+            scope: "issue_link",
+            action: "created",
+            outcome: "success",
+            entityId: result.issueLink.id,
+            metadata: {
+                provider: result.issueLink.provider,
+                status: result.issueLink.status,
+                issueKey: result.issueLink.issueKey,
+            },
+        });
         return c.json({ issueLink: result.issueLink }, 201);
     } catch (error) {
         return c.json(
@@ -498,6 +708,19 @@ integrationsRouter.post("/issue-links/:id/sync", zValidator("json", syncIssueLin
                 syncAttemptNumber: result.syncEvent?.attemptNumber,
             },
         });
+        notifyIntegrationUpdate({
+            repoId: result.issueLink.repoId,
+            scope: "issue_link",
+            action: body.simulateFailure ? "manual_fail" : "manual_sync",
+            outcome: result.reason === "sync_failed" ? "error" : "success",
+            entityId: result.issueLink.id,
+            metadata: {
+                provider: result.issueLink.provider,
+                status: result.issueLink.status,
+                issueKey: result.issueLink.issueKey,
+                reason: result.reason,
+            },
+        });
         return c.json({
             success: true,
             reason: result.reason,
@@ -532,6 +755,20 @@ integrationsRouter.post("/issue-links/retry-sync", zValidator("json", retryIssue
                     reason: outcome.reason,
                     status: outcome.status,
                     provider: outcome.provider,
+                },
+            });
+            notifyIntegrationUpdate({
+                repoId: outcome.repoId,
+                scope: "issue_link",
+                action: "retry_sync",
+                outcome:
+                    outcome.status === "sync_failed" || outcome.reason === "sync_update_failed" ? "error" : "success",
+                entityId: outcome.id,
+                metadata: {
+                    provider: outcome.provider,
+                    status: outcome.status,
+                    issueKey: outcome.issueKey,
+                    reason: outcome.reason,
                 },
             });
         }
@@ -723,6 +960,19 @@ integrationsRouter.post("/webhooks/provider/:provider", zValidator("json", inges
             );
         }
         if (result.reason === "insert_failed") return c.json({ error: "Failed to ingest webhook event" }, 500);
+        notifyIntegrationUpdate({
+            repoId: result.event.repoId,
+            scope: "webhook",
+            action: "ingested",
+            outcome: "success",
+            entityId: result.event.id,
+            metadata: {
+                provider: result.event.provider,
+                eventType: result.event.eventType,
+                status: result.event.status,
+                externalEventId: result.event.externalEventId,
+            },
+        });
         return c.json({ event: result.event }, 201);
     } catch (error) {
         return c.json(
@@ -764,6 +1014,19 @@ integrationsRouter.post("/webhooks/:id/process", zValidator("json", processWebho
                 maxAttempts: result.event.maxAttempts,
             },
         });
+        notifyIntegrationUpdate({
+            repoId: result.event.repoId,
+            scope: "webhook",
+            action: body.simulateFailure ? "manual_fail" : "manual_process",
+            outcome: result.event.status === "failed" || result.event.status === "dead_letter" ? "error" : "success",
+            entityId: result.event.id,
+            metadata: {
+                provider: result.event.provider,
+                eventType: result.event.eventType,
+                status: result.event.status,
+                reason: result.reason,
+            },
+        });
         return c.json({
             success: true,
             reason: result.reason,
@@ -798,6 +1061,21 @@ integrationsRouter.post("/webhooks/retry", zValidator("json", retryWebhooksSchem
                 metadata: {
                     reason: outcome.reason,
                     status: outcome.status,
+                },
+            });
+            notifyIntegrationUpdate({
+                repoId: outcome.repoId,
+                scope: "webhook",
+                action: "retry_due",
+                outcome:
+                    outcome.status === "failed" || outcome.status === "dead_letter" || outcome.reason === "update_failed"
+                        ? "error"
+                        : "success",
+                entityId: outcome.id,
+                metadata: {
+                    status: outcome.status,
+                    reason: outcome.reason,
+                    externalEventId: outcome.externalEventId,
                 },
             });
         }
@@ -869,6 +1147,19 @@ integrationsRouter.post("/slack/actions", zValidator("json", slackActionSchema),
         }
         if (result.reason === "invalid_provider") return c.json({ error: "Unsupported provider for Slack callback" }, 400);
         if (result.reason === "insert_failed") return c.json({ error: "Failed to ingest Slack callback" }, 500);
+        notifyIntegrationUpdate({
+            repoId: body.repoId,
+            scope: "slack_action",
+            action: "callback_processed",
+            outcome: result.processingReason === "processed" ? "success" : "error",
+            entityId: result.event.id,
+            metadata: {
+                actionType: body.actionType,
+                processingReason: result.processingReason,
+                eventType: result.event.eventType,
+                correlationId: body.correlationId,
+            },
+        });
         return c.json(
             {
                 success: true,
@@ -947,6 +1238,19 @@ integrationsRouter.post("/notifications", zValidator("json", enqueueNotification
             return c.json({ error: "connectionId does not belong to repoId" }, 409);
         }
         if (result.reason === "insert_failed") return c.json({ error: "Failed to enqueue notification" }, 500);
+        notifyIntegrationUpdate({
+            repoId: result.delivery.repoId,
+            scope: "notification",
+            action: "enqueued",
+            outcome: "success",
+            entityId: result.delivery.id,
+            metadata: {
+                status: result.delivery.status,
+                eventType: result.delivery.eventType,
+                channel: result.delivery.channel,
+                correlationId: result.delivery.correlationId,
+            },
+        });
         return c.json({ delivery: result.delivery }, 201);
     } catch (error) {
         return c.json(
@@ -1007,6 +1311,20 @@ integrationsRouter.post("/notifications/:id/deliver", zValidator("json", deliver
                 maxAttempts: result.delivery.maxAttempts,
             },
         });
+        notifyIntegrationUpdate({
+            repoId: result.delivery.repoId,
+            scope: "notification",
+            action: body.simulateFailure ? "manual_fail" : "manual_deliver",
+            outcome:
+                result.delivery.status === "failed" || result.delivery.status === "dead_letter" ? "error" : "success",
+            entityId: result.delivery.id,
+            metadata: {
+                status: result.delivery.status,
+                reason: result.reason,
+                channel: result.delivery.channel,
+                correlationId: result.delivery.correlationId,
+            },
+        });
         return c.json({
             success: true,
             reason: result.reason,
@@ -1042,6 +1360,21 @@ integrationsRouter.post("/notifications/retry", zValidator("json", retryNotifica
                 metadata: {
                     reason: outcome.reason,
                     status: outcome.status,
+                },
+            });
+            notifyIntegrationUpdate({
+                repoId: outcome.repoId,
+                scope: "notification",
+                action: "retry_due",
+                outcome:
+                    outcome.status === "failed" || outcome.status === "dead_letter" || outcome.reason === "update_failed"
+                        ? "error"
+                        : "success",
+                entityId: outcome.id,
+                metadata: {
+                    status: outcome.status,
+                    reason: outcome.reason,
+                    correlationId: outcome.correlationId,
                 },
             });
         }

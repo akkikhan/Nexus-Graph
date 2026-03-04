@@ -2,11 +2,16 @@
 
 const WEB_BASE_URL = (process.env.WEB_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
 const REQUIRE_PLAYWRIGHT = process.env.REQUIRE_PLAYWRIGHT === "true";
+const REQUEST_FAILURE_IGNORE_SUBSTRINGS = ["ERR_ABORTED", "NS_BINDING_ABORTED", "Operation canceled"];
 
 function assert(condition, message) {
     if (!condition) {
         throw new Error(message);
     }
+}
+
+function isIgnorableRequestFailure(errorText) {
+    return REQUEST_FAILURE_IGNORE_SUBSTRINGS.some((pattern) => errorText.includes(pattern));
 }
 
 async function httpSmokeOnly() {
@@ -28,6 +33,56 @@ async function browserSmoke(playwrightModule) {
 
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    const apiClientErrors = [];
+    const pageErrors = [];
+    const consoleErrors = [];
+    const requestFailures = [];
+
+    page.on("response", async (response) => {
+        const url = response.url();
+        if (!url.includes("/api/v1/")) return;
+        const status = response.status();
+        if (status < 400 || status >= 500) return;
+
+        let preview = "";
+        try {
+            const body = await response.text();
+            preview = body.slice(0, 240);
+        } catch {
+            // Best-effort diagnostics only.
+        }
+
+        apiClientErrors.push({
+            method: response.request().method(),
+            status,
+            url,
+            preview,
+        });
+    });
+    page.on("pageerror", (error) => {
+        pageErrors.push(String(error?.message || error));
+    });
+    page.on("console", (message) => {
+        if (message.type() !== "error") return;
+        const text = message.text();
+        // Ignore noisy browser extension errors that are unrelated to app behavior.
+        if (text.includes("chrome-extension://")) return;
+        consoleErrors.push(text);
+    });
+    page.on("requestfailed", (request) => {
+        const url = request.url();
+        if (!url.includes("/api/v1/") && !url.startsWith(WEB_BASE_URL)) return;
+        if (url.includes("/_next/static/webpack/")) return;
+
+        const errorText = request.failure()?.errorText || "unknown request failure";
+        if (isIgnorableRequestFailure(errorText)) return;
+
+        requestFailures.push({
+            method: request.method(),
+            url,
+            error: errorText,
+        });
+    });
 
     try {
         const pages = ["/inbox", "/stacks", "/queue", "/activity", "/insights"];
@@ -96,6 +151,30 @@ async function browserSmoke(playwrightModule) {
         if (await reviewsFilter.isVisible().catch(() => false)) {
             await reviewsFilter.click();
             await page.waitForTimeout(250);
+        }
+
+        if (apiClientErrors.length > 0) {
+            const formatted = apiClientErrors
+                .slice(0, 8)
+                .map(
+                    (entry) =>
+                        `${entry.method} ${entry.status} ${entry.url}${entry.preview ? ` :: ${entry.preview}` : ""}`
+                )
+                .join("\n");
+            throw new Error(`Unexpected API 4xx responses during web smoke:\n${formatted}`);
+        }
+        if (pageErrors.length > 0) {
+            throw new Error(`Unexpected page runtime errors during web smoke:\n${pageErrors.slice(0, 5).join("\n")}`);
+        }
+        if (consoleErrors.length > 0) {
+            throw new Error(`Unexpected browser console errors during web smoke:\n${consoleErrors.slice(0, 5).join("\n")}`);
+        }
+        if (requestFailures.length > 0) {
+            const formatted = requestFailures
+                .slice(0, 8)
+                .map((entry) => `${entry.method} ${entry.url} :: ${entry.error}`)
+                .join("\n");
+            throw new Error(`Unexpected network request failures during web smoke:\n${formatted}`);
         }
 
         process.stdout.write("[web-smoke] PASS\n");

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import {
     IntegrationWebhookAuthEventListOptions,
+    fetchIntegrationConnectionActionAudits,
     fetchIntegrationAlerts,
     fetchIntegrationConnections,
     fetchIntegrationIssueLinkActionAudits,
@@ -30,12 +31,15 @@ import {
     exportIntegrationWebhookAuthEvents,
     fetchIntegrationWebhookAuthEvents,
     processIntegrationWebhookEvent,
+    setIntegrationConnectionStatus,
+    validateIntegrationConnection,
     retryIntegrationIssueLinkSyncs,
     retryDueIntegrationNotifications,
     retryDueIntegrationWebhooks,
     syncIntegrationIssueLink,
     fetchSystemHealth,
     IntegrationAlertStatus,
+    IntegrationConnectionActionAuditEvent,
     IntegrationConnection,
     IntegrationIssueLink,
     IntegrationIssueLinkActionAuditEvent,
@@ -239,6 +243,7 @@ const initialValues: Record<string, string | number | boolean> = {
 };
 
 const SETTINGS_STORAGE_KEY = "nexus.settings.v1";
+const REALTIME_REFRESH_DEBOUNCE_MS = 1500;
 
 function statusLabel(status: "connected" | "disconnected" | "coming_soon"): string {
     if (status === "connected") return "Connected";
@@ -256,6 +261,7 @@ type AuthProviderFilter = "all" | "slack" | "linear" | "jira";
 type AuthOutcomeFilter = "all" | "rejected" | "config_error";
 type WebhookStatusFilter = "all" | "received" | "processed" | "failed" | "dead_letter";
 type WebhookActionMode = "process" | "fail";
+type ConnectionActionMode = "validate" | "fail_validate" | "enable" | "disable";
 type NotificationStatusFilter = "all" | "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
 type NotificationActionMode = "deliver" | "fail";
 type IssueLinkStatusFilter = "all" | "linked" | "sync_pending" | "sync_failed";
@@ -297,6 +303,11 @@ function formatIssueLinkAuditAction(action: string): string {
     return normalized.split("_").join(" ");
 }
 
+function formatConnectionAuditAction(action: string): string {
+    const normalized = action.startsWith("integration.connection.") ? action.slice("integration.connection.".length) : action;
+    return normalized.split("_").join(" ");
+}
+
 function formatAuthTimestamp(value: string): string {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
@@ -333,6 +344,10 @@ export default function SettingsPage() {
     const [retryingDueWebhooks, setRetryingDueWebhooks] = useState(false);
     const [retryingDueNotifications, setRetryingDueNotifications] = useState(false);
     const [retryingIssueLinkSyncs, setRetryingIssueLinkSyncs] = useState(false);
+    const [processingConnectionAction, setProcessingConnectionAction] = useState<{
+        id: string;
+        mode: ConnectionActionMode;
+    } | null>(null);
     const [processingWebhookAction, setProcessingWebhookAction] = useState<{
         id: string;
         mode: WebhookActionMode;
@@ -351,8 +366,11 @@ export default function SettingsPage() {
     const [notificationActionError, setNotificationActionError] = useState("");
     const [issueLinkActionMessage, setIssueLinkActionMessage] = useState("");
     const [issueLinkActionError, setIssueLinkActionError] = useState("");
+    const [connectionActionMessage, setConnectionActionMessage] = useState("");
+    const [connectionActionError, setConnectionActionError] = useState("");
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
     const [exportError, setExportError] = useState("");
+    const lastRealtimeRefreshAtRef = useRef(0);
 
     const { data: health, isLoading: healthLoading } = useQuery({
         queryKey: ["system", "health"],
@@ -407,6 +425,21 @@ export default function SettingsPage() {
                 repoId: integrationRepoId,
                 limit: 50,
                 offset: 0,
+            }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: connectionActionAuditsData,
+        isLoading: connectionActionAuditsLoading,
+        isFetching: connectionActionAuditsFetching,
+        error: connectionActionAuditsError,
+        refetch: refetchConnectionActionAudits,
+    } = useQuery({
+        queryKey: ["settings", "integration-connection-action-audits", integrationRepoId],
+        queryFn: () =>
+            fetchIntegrationConnectionActionAudits({
+                repoId: integrationRepoId,
+                limit: 8,
             }),
         refetchInterval: 30_000,
     });
@@ -549,6 +582,110 @@ export default function SettingsPage() {
         refetchInterval: 30_000,
     });
 
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        const configuredWsUrl = process.env.NEXT_PUBLIC_WS_URL?.trim();
+        const wsUrl = configuredWsUrl
+            ? configuredWsUrl
+            : (() => {
+                  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+                  if (window.location.port === "3000") {
+                      return `${protocol}//${window.location.hostname}:3001/ws`;
+                  }
+                  return `${protocol}//${window.location.host}/ws`;
+              })();
+        if (!wsUrl) return;
+
+        let socket: WebSocket | null = null;
+        let stopped = false;
+        let reconnectTimer: number | null = null;
+
+        const refreshIntegrationQueries = () => {
+            const now = Date.now();
+            if (now - lastRealtimeRefreshAtRef.current < REALTIME_REFRESH_DEBOUNCE_MS) return;
+            lastRealtimeRefreshAtRef.current = now;
+            void Promise.all([
+                refetchIntegrationConnections(),
+                refetchConnectionActionAudits(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchWebhookEvents(),
+                refetchWebhookActionAudits(),
+                refetchNotificationDeliveries(),
+                refetchNotificationActionAudits(),
+                refetchIssueLinks(),
+                refetchIssueLinkActionAudits(),
+            ]);
+        };
+
+        const connect = () => {
+            if (stopped) return;
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                const channels = integrationRepoId ? ["integrations", `repo:${integrationRepoId}`] : ["integrations"];
+                socket?.send(
+                    JSON.stringify({
+                        type: "subscribe",
+                        payload: { channels },
+                    })
+                );
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const parsed = JSON.parse(event.data as string) as {
+                        type?: string;
+                        payload?: { repoId?: string };
+                    };
+                    if (parsed?.type !== "integration:updated") return;
+                    if (
+                        integrationRepoId &&
+                        typeof parsed?.payload?.repoId === "string" &&
+                        parsed.payload.repoId !== integrationRepoId
+                    ) {
+                        return;
+                    }
+                    refreshIntegrationQueries();
+                } catch {
+                    // Ignore malformed WS payloads.
+                }
+            };
+
+            socket.onclose = () => {
+                if (stopped) return;
+                reconnectTimer = window.setTimeout(connect, 2000);
+            };
+
+            socket.onerror = () => {
+                // Network hiccups are expected in local/dev.
+            };
+        };
+
+        connect();
+
+        return () => {
+            stopped = true;
+            if (reconnectTimer !== null) {
+                window.clearTimeout(reconnectTimer);
+            }
+            socket?.close();
+        };
+    }, [
+        integrationRepoId,
+        refetchConnectionActionAudits,
+        refetchIntegrationAlerts,
+        refetchIntegrationConnections,
+        refetchIntegrationMetrics,
+        refetchIssueLinkActionAudits,
+        refetchIssueLinks,
+        refetchNotificationActionAudits,
+        refetchNotificationDeliveries,
+        refetchWebhookActionAudits,
+        refetchWebhookEvents,
+    ]);
+
     const healthSummary = useMemo(() => {
         if (!health) {
             return {
@@ -565,6 +702,7 @@ export default function SettingsPage() {
 
     const authEvents = authEventsData?.events || [];
     const integrationConnections = integrationConnectionsData?.connections || [];
+    const connectionActionAudits = connectionActionAuditsData?.events || [];
     const webhookEvents = webhookEventsData?.events || [];
     const webhookActionAudits = webhookActionAuditsData?.events || [];
     const notificationDeliveries = notificationDeliveriesData?.deliveries || [];
@@ -574,6 +712,7 @@ export default function SettingsPage() {
     const hasNextAuthPage = authEvents.length === WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
     const integrationLoading =
         integrationConnectionsLoading ||
+        connectionActionAuditsLoading ||
         integrationMetricsLoading ||
         integrationAlertsLoading ||
         webhookEventsLoading ||
@@ -584,6 +723,7 @@ export default function SettingsPage() {
         issueLinkActionAuditsLoading;
     const integrationFetching =
         integrationConnectionsFetching ||
+        connectionActionAuditsFetching ||
         integrationMetricsFetching ||
         integrationAlertsFetching ||
         webhookEventsFetching ||
@@ -661,6 +801,8 @@ export default function SettingsPage() {
         setWebhookStatusFilter("all");
         setNotificationStatusFilter("all");
         setIssueLinkStatusFilter("all");
+        setConnectionActionMessage("");
+        setConnectionActionError("");
         setWebhookActionMessage("");
         setWebhookActionError("");
         setNotificationActionMessage("");
@@ -690,6 +832,73 @@ export default function SettingsPage() {
             setExportError((error as Error).message || "Failed to export diagnostics.");
         } finally {
             setExportingFormat(null);
+        }
+    };
+
+    const onValidateConnection = async (connection: IntegrationConnection, mode: ConnectionActionMode) => {
+        setConnectionActionMessage("");
+        setConnectionActionError("");
+        setProcessingConnectionAction({
+            id: connection.id,
+            mode,
+        });
+        try {
+            const result = await validateIntegrationConnection(
+                connection.id,
+                mode === "fail_validate"
+                    ? {
+                          simulateFailure: true,
+                          errorMessage: "Manual validation failure drill from settings control plane",
+                      }
+                    : {}
+            );
+            const message = `Connection ${result.connection.displayName} is now ${result.connection.status}.`;
+            setConnectionActionMessage(message);
+            await Promise.all([
+                refetchIntegrationConnections(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchConnectionActionAudits(),
+            ]);
+        } catch (error) {
+            const message = getErrorMessage(error, "Failed to validate integration connection.");
+            setConnectionActionError(message);
+        } finally {
+            setProcessingConnectionAction(null);
+        }
+    };
+
+    const onSetConnectionStatus = async (
+        connection: IntegrationConnection,
+        nextStatus: "active" | "disabled"
+    ) => {
+        setConnectionActionMessage("");
+        setConnectionActionError("");
+        setProcessingConnectionAction({
+            id: connection.id,
+            mode: nextStatus === "active" ? "enable" : "disable",
+        });
+        try {
+            const result = await setIntegrationConnectionStatus(
+                connection.id,
+                nextStatus,
+                nextStatus === "active"
+                    ? "Manual enable from settings control plane"
+                    : "Manual disable from settings control plane"
+            );
+            const message = `Connection ${result.connection.displayName} status set to ${result.connection.status}.`;
+            setConnectionActionMessage(message);
+            await Promise.all([
+                refetchIntegrationConnections(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchConnectionActionAudits(),
+            ]);
+        } catch (error) {
+            const message = getErrorMessage(error, "Failed to update integration connection status.");
+            setConnectionActionError(message);
+        } finally {
+            setProcessingConnectionAction(null);
         }
     };
 
@@ -924,9 +1133,15 @@ export default function SettingsPage() {
                             void Promise.all([
                                 refetchAuthEvents(),
                                 refetchIntegrationConnections(),
+                                refetchConnectionActionAudits(),
                                 refetchIntegrationMetrics(),
                                 refetchIntegrationAlerts(),
                                 refetchWebhookEvents(),
+                                refetchWebhookActionAudits(),
+                                refetchNotificationDeliveries(),
+                                refetchNotificationActionAudits(),
+                                refetchIssueLinks(),
+                                refetchIssueLinkActionAudits(),
                             ]);
                         }}
                         className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-zinc-700 text-zinc-200 hover:bg-zinc-800/70 transition-colors text-sm"
@@ -1055,11 +1270,17 @@ export default function SettingsPage() {
 
                     {integrationLoading ? (
                         <div className="text-sm text-zinc-400">Loading integration operations snapshot...</div>
-                    ) : integrationConnectionsError || integrationMetricsError || integrationAlertsError ? (
+                    ) : integrationConnectionsError ||
+                      connectionActionAuditsError ||
+                      integrationMetricsError ||
+                      integrationAlertsError ? (
                         <div className="rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
                             {[
                                 integrationConnectionsError
                                     ? getErrorMessage(integrationConnectionsError, "Connections unavailable")
+                                    : null,
+                                connectionActionAuditsError
+                                    ? getErrorMessage(connectionActionAuditsError, "Connection action audits unavailable")
                                     : null,
                                 integrationMetricsError
                                     ? getErrorMessage(integrationMetricsError, "Metrics unavailable")
@@ -1129,6 +1350,145 @@ export default function SettingsPage() {
                                           .join(", ")}`
                                     : "No active integration alerts."}
                                 {integrationFetching ? " Refreshing..." : ""}
+                            </div>
+
+                            <div
+                                className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3"
+                                data-testid="settings-connection-control-plane"
+                            >
+                                <div>
+                                    <h4 className="text-sm font-semibold text-white">Connection Control Plane</h4>
+                                    <p className="text-xs text-zinc-500">
+                                        Manually validate connections and toggle provider status with persisted operator audits.
+                                    </p>
+                                </div>
+
+                                {integrationConnections.length === 0 ? (
+                                    <div className="text-sm text-zinc-500">No configured integration connections.</div>
+                                ) : (
+                                    <div className="rounded border border-zinc-800 overflow-x-auto">
+                                        <div className="min-w-[980px]">
+                                            <div className="grid grid-cols-[110px_170px_110px_170px_1fr_280px] gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500 bg-zinc-950/60">
+                                                <span>Provider</span>
+                                                <span>Connection</span>
+                                                <span>Status</span>
+                                                <span>Last Validated</span>
+                                                <span>Last Error</span>
+                                                <span>Actions</span>
+                                            </div>
+                                            <div className="divide-y divide-zinc-800">
+                                                {integrationConnections.map((connection) => {
+                                                    const isProcessing = processingConnectionAction?.id === connection.id;
+                                                    return (
+                                                        <div
+                                                            key={connection.id}
+                                                            data-testid={`connection-row-${connection.id}`}
+                                                            className="grid grid-cols-[110px_170px_110px_170px_1fr_280px] gap-2 px-3 py-2 text-sm text-zinc-200 items-center"
+                                                        >
+                                                            <span className="capitalize">{connection.provider}</span>
+                                                            <div className="min-w-0">
+                                                                <div className="truncate">{connection.displayName}</div>
+                                                                <div className="text-xs text-zinc-500 truncate">{connection.id}</div>
+                                                            </div>
+                                                            <span
+                                                                className={
+                                                                    connection.status === "active"
+                                                                        ? "text-green-300"
+                                                                        : connection.status === "disabled"
+                                                                          ? "text-zinc-300"
+                                                                          : "text-red-300"
+                                                                }
+                                                            >
+                                                                {connection.status}
+                                                            </span>
+                                                            <span className="text-xs text-zinc-400">
+                                                                {connection.lastValidatedAt
+                                                                    ? formatAuthTimestamp(connection.lastValidatedAt)
+                                                                    : "Never"}
+                                                            </span>
+                                                            <span className="text-xs text-zinc-400 truncate">
+                                                                {connection.lastError || "None"}
+                                                            </span>
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={() => onValidateConnection(connection, "validate")}
+                                                                    disabled={isProcessing}
+                                                                    className="px-2 py-1 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                                                >
+                                                                    {isProcessing && processingConnectionAction?.mode === "validate"
+                                                                        ? "Validating..."
+                                                                        : "Validate"}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => onValidateConnection(connection, "fail_validate")}
+                                                                    disabled={isProcessing}
+                                                                    className="px-2 py-1 rounded border border-red-800/60 text-xs text-red-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-red-900/40 transition-colors"
+                                                                >
+                                                                    {isProcessing && processingConnectionAction?.mode === "fail_validate"
+                                                                        ? "Failing..."
+                                                                        : "Fail Validate"}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => onSetConnectionStatus(connection, "active")}
+                                                                    disabled={isProcessing || connection.status === "active"}
+                                                                    className="px-2 py-1 rounded border border-green-800/70 text-xs text-green-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-green-900/30 transition-colors"
+                                                                >
+                                                                    {isProcessing && processingConnectionAction?.mode === "enable"
+                                                                        ? "Enabling..."
+                                                                        : "Enable"}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => onSetConnectionStatus(connection, "disabled")}
+                                                                    disabled={isProcessing || connection.status === "disabled"}
+                                                                    className="px-2 py-1 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                                                >
+                                                                    {isProcessing && processingConnectionAction?.mode === "disable"
+                                                                        ? "Disabling..."
+                                                                        : "Disable"}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {connectionActionMessage ? (
+                                    <div className="text-xs text-green-300 bg-green-500/10 border border-green-500/20 rounded px-3 py-2">
+                                        {connectionActionMessage}
+                                    </div>
+                                ) : null}
+                                {connectionActionError ? (
+                                    <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                                        {connectionActionError}
+                                    </div>
+                                ) : null}
+                                {connectionActionAuditsLoading ? (
+                                    <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 text-xs text-zinc-500">
+                                        Loading persisted action audit...
+                                    </div>
+                                ) : connectionActionAuditsError ? (
+                                    <div className="rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                                        Failed to load action audit: {getErrorMessage(connectionActionAuditsError, "Unavailable")}
+                                    </div>
+                                ) : connectionActionAudits.length > 0 ? (
+                                    <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 space-y-1">
+                                        <div className="text-[11px] uppercase tracking-wide text-zinc-500">Recent Actions</div>
+                                        {connectionActionAudits.map((entry: IntegrationConnectionActionAuditEvent) => (
+                                            <div
+                                                key={entry.id}
+                                                className={`text-xs ${
+                                                    entry.outcome === "success" ? "text-zinc-300" : "text-red-300"
+                                                }`}
+                                            >
+                                                {formatAuthTimestamp(entry.createdAt)} - {entry.summary}
+                                                <span className="text-zinc-500"> ({formatConnectionAuditAction(entry.action)})</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : null}
                             </div>
 
                             <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">

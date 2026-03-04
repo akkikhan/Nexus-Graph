@@ -35,7 +35,8 @@ export type WSEventType =
     | "notification"
     | "conflict:detected"
     | "health:updated"
-    | "velocity:updated";
+    | "velocity:updated"
+    | "integration:updated";
 
 export class RealtimeServer {
     private wss: WebSocketServer;
@@ -255,6 +256,14 @@ export class RealtimeServer {
         prIds.forEach((prId) => {
             this.broadcast("conflict:detected", `pr:${prId}`, data);
         });
+    }
+
+    /**
+     * Broadcast integration workflow updates
+     */
+    notifyIntegrationUpdate(repoId: string, data: any) {
+        this.broadcast("integration:updated", `repo:${repoId}`, data);
+        this.broadcast("integration:updated", "integrations", data);
     }
 
     /**

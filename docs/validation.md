@@ -57,6 +57,9 @@ Checks:
 - `GET /api/v1/agents/runs/:id/audit`
 - `POST /api/v1/integrations/connections` (Slack + Linear setup)
 - `GET /api/v1/integrations/connections`
+- `POST /api/v1/integrations/connections/:id/validate` (manual validation + failure drill)
+- `POST /api/v1/integrations/connections/:id/status` (operator enable/disable lifecycle)
+- `GET /api/v1/integrations/connection-action-audits` (durable operator action audit feed for connection validation/status changes)
 - `POST /api/v1/integrations/issue-links` (Linear/Jira link persistence)
 - `GET /api/v1/integrations/issue-links`
 - `POST /api/v1/integrations/issue-links/:id/sync` (back-link sync attempt)
@@ -87,7 +90,13 @@ Checks:
 - `GET /api/v1/stacks/:id` (detail)
 - `DELETE /api/v1/stacks/:id`
 - `GET /api/v1/stacks/:id` -> `404` after delete
-- `GET /api/v1/activity?limit=5`
+- `GET /api/v1/activity?limit=50`
+- `GET /api/v1/activity?limit=50&type=integration_event` (strict integration-event contract check + excludes local stack snapshot fallback event)
+- `GET /api/v1/activity?limit=20&type=ai_review`
+- `GET /api/v1/activity?limit=20&type=review_requested`
+- `GET /api/v1/activity?limit=20&type=pr_merged`
+- `GET /api/v1/activity?limit=20&type=stack_updated` (includes local snapshot fallback event assertion)
+- `GET /api/v1/activity?limit=5&type=unsupported_event` -> `400` (invalid filter contract)
 - `GET /api/v1/insights/dashboard`
 - `POST /api/v1/insights/predict-conflicts`
 - `POST /api/v1/insights/reviewer-fatigue`
@@ -122,17 +131,24 @@ Degraded-mode behavior:
 Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 
 - Inbox healthy flow (search/filter, open detail, request AI review)
+- Inbox integration context (Linear/Jira issue-link badges in list and linked-issue panel in PR detail)
 - Inbox degraded flow (explicit error UI on mocked `503`)
 - Stacks list + open stack detail route
+- Stack detail integration context (linked Linear/Jira issue badges per branch PR)
 - Queue turbo toggle
-- Activity filter switching
+- Activity filter switching (Reviews, Merges, Stacks, Integrations) with include/exclude assertions per tab
+- Activity integration context (Integrations filter + provider/scope/action/outcome chips)
 - Insights dashboard load
 - Settings diagnostics panel load (webhook auth events + filter path)
 - Settings integrations operations snapshot (connections + metrics + alerts)
+- Settings connection control plane actions (validate/fail-validate/enable/disable + persisted action audit feed)
 - Settings webhook recovery actions (list/process/fail/retry controls + persisted action audit feed)
 - Settings notification delivery actions (list/deliver/fail/retry controls + persisted action audit feed)
 - Settings issue-link sync actions (list/sync/fail/retry controls + persisted action audit feed)
 - Settings diagnostics export controls (JSON/CSV) render and trigger server-side export requests
+- Release `web-e2e-smoke` also fails on unexpected `/api/v1/*` client-error (`4xx`) responses to catch silent contract regressions
+- Release `web-e2e-smoke` fails on unexpected browser runtime errors (`pageerror`) and console `error` logs
+- Release `web-e2e-smoke` fails on non-aborted network request failures (`requestfailed`) for app/API traffic (ignores expected dev-mode HMR/navigation abort noise)
 
 Prerequisite:
 
@@ -147,7 +163,7 @@ What it does:
 - Starts API and Web services
 - Waits for readiness checks
 - Runs API smoke
-- Runs web smoke script
+- Runs web smoke script with `REQUIRE_PLAYWRIGHT=true` (fails if Playwright is missing)
 - Stops services
 
 `pnpm validate:release:ci` uses the same orchestration and is intended for CI pipelines.
@@ -174,3 +190,5 @@ Failure artifacts uploaded:
 - `WEB_BASE_URL` (default `http://localhost:3000`)
 - `ALLOW_DEGRADED` (`true` by default)
 - `REQUIRE_PLAYWRIGHT` (`false` by default, set `true` in CI)
+- `RELEASE_API_PORT` (default `3101`, used by `validate:release` API service)
+- `RELEASE_WEB_PORT` (default `3000`, readiness + web smoke target for `validate:release`)

@@ -73,9 +73,40 @@ test("inbox healthy path: search/filter, open detail, request AI review", async 
     await page.route("**/api/v1/prs/pr-1/request-review", async (route) => {
         await route.fulfill(jsonResponse(200, { success: true, message: "AI review queued" }));
     });
+    await page.route("**/api/v1/integrations/issue-links**", async (route) => {
+        const url = new URL(route.request().url());
+        const prId = url.searchParams.get("prId");
+        const links = [
+            {
+                id: "issue-link-pr-1",
+                repoId: "repo-1",
+                prId: "pr-1",
+                provider: "linear",
+                issueKey: "LIN-101",
+                issueTitle: "Auth middleware rollout",
+                issueUrl: "https://linear.app/nexus/issue/LIN-101/auth-middleware-rollout",
+                status: "linked",
+                metadata: {},
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            },
+        ].filter((link) => {
+            if (prId && link.prId !== prId) return false;
+            return true;
+        });
+        await route.fulfill(
+            jsonResponse(200, {
+                links,
+                total: links.length,
+                limit: 20,
+                offset: 0,
+            })
+        );
+    });
 
     await page.goto("/inbox", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: /PR Inbox/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/LIN-101/i)).toBeVisible({ timeout: 20000 });
 
     const searchInput = page.locator('input[placeholder*="Search pull requests"]').first();
     await searchInput.fill("auth");
@@ -95,6 +126,8 @@ test("inbox healthy path: search/filter, open detail, request AI review", async 
     }
 
     await expect(page.getByText("Back to Inbox")).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText(/Linked Issues/i)).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText(/Auth middleware rollout/i)).toBeVisible({ timeout: 30000 });
     await page.getByRole("button", { name: /Request AI Review/i }).click();
     await expect(page.getByText(/AI review queued/i)).toBeVisible();
 });
@@ -157,7 +190,7 @@ test("stacks list and detail route", async ({ page }) => {
                             name: "feature/auth",
                             order: 1,
                             status: "open",
-                            pr: { number: 101, title: "Add auth middleware", riskScore: 72 },
+                            pr: { id: "pr-1", number: 101, title: "Add auth middleware", riskScore: 72 },
                         },
                     ],
                     mergableCount: 0,
@@ -176,6 +209,31 @@ test("stacks list and detail route", async ({ page }) => {
     await page.route("**/api/v1/stacks/stack-db-1/submit", async (route) => {
         await route.fulfill(jsonResponse(200, { success: true, message: "Stack submitted", prsCreated: 1 }));
     });
+    await page.route("**/api/v1/integrations/issue-links**", async (route) => {
+        const links = [
+            {
+                id: "stack-link-1",
+                repoId: "repo-1",
+                prId: "pr-1",
+                provider: "linear",
+                issueKey: "LIN-STACK-1",
+                issueTitle: "Stack auth dependency chain",
+                issueUrl: "https://linear.app/nexus/issue/LIN-STACK-1/stack-auth-dependency-chain",
+                status: "linked",
+                metadata: {},
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            },
+        ];
+        await route.fulfill(
+            jsonResponse(200, {
+                links,
+                total: links.length,
+                limit: 20,
+                offset: 0,
+            })
+        );
+    });
 
     await page.goto("/stacks", { waitUntil: "domcontentloaded" });
     await page.getByTestId("stack-card-stack-db-1").click();
@@ -189,6 +247,7 @@ test("stacks list and detail route", async ({ page }) => {
     }
     await expect(page.getByText("Back to Stacks")).toBeVisible({ timeout: 30000 });
     await expect(page.getByText("Branch Order")).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText(/LIN-STACK-1/i)).toBeVisible({ timeout: 30000 });
 });
 
 test("queue: toggle turbo action", async ({ page }) => {
@@ -245,16 +304,64 @@ test("activity: filter switching", async ({ page }) => {
                         description: "#99 merged successfully",
                         timestamp: "2 minutes ago",
                     },
+                    {
+                        id: "act-3",
+                        type: "stack_updated",
+                        icon: "GitBranch",
+                        color: "text-nexus-500",
+                        bgColor: "bg-nexus-500/10",
+                        title: "Stack Updated",
+                        description: 'Stack "Auth stack" has 3 branches',
+                        timestamp: "just now",
+                    },
+                    {
+                        id: "act-4",
+                        type: "integration_event",
+                        icon: "Globe",
+                        color: "text-cyan-400",
+                        bgColor: "bg-cyan-500/10",
+                        title: "Integration connection",
+                        description: "Connection Jira Prod is now active.",
+                        timestamp: "just now",
+                        integration: {
+                            provider: "jira",
+                            scope: "connection",
+                            action: "manual_validate",
+                            outcome: "success",
+                        },
+                    },
                 ],
             })
         );
     });
 
     await page.goto("/activity", { waitUntil: "domcontentloaded" });
+    const reviewCard = page.getByRole("heading", { name: "AI Review Completed" });
+    const mergeCard = page.getByRole("heading", { name: "PR Merged" });
+    const stackCard = page.getByRole("heading", { name: "Stack Updated" });
+    const integrationCard = page.getByRole("heading", { name: "Integration connection" });
     await page.getByRole("button", { name: /Reviews/i }).click();
-    await expect(page.getByText("AI Review Completed")).toBeVisible();
+    await expect(reviewCard).toBeVisible();
+    await expect(mergeCard).toHaveCount(0);
+    await expect(stackCard).toHaveCount(0);
+    await expect(integrationCard).toHaveCount(0);
     await page.getByRole("button", { name: /Merges/i }).click();
-    await expect(page.getByText("PR Merged")).toBeVisible();
+    await expect(mergeCard).toBeVisible();
+    await expect(reviewCard).toHaveCount(0);
+    await expect(stackCard).toHaveCount(0);
+    await expect(integrationCard).toHaveCount(0);
+    await page.getByRole("button", { name: /Stacks/i }).click();
+    await expect(stackCard).toBeVisible();
+    await expect(page.getByText(/Auth stack/i)).toBeVisible();
+    await expect(reviewCard).toHaveCount(0);
+    await expect(mergeCard).toHaveCount(0);
+    await expect(integrationCard).toHaveCount(0);
+    await page.getByRole("button", { name: /Integrations/i }).click();
+    await expect(integrationCard).toBeVisible();
+    await expect(page.getByText("manual validate")).toBeVisible();
+    await expect(reviewCard).toHaveCount(0);
+    await expect(mergeCard).toHaveCount(0);
+    await expect(stackCard).toHaveCount(0);
 });
 
 test("insights dashboard load", async ({ page }) => {
@@ -317,36 +424,193 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         );
     });
 
+    const nowIso = new Date().toISOString();
+    const connectionRecords = [
+        {
+            id: "conn-slack-1",
+            repoId: "repo-1",
+            provider: "slack",
+            status: "active" as const,
+            displayName: "Slack Main",
+            config: { defaultChannel: "C123" } as Record<string, unknown>,
+            lastValidatedAt: nowIso,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+        {
+            id: "conn-jira-1",
+            repoId: "repo-1",
+            provider: "jira",
+            status: "error" as const,
+            displayName: "Jira Prod",
+            config: {} as Record<string, unknown>,
+            lastError: "token revoked",
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+    ];
+    const connectionActionAudits: Array<{
+        id: string;
+        action: string;
+        entityType: string;
+        entityId?: string;
+        repoId?: string;
+        connectionId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata: Record<string, unknown>;
+        createdAt: string;
+    }> = [];
+    const appendConnectionActionAudit = (entry: {
+        action: string;
+        entityId?: string;
+        repoId?: string;
+        connectionId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) => {
+        connectionActionAudits.unshift({
+            id: `connection-audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            action: entry.action,
+            entityType: "integration_connection",
+            entityId: entry.entityId,
+            repoId: entry.repoId,
+            connectionId: entry.connectionId,
+            outcome: entry.outcome,
+            summary: entry.summary,
+            metadata: entry.metadata || {},
+            createdAt: new Date().toISOString(),
+        });
+    };
+
     await page.route("**/api/v1/integrations/connections**", async (route) => {
+        const url = new URL(route.request().url());
+        const method = route.request().method().toUpperCase();
+        const path = url.pathname;
+        const validateMatch = path.match(/\/connections\/([^/]+)\/validate$/);
+        if (validateMatch && method === "POST") {
+            const connectionId = validateMatch[1];
+            const connection = connectionRecords.find((item) => item.id === connectionId);
+            if (!connection) {
+                await route.fulfill(jsonResponse(404, { error: "Integration connection not found" }));
+                return;
+            }
+            const payload = route.request().postDataJSON() as { simulateFailure?: boolean } | null;
+            const simulateFailure = payload?.simulateFailure === true;
+            connection.lastValidatedAt = new Date().toISOString();
+            connection.updatedAt = new Date().toISOString();
+            if (simulateFailure) {
+                connection.status = "error";
+                connection.lastError = "Manual validation failure drill from settings control plane";
+                appendConnectionActionAudit({
+                    action: "integration.connection.manual_validate_fail",
+                    entityId: connection.id,
+                    repoId: connection.repoId,
+                    connectionId: connection.id,
+                    outcome: "error",
+                    summary: `Connection ${connection.displayName} is now ${connection.status}.`,
+                    metadata: {
+                        provider: connection.provider,
+                        status: connection.status,
+                    },
+                });
+                await route.fulfill(
+                    jsonResponse(200, {
+                        success: true,
+                        reason: "validation_failed",
+                        connection,
+                    })
+                );
+                return;
+            }
+            if (connection.status !== "disabled") connection.status = "active";
+            connection.lastError = undefined;
+            appendConnectionActionAudit({
+                action: "integration.connection.manual_validate",
+                entityId: connection.id,
+                repoId: connection.repoId,
+                connectionId: connection.id,
+                outcome: "success",
+                summary: `Connection ${connection.displayName} is now ${connection.status}.`,
+                metadata: {
+                    provider: connection.provider,
+                    status: connection.status,
+                },
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "validated",
+                    connection,
+                })
+            );
+            return;
+        }
+
+        const statusMatch = path.match(/\/connections\/([^/]+)\/status$/);
+        if (statusMatch && method === "POST") {
+            const connectionId = statusMatch[1];
+            const connection = connectionRecords.find((item) => item.id === connectionId);
+            if (!connection) {
+                await route.fulfill(jsonResponse(404, { error: "Integration connection not found" }));
+                return;
+            }
+            const payload = route.request().postDataJSON() as { status?: "active" | "disabled" } | null;
+            if (!payload?.status) {
+                await route.fulfill(jsonResponse(400, { error: "status is required" }));
+                return;
+            }
+            connection.status = payload.status;
+            connection.updatedAt = new Date().toISOString();
+            if (payload.status === "active") {
+                connection.lastError = undefined;
+            }
+            appendConnectionActionAudit({
+                action: "integration.connection.set_status",
+                entityId: connection.id,
+                repoId: connection.repoId,
+                connectionId: connection.id,
+                outcome: "success",
+                summary: `Connection ${connection.displayName} status set to ${connection.status}.`,
+                metadata: {
+                    provider: connection.provider,
+                    status: connection.status,
+                },
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "status_updated",
+                    connection,
+                })
+            );
+            return;
+        }
+
+        if (path.endsWith("/connections") && method === "GET") {
+            const repoId = url.searchParams.get("repoId");
+            const provider = url.searchParams.get("provider");
+            const status = url.searchParams.get("status");
+            const rows = connectionRecords.filter((connection) => {
+                if (repoId && connection.repoId !== repoId) return false;
+                if (provider && connection.provider !== provider) return false;
+                if (status && connection.status !== status) return false;
+                return true;
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    connections: rows,
+                    total: rows.length,
+                    limit: 50,
+                    offset: 0,
+                })
+            );
+            return;
+        }
+
         await route.fulfill(
-            jsonResponse(200, {
-                connections: [
-                    {
-                        id: "conn-slack-1",
-                        repoId: "repo-1",
-                        provider: "slack",
-                        status: "active",
-                        displayName: "Slack Main",
-                        config: { defaultChannel: "C123" },
-                        createdAt: new Date().toISOString(),
-                        updatedAt: new Date().toISOString(),
-                    },
-                    {
-                        id: "conn-jira-1",
-                        repoId: "repo-1",
-                        provider: "jira",
-                        status: "error",
-                        displayName: "Jira Prod",
-                        config: {},
-                        lastError: "token revoked",
-                        createdAt: new Date().toISOString(),
-                        updatedAt: new Date().toISOString(),
-                    },
-                ],
-                total: 2,
-                limit: 50,
-                offset: 0,
-            })
+            jsonResponse(404, { error: "Unhandled connections route in smoke test" })
         );
     });
 
@@ -435,7 +699,6 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         );
     });
 
-    const nowIso = new Date().toISOString();
     const webhookEvents = [
         {
             id: "wh-1",
@@ -630,6 +893,23 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
             createdAt: new Date().toISOString(),
         });
     };
+
+    await page.route("**/api/v1/integrations/connection-action-audits**", async (route) => {
+        const url = new URL(route.request().url());
+        const repoId = url.searchParams.get("repoId");
+        const limit = Number(url.searchParams.get("limit") || 20);
+        const filtered = connectionActionAudits.filter((event) => {
+            if (repoId && event.repoId !== repoId) return false;
+            return true;
+        });
+        await route.fulfill(
+            jsonResponse(200, {
+                events: filtered.slice(0, Math.max(limit, 1)),
+                total: filtered.length,
+                limit: Math.max(limit, 1),
+            })
+        );
+    });
 
     await page.route("**/api/v1/integrations/webhook-action-audits**", async (route) => {
         const url = new URL(route.request().url());
@@ -1169,6 +1449,7 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByRole("heading", { name: /^Settings$/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Integration Diagnostics/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Integrations Operations/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Connection Control Plane/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Webhook Recovery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Notification Delivery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Issue-Link Sync Queue/i)).toBeVisible({ timeout: 20000 });
@@ -1181,6 +1462,18 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });
 
+    const jiraConnectionRow = page.getByTestId("connection-row-conn-jira-1");
+    await jiraConnectionRow.getByRole("button", { name: /^Validate$/i }).click();
+    await expect(page.getByText("Connection Jira Prod is now active.", { exact: true })).toBeVisible({ timeout: 20000 });
+    await jiraConnectionRow.getByRole("button", { name: /^Disable$/i }).click();
+    await expect(page.getByText("Connection Jira Prod status set to disabled.", { exact: true })).toBeVisible({
+        timeout: 20000,
+    });
+    await jiraConnectionRow.getByRole("button", { name: /^Enable$/i }).click();
+    await expect(page.getByText("Connection Jira Prod status set to active.", { exact: true })).toBeVisible({
+        timeout: 20000,
+    });
+
     await page.getByRole("button", { name: /^Fail$/i }).first().click();
     await expect(page.getByText("Webhook wh-ext-1 is now failed.", { exact: true })).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Retry Due/i }).first().click();
@@ -1190,7 +1483,7 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await page.getByRole("button", { name: /Retry Due/i }).nth(2).click();
     await expect(page.getByText("Retried 2 issue-link sync(s).", { exact: true })).toBeVisible({ timeout: 20000 });
 
-    await expect(page.getByText(/Recent Actions/i).nth(2)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/\(manual validate\)/i)).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Export JSON/i }).click();
     await page.getByRole("button", { name: /Export CSV/i }).click();
 

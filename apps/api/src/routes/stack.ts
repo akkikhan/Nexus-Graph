@@ -99,6 +99,7 @@ function toStackDetailFromDb(stack: any) {
                 status: normalizeStatus(branch.prStatus),
                 pr: branch.pullRequest
                     ? {
+                        id: branch.pullRequest.id,
                         number: branch.pullRequest.number,
                         title: branch.pullRequest.title,
                         riskScore: branch.pullRequest.riskScore || 0,

@@ -9,6 +9,10 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const PNPM_BIN = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const NODE_BIN = process.platform === "win32" ? "node.exe" : "node";
+const RELEASE_API_PORT = String(process.env.RELEASE_API_PORT || "3101");
+const RELEASE_WEB_PORT = String(process.env.RELEASE_WEB_PORT || "3000");
+const API_BASE_URL = `http://localhost:${RELEASE_API_PORT}`;
+const WEB_BASE_URL = `http://localhost:${RELEASE_WEB_PORT}`;
 
 function toShellCommand(bin, args) {
     return [bin, ...args]
@@ -95,21 +99,34 @@ async function stopService(child) {
 }
 
 async function run() {
-    process.stdout.write("[validate:release] starting API and Web services...\n");
-    const api = startService("api", ["--filter", "@nexus/api", "dev"]);
-    const web = startService("web", ["--filter", "@nexus/web", "dev"]);
+    process.stdout.write(
+        `[validate:release] starting API and Web services (api=${API_BASE_URL}, web=${WEB_BASE_URL})...\n`
+    );
+    const api = startService("api", ["--filter", "@nexus/api", "dev:once"], {
+        PORT: RELEASE_API_PORT,
+    });
+    const web = startService("web", ["--filter", "@nexus/web", "dev"], {
+        API_PROXY_TARGET: API_BASE_URL,
+    });
 
     try {
-        await waitForHttp("http://localhost:3001/health");
-        await waitForHttp("http://localhost:3000/inbox");
+        await waitForHttp(`${API_BASE_URL}/health`);
+        if (api.exitCode !== null) {
+            throw new Error(`API service exited before readiness (exit code ${api.exitCode})`);
+        }
+        await waitForHttp(`${WEB_BASE_URL}/inbox`);
+        if (web.exitCode !== null) {
+            throw new Error(`Web service exited before readiness (exit code ${web.exitCode})`);
+        }
         process.stdout.write("[validate:release] services ready\n");
 
         await runCommand("API smoke", NODE_BIN, ["scripts/validation/api-smoke.mjs"], {
-            API_BASE_URL: "http://localhost:3001",
+            API_BASE_URL,
         });
 
         await runCommand("Web smoke", NODE_BIN, ["scripts/validation/web-e2e-smoke.mjs"], {
-            WEB_BASE_URL: "http://localhost:3000",
+            WEB_BASE_URL,
+            REQUIRE_PLAYWRIGHT: "true",
         });
 
         process.stdout.write("[validate:release] PASS\n");

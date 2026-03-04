@@ -24,6 +24,14 @@ interface LocalStackData {
     >;
 }
 
+const SUPPORTED_ACTIVITY_TYPE_FILTERS = new Set([
+    "ai_review",
+    "review_requested",
+    "pr_merged",
+    "stack_updated",
+    "integration_event",
+]);
+
 function formatRelativeTime(dateValue: unknown): string {
     const date =
         dateValue instanceof Date
@@ -71,18 +79,34 @@ activityRouter.get("/", async (c) => {
         Math.max(Number(c.req.query("limit") || 20), 1),
         50
     );
+    const rawType = (c.req.query("type") || "all").trim();
+    const typeFilter = rawType === "all" ? null : rawType;
+
+    if (typeFilter && !SUPPORTED_ACTIVITY_TYPE_FILTERS.has(typeFilter)) {
+        return c.json(
+            {
+                error: "Unsupported activity type filter",
+                details: `Supported values: all, ${Array.from(SUPPORTED_ACTIVITY_TYPE_FILTERS).join(", ")}`,
+            },
+            400
+        );
+    }
 
     const activities: ActivityItem[] = [];
     let dbError: string | null = null;
 
     try {
-        activities.push(...(await activityRepository.list(limit)));
+        if (typeFilter === "integration_event") {
+            activities.push(...(await activityRepository.listIntegrationEvents(limit)));
+        } else {
+            activities.push(...(await activityRepository.list(limit)));
+        }
     } catch (error) {
         dbError = errorMessage(error);
     }
 
     const localStack = await loadLocalStackData();
-    if (localStack) {
+    if (localStack && (!typeFilter || typeFilter === "stack_updated")) {
         activities.push({
             id: "act-stack-local",
             type: "stack_updated",
@@ -99,7 +123,9 @@ activityRouter.get("/", async (c) => {
         });
     }
 
-    if (activities.length === 0 && dbError) {
+    const filtered = typeFilter ? activities.filter((item) => item.type === typeFilter) : activities;
+
+    if (filtered.length === 0 && dbError) {
         return c.json(
             {
                 error: "Database unavailable for activity feed",
@@ -109,13 +135,13 @@ activityRouter.get("/", async (c) => {
         );
     }
 
-    const filtered = activities.slice(0, limit);
+    const window = filtered.slice(0, limit);
     return c.json({
-        activities: filtered,
-        total: filtered.length,
+        activities: window,
+        total: window.length,
         limit,
         offset: 0,
-        filter: "all",
+        filter: typeFilter || "all",
     });
 });
 

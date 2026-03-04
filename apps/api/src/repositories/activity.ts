@@ -4,6 +4,15 @@
 
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db, branches, comments, mergeQueue, pullRequests, reviews, stacks, users } from "../db/index.js";
+import * as nexusDb from "../db/index.js";
+
+const auditLog = (nexusDb as any).auditLog;
+const INTEGRATION_AUDIT_ENTITY_TYPES = [
+    "integration_connection",
+    "integration_issue_link",
+    "integration_notification",
+    "integration_webhook",
+] as const;
 
 export interface ActivityItem {
     id: string;
@@ -26,6 +35,13 @@ export interface ActivityItem {
     stack?: {
         name: string;
         branches: number;
+    };
+    integration?: {
+        provider?: "slack" | "linear" | "jira";
+        scope: "connection" | "issue_link" | "webhook" | "notification" | "slack_action";
+        action: string;
+        outcome: "success" | "error";
+        summary?: string;
     };
 }
 
@@ -105,13 +121,91 @@ function mapPRActivity(pr: any, index: number): InternalActivity {
     };
 }
 
+function integrationScopeFromEntityType(
+    entityType: string
+): "connection" | "issue_link" | "webhook" | "notification" | "slack_action" {
+    if (entityType === "integration_connection") return "connection";
+    if (entityType === "integration_issue_link") return "issue_link";
+    if (entityType === "integration_notification") return "notification";
+    return "webhook";
+}
+
+function normalizeIntegrationAction(action: string): string {
+    const trimmed = (action || "").trim();
+    if (!trimmed) return "event";
+    if (trimmed.startsWith("integration.")) {
+        const parts = trimmed.split(".");
+        return parts.slice(2).join("_") || parts.slice(1).join("_") || "event";
+    }
+    return trimmed;
+}
+
+function mapIntegrationActivity(row: any): InternalActivity {
+    const metadata =
+        row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+    const providerValue = typeof metadata.provider === "string" ? metadata.provider : undefined;
+    const provider =
+        providerValue === "slack" || providerValue === "linear" || providerValue === "jira"
+            ? providerValue
+            : undefined;
+    const outcome = String(metadata.outcome || "success").toLowerCase() === "error" ? "error" : "success";
+    const scope = integrationScopeFromEntityType(String(row.entityType || ""));
+    const action = normalizeIntegrationAction(String(row.action || ""));
+    const summary =
+        typeof metadata.summary === "string" && metadata.summary.trim() ? metadata.summary.trim() : undefined;
+    const fallbackDescription = [provider ? `[${provider}]` : null, action.replaceAll("_", " ")]
+        .filter(Boolean)
+        .join(" ");
+
+    return {
+        id: `act-integration-${row.id}`,
+        type: "integration_event",
+        icon: "Globe",
+        color: outcome === "error" ? "text-red-500" : "text-cyan-400",
+        bgColor: outcome === "error" ? "bg-red-500/10" : "bg-cyan-500/10",
+        title: `Integration ${scope.replaceAll("_", " ")}`,
+        description: summary || fallbackDescription || "Integration event",
+        timestamp: formatRelativeTime(row.createdAt),
+        integration: {
+            provider,
+            scope,
+            action,
+            outcome,
+            summary,
+        },
+        ts: toTimestamp(row.createdAt),
+    };
+}
+
+async function fetchIntegrationAudits(limit: number): Promise<any[]> {
+    const take = Math.min(Math.max(limit, 1), 200);
+    return db
+        .select()
+        .from(auditLog)
+        .where(inArray(auditLog.entityType, INTEGRATION_AUDIT_ENTITY_TYPES as unknown as string[]))
+        .orderBy(desc(auditLog.createdAt))
+        .limit(take);
+}
+
 export const activityRepository = {
     errorMessage,
+
+    async listIntegrationEvents(limit: number): Promise<ActivityItem[]> {
+        const take = Math.min(Math.max(limit, 1), 200);
+        const audits = await fetchIntegrationAudits(take);
+        return audits
+            .map((row) => mapIntegrationActivity(row))
+            .sort((a, b) => b.ts - a.ts)
+            .slice(0, take)
+            .map(({ ts: _ts, ...item }) => item);
+    },
 
     async list(limit: number): Promise<ActivityItem[]> {
         const take = Math.min(Math.max(limit, 1), 50);
 
-        const [prs, recentReviews, recentQueue, recentStacks] = await Promise.all([
+        const [prs, recentReviews, recentQueue, recentStacks, integrationAudits] = await Promise.all([
             db.query.pullRequests.findMany({
                 with: {
                     author: true,
@@ -161,6 +255,7 @@ export const activityRepository = {
                 .leftJoin(branches, eq(branches.stackId, stacks.id))
                 .orderBy(desc(stacks.updatedAt))
                 .limit(Math.max(4, Math.floor(take / 2))),
+            fetchIntegrationAudits(Math.max(10, take)),
         ]);
 
         const activities: InternalActivity[] = [];
@@ -257,10 +352,13 @@ export const activityRepository = {
             });
         }
 
+        for (const audit of integrationAudits) {
+            activities.push(mapIntegrationActivity(audit));
+        }
+
         return activities
             .sort((a, b) => b.ts - a.ts)
             .slice(0, take)
             .map(({ ts: _ts, ...item }) => item);
     },
 };
-

@@ -174,6 +174,27 @@ function normalizeAttempt(row: any) {
     };
 }
 
+function normalizeConnectionActionAudit(row: any) {
+    const metadata =
+        row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+    const metadataOutcome = String(metadata.outcome || "").toLowerCase();
+    const outcome: WebhookActionAuditOutcome = metadataOutcome === "error" ? "error" : "success";
+    return {
+        id: row.id,
+        action: row.action,
+        entityType: row.entityType,
+        entityId: row.entityId || undefined,
+        repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
+        connectionId: typeof metadata.connectionId === "string" ? metadata.connectionId : undefined,
+        outcome,
+        summary: typeof metadata.summary === "string" ? metadata.summary : "",
+        metadata,
+        createdAt: toIso(row.createdAt),
+    };
+}
+
 function normalizeWebhookEvent(row: any) {
     return {
         id: row.id,
@@ -417,6 +438,163 @@ export const integrationsRepository = {
             .offset(Math.max(filters.offset ?? 0, 0));
 
         return rows.map(normalizeConnection);
+    },
+
+    async validateConnection(
+        connectionId: string,
+        input: {
+            simulateFailure?: boolean;
+            responseCode?: number;
+            latencyMs?: number;
+            errorMessage?: string;
+            details?: Record<string, unknown>;
+        } = {}
+    ) {
+        const connection = await findConnection(connectionId);
+        if (!connection) return { reason: "connection_not_found" as const };
+
+        const now = new Date();
+        const shouldFail = input.simulateFailure === true;
+        const responseCode = Number(input.responseCode || (shouldFail ? 502 : 200));
+        const latencyMs = Math.max(Number(input.latencyMs || (shouldFail ? 220 : 90)), 0);
+        const safeError = redactSecrets((input.errorMessage || "Integration connection validation failed").trim());
+
+        const patch: Record<string, unknown> = {
+            lastValidatedAt: now,
+            updatedAt: now,
+            config: sanitizeUnknown({
+                ...(connection.config || {}),
+                lastValidation: {
+                    at: now.toISOString(),
+                    responseCode,
+                    latencyMs,
+                    details: input.details || {},
+                    status: shouldFail ? "failed" : "ok",
+                },
+            }),
+        };
+
+        if (shouldFail) {
+            patch.status = "error";
+            patch.lastError = safeError;
+        } else {
+            patch.lastError = null;
+            if (connection.status !== "disabled") patch.status = "active";
+        }
+
+        const [updated] = await db
+            .update(integrationConnections)
+            .set(patch)
+            .where(eq(integrationConnections.id, connectionId))
+            .returning();
+
+        if (!updated) return { reason: "update_failed" as const };
+        return {
+            reason: shouldFail ? "validation_failed" as const : "validated" as const,
+            connection: normalizeConnection(updated),
+        };
+    },
+
+    async setConnectionStatus(
+        connectionId: string,
+        status: "active" | "disabled" | "error",
+        input: {
+            reason?: string;
+        } = {}
+    ) {
+        const connection = await findConnection(connectionId);
+        if (!connection) return { reason: "connection_not_found" as const };
+
+        const now = new Date();
+        const patch: Record<string, unknown> = {
+            status,
+            updatedAt: now,
+            config: sanitizeUnknown({
+                ...(connection.config || {}),
+                lastStatusChange: {
+                    at: now.toISOString(),
+                    status,
+                    reason: input.reason || null,
+                },
+            }),
+        };
+        if (status === "active") patch.lastError = null;
+        if (status === "error") patch.lastError = redactSecrets((input.reason || "Connection set to error state").trim());
+
+        const [updated] = await db
+            .update(integrationConnections)
+            .set(patch)
+            .where(eq(integrationConnections.id, connectionId))
+            .returning();
+        if (!updated) return { reason: "update_failed" as const };
+
+        return {
+            reason: "status_updated" as const,
+            connection: normalizeConnection(updated),
+        };
+    },
+
+    async listConnectionActionAudits(filters: {
+        repoId?: string;
+        limit?: number;
+    }) {
+        const conditions = [eq(auditLog.entityType, "integration_connection"), sql`${auditLog.action} LIKE 'integration.connection.%'`];
+        if (filters.repoId) {
+            const repo = await findRepository(filters.repoId);
+            if (!repo) return [];
+            conditions.push(eq(auditLog.orgId, repo.orgId));
+            conditions.push(sql`${auditLog.metadata} ->> 'repoId' = ${filters.repoId}`);
+        }
+
+        const rows = await db
+            .select()
+            .from(auditLog)
+            .where(and(...conditions))
+            .orderBy(desc(auditLog.createdAt))
+            .limit(Math.min(Math.max(filters.limit ?? 20, 1), 100));
+
+        return rows.map(normalizeConnectionActionAudit);
+    },
+
+    async recordConnectionActionAudit(input: {
+        action: string;
+        repoId?: string;
+        connectionId?: string;
+        outcome: WebhookActionAuditOutcome;
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) {
+        if (!input.repoId) return { reason: "repo_id_required" as const };
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const action = (input.action || "").trim();
+        const summary = (input.summary || "").trim();
+        if (!action || !summary) return { reason: "invalid_audit_payload" as const };
+
+        const [inserted] = await db
+            .insert(auditLog)
+            .values({
+                orgId: repo.orgId,
+                action,
+                entityType: "integration_connection",
+                entityId: input.connectionId || null,
+                metadata: sanitizeUnknown({
+                    outcome: input.outcome,
+                    summary,
+                    repoId: input.repoId,
+                    connectionId: input.connectionId,
+                    ...(input.metadata || {}),
+                }),
+                createdAt: new Date(),
+            })
+            .returning();
+
+        if (!inserted) return { reason: "insert_failed" as const };
+        return {
+            reason: "ok" as const,
+            event: normalizeConnectionActionAudit(inserted),
+        };
     },
 
     async createIssueLink(input: {

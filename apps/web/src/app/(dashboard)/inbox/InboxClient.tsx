@@ -11,7 +11,7 @@ import {
     Filter,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchPRs, PullRequest } from "../../../lib/api";
+import { fetchIntegrationIssueLinks, fetchPRs, IntegrationIssueLink, PullRequest } from "../../../lib/api";
 import { useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
@@ -81,6 +81,16 @@ export default function InboxClient() {
                         : statusFilter,
             }),
     });
+    const prIds = useMemo(() => (prs || []).map((pr) => pr.id), [prs]);
+    const { data: issueLinksData } = useQuery({
+        queryKey: ["integration-issue-links", "inbox", prIds.join(",")],
+        queryFn: () =>
+            fetchIntegrationIssueLinks({
+                limit: 100,
+                offset: 0,
+            }),
+        enabled: prIds.length > 0,
+    });
 
     const prList = useMemo(() => {
         const list: PullRequest[] = prs || [];
@@ -97,6 +107,14 @@ export default function InboxClient() {
                 pr.author.username.toLowerCase().includes(q)
         );
     }, [prs, search, statusFilter]);
+    const issueLinksByPrId = useMemo(() => {
+        const grouped = new Map<string, IntegrationIssueLink[]>();
+        for (const link of issueLinksData?.links || []) {
+            if (!grouped.has(link.prId)) grouped.set(link.prId, []);
+            grouped.get(link.prId)?.push(link);
+        }
+        return grouped;
+    }, [issueLinksData]);
 
     const stats = {
         open: prList.filter((pr: PullRequest) => pr.status === "open").length,
@@ -255,6 +273,24 @@ export default function InboxClient() {
                                     <span className="text-red-500">-{pr.linesRemoved || 0}</span>
                                     <span>{new Date(pr.updatedAt).toLocaleDateString()}</span>
                                 </div>
+                                {(issueLinksByPrId.get(pr.id) || []).length > 0 ? (
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                        {(issueLinksByPrId.get(pr.id) || []).slice(0, 3).map((link) => (
+                                            <span
+                                                key={link.id}
+                                                className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-950/50 px-2 py-1 text-[11px] text-zinc-300"
+                                            >
+                                                <span className="uppercase text-zinc-500">{link.provider}</span>
+                                                <span>{link.issueKey}</span>
+                                            </span>
+                                        ))}
+                                        {(issueLinksByPrId.get(pr.id) || []).length > 3 ? (
+                                            <span className="inline-flex items-center rounded-md border border-zinc-700 bg-zinc-950/50 px-2 py-1 text-[11px] text-zinc-500">
+                                                +{(issueLinksByPrId.get(pr.id) || []).length - 3} more
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                ) : null}
                             </div>
 
                             <div className="text-right">

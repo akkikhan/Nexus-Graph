@@ -119,6 +119,13 @@ export interface ActivityItem {
         name: string;
         branches: number;
     };
+    integration?: {
+        provider?: "slack" | "linear" | "jira";
+        scope: "connection" | "issue_link" | "webhook" | "notification" | "slack_action";
+        action: string;
+        outcome: "success" | "error";
+        summary?: string;
+    };
     details?: {
         critical: number;
         warnings: number;
@@ -165,6 +172,7 @@ export interface StackDetailBranch {
     order: number;
     status: string;
     pr?: {
+        id?: string;
         number: number;
         title: string;
         riskScore?: number;
@@ -518,6 +526,85 @@ export async function fetchIntegrationConnections(options: {
     return parseResponse<IntegrationConnectionsResponse>(res, "Failed to fetch integration connections");
 }
 
+export interface IntegrationConnectionActionAuditEvent {
+    id: string;
+    action: string;
+    entityType: string;
+    entityId?: string;
+    repoId?: string;
+    connectionId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationConnectionActionAuditsResponse {
+    events: IntegrationConnectionActionAuditEvent[];
+    total: number;
+    limit: number;
+}
+
+export async function validateIntegrationConnection(
+    id: string,
+    input: {
+        simulateFailure?: boolean;
+        responseCode?: number;
+        latencyMs?: number;
+        errorMessage?: string;
+        details?: Record<string, unknown>;
+    } = {}
+): Promise<{
+    success: boolean;
+    reason: string;
+    connection: IntegrationConnection;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/connections/${id}/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{ success: boolean; reason: string; connection: IntegrationConnection }>(
+        res,
+        "Failed to validate integration connection"
+    );
+}
+
+export async function setIntegrationConnectionStatus(
+    id: string,
+    status: "active" | "disabled",
+    reason?: string
+): Promise<{
+    success: boolean;
+    reason: string;
+    connection: IntegrationConnection;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/connections/${id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, reason }),
+    });
+    return parseResponse<{ success: boolean; reason: string; connection: IntegrationConnection }>(
+        res,
+        "Failed to update integration connection status"
+    );
+}
+
+export async function fetchIntegrationConnectionActionAudits(options: {
+    repoId?: string;
+    limit?: number;
+} = {}): Promise<IntegrationConnectionActionAuditsResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/connection-action-audits${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationConnectionActionAuditsResponse>(
+        res,
+        "Failed to fetch connection action audits"
+    );
+}
+
 export interface IntegrationIssueLink {
     id: string;
     repoId: string;
@@ -585,7 +672,10 @@ export async function fetchIntegrationIssueLinks(options: {
     if (options.prId) params.set("prId", options.prId);
     if (options.provider) params.set("provider", options.provider);
     if (options.status) params.set("status", options.status);
-    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.limit === "number") {
+        const boundedLimit = Math.max(1, Math.min(100, Math.trunc(options.limit)));
+        params.set("limit", String(boundedLimit));
+    }
     if (typeof options.offset === "number") params.set("offset", String(options.offset));
     const query = params.toString();
     const res = await fetch(`${API_BASE_URL}/integrations/issue-links${query ? `?${query}` : ""}`);

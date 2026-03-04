@@ -13,6 +13,7 @@ import {
     Bot,
     User,
     GitBranch,
+    Globe,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchActivity, ActivityItem } from "../../../lib/api";
@@ -26,6 +27,7 @@ const iconMap: Record<string, any> = {
     GitBranch,
     MessageSquare,
     CheckCircle,
+    Globe,
 };
 
 const FILTERS = [
@@ -33,6 +35,7 @@ const FILTERS = [
     { id: "reviews", label: "Reviews" },
     { id: "merges", label: "Merges" },
     { id: "stacks", label: "Stacks" },
+    { id: "integrations", label: "Integrations" },
 ] as const;
 
 type ActivityFilter = (typeof FILTERS)[number]["id"];
@@ -47,6 +50,9 @@ function matchesFilter(activity: ActivityItem, filter: ActivityFilter): boolean 
     }
     if (filter === "stacks") {
         return activity.type === "stack_updated";
+    }
+    if (filter === "integrations") {
+        return activity.type === "integration_event";
     }
     return true;
 }
@@ -197,7 +203,7 @@ export default function ActivityPage() {
 
                                     {activity.relatedPr && (
                                         <div className="mt-2 flex items-center gap-2 text-sm">
-                                            <span className="text-zinc-500">↔</span>
+                                            <span className="text-zinc-500">{"<->"}</span>
                                             <span className="text-zinc-500">
                                                 #{activity.relatedPr.number}
                                             </span>
@@ -206,6 +212,30 @@ export default function ActivityPage() {
                                             </span>
                                         </div>
                                     )}
+                                    {activity.integration ? (
+                                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                                            {activity.integration.provider ? (
+                                                <span className="px-2 py-1 rounded border border-zinc-700 bg-zinc-900/60 text-zinc-300 uppercase">
+                                                    {activity.integration.provider}
+                                                </span>
+                                            ) : null}
+                                            <span className="px-2 py-1 rounded border border-zinc-700 bg-zinc-900/60 text-zinc-400">
+                                                {activity.integration.scope.replaceAll("_", " ")}
+                                            </span>
+                                            <span className="px-2 py-1 rounded border border-zinc-700 bg-zinc-900/60 text-zinc-400">
+                                                {activity.integration.action.replaceAll("_", " ")}
+                                            </span>
+                                            <span
+                                                className={`px-2 py-1 rounded border ${
+                                                    activity.integration.outcome === "error"
+                                                        ? "border-red-500/30 bg-red-500/10 text-red-400"
+                                                        : "border-green-500/30 bg-green-500/10 text-green-400"
+                                                }`}
+                                            >
+                                                {activity.integration.outcome}
+                                            </span>
+                                        </div>
+                                    ) : null}
                                 </div>
                             </motion.div>
                         );

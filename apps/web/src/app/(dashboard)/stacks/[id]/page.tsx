@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { ArrowLeft, GitBranch, Send, RefreshCw } from "lucide-react";
-import { fetchStackById, submitStack, syncStack } from "../../../../lib/api";
+import { fetchIntegrationIssueLinks, fetchStackById, IntegrationIssueLink, submitStack, syncStack } from "../../../../lib/api";
 
 const statusBadge: Record<string, string> = {
     merged: "bg-purple-500/10 text-purple-400 border-purple-500/30",
@@ -34,6 +34,19 @@ export default function StackDetailPage() {
         queryKey: ["stack", stackId],
         queryFn: () => fetchStackById(stackId),
         enabled: Boolean(stackId),
+    });
+    const stackPrIds = (stack?.branches || [])
+        .map((branch) => branch.pr?.id)
+        .filter((value): value is string => typeof value === "string" && value.length > 0);
+    const { data: issueLinksData, error: issueLinksError } = useQuery({
+        queryKey: ["integration-issue-links", "stack-detail", stackPrIds.join(",")],
+        queryFn: () =>
+            fetchIntegrationIssueLinks({
+                repoId: stack?.repository.id,
+                limit: 100,
+                offset: 0,
+            }),
+        enabled: Boolean(stack?.repository.id) && stackPrIds.length > 0,
     });
 
     const syncMutation = useMutation({
@@ -65,6 +78,12 @@ export default function StackDetailPage() {
     if (error || !stack) {
         const message = error instanceof Error ? error.message : "Stack not found";
         return <div className="p-8 text-red-500">Error loading stack: {message}</div>;
+    }
+    const issueLinksByPrId = new Map<string, IntegrationIssueLink[]>();
+    for (const link of issueLinksData?.links || []) {
+        if (!link.prId || !stackPrIds.includes(link.prId)) continue;
+        if (!issueLinksByPrId.has(link.prId)) issueLinksByPrId.set(link.prId, []);
+        issueLinksByPrId.get(link.prId)?.push(link);
     }
 
     return (
@@ -151,9 +170,24 @@ export default function StackDetailPage() {
                             </div>
 
                             {branch.pr ? (
-                                <div className="text-xs text-zinc-500">
-                                    #{branch.pr.number} {branch.pr.title}
-                                    {typeof branch.pr.riskScore === "number" ? ` | risk ${Math.round(branch.pr.riskScore)}` : ""}
+                                <div className="space-y-2">
+                                    <div className="text-xs text-zinc-500">
+                                        #{branch.pr.number} {branch.pr.title}
+                                        {typeof branch.pr.riskScore === "number" ? ` | risk ${Math.round(branch.pr.riskScore)}` : ""}
+                                    </div>
+                                    {branch.pr.id && (issueLinksByPrId.get(branch.pr.id) || []).length > 0 ? (
+                                        <div className="flex flex-wrap gap-2">
+                                            {(issueLinksByPrId.get(branch.pr.id) || []).slice(0, 3).map((link) => (
+                                                <span
+                                                    key={link.id}
+                                                    className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-300"
+                                                >
+                                                    <span className="uppercase text-zinc-500">{link.provider}</span>
+                                                    <span>{link.issueKey}</span>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : null}
                                 </div>
                             ) : (
                                 <div className="text-xs text-zinc-600">No PR linked</div>
@@ -161,6 +195,11 @@ export default function StackDetailPage() {
                         </div>
                     ))}
                 </div>
+                {issueLinksError ? (
+                    <div className="mt-4 text-xs text-red-400">
+                        Failed to load stack issue links: {(issueLinksError as Error).message}
+                    </div>
+                ) : null}
             </motion.div>
         </div>
     );

@@ -884,6 +884,92 @@ async function run() {
                 "integration connections list must include created slack connection"
             );
 
+            const validateSlackConnection = await request(`/api/v1/integrations/connections/${slackConnectionId}/validate`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    responseCode: 200,
+                    latencyMs: 42,
+                }),
+            });
+            printResult(
+                `POST /api/v1/integrations/connections/${slackConnectionId}/validate (success)`,
+                validateSlackConnection
+            );
+            assert(validateSlackConnection.response.status === 200, "connection validate success must return 200");
+            assert(
+                validateSlackConnection.payload?.connection?.status === "active",
+                "connection validate success should set active status"
+            );
+            assert(
+                typeof validateSlackConnection.payload?.connection?.lastValidatedAt === "string",
+                "connection validate success should set lastValidatedAt"
+            );
+
+            const validateSlackConnectionFail = await request(
+                `/api/v1/integrations/connections/${slackConnectionId}/validate`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        simulateFailure: true,
+                        errorMessage: `Simulated connection validation failure ${rawSecret}`,
+                    }),
+                }
+            );
+            printResult(
+                `POST /api/v1/integrations/connections/${slackConnectionId}/validate (failed)`,
+                validateSlackConnectionFail
+            );
+            assert(validateSlackConnectionFail.response.status === 200, "connection validate failure path must return 200");
+            assert(
+                validateSlackConnectionFail.payload?.reason === "validation_failed",
+                "connection validate failure path should return validation_failed reason"
+            );
+            assert(
+                validateSlackConnectionFail.payload?.connection?.status === "error",
+                "connection validate failure path should set error status"
+            );
+
+            const activateSlackConnection = await request(`/api/v1/integrations/connections/${slackConnectionId}/status`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "active",
+                    reason: "smoke manual recovery",
+                }),
+            });
+            printResult(`POST /api/v1/integrations/connections/${slackConnectionId}/status`, activateSlackConnection);
+            assert(activateSlackConnection.response.status === 200, "connection status update must return 200");
+            assert(
+                activateSlackConnection.payload?.connection?.status === "active",
+                "connection status update should set active status"
+            );
+
+            const connectionActionAudits = await request(
+                `/api/v1/integrations/connection-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=100`
+            );
+            printResult("GET /api/v1/integrations/connection-action-audits", connectionActionAudits);
+            assert(connectionActionAudits.response.status === 200, "connection action-audit list must return 200");
+            assert(
+                Array.isArray(connectionActionAudits.payload?.events),
+                "connection action-audit list must include events[]"
+            );
+            assert(
+                connectionActionAudits.payload.events.some((event) => event.action === "integration.connection.manual_validate"),
+                "connection action-audit list should include manual validate audit entry"
+            );
+            assert(
+                connectionActionAudits.payload.events.some(
+                    (event) => event.action === "integration.connection.manual_validate_fail"
+                ),
+                "connection action-audit list should include manual validation failure audit entry"
+            );
+            assert(
+                connectionActionAudits.payload.events.some((event) => event.action === "integration.connection.set_status"),
+                "connection action-audit list should include set status audit entry"
+            );
+
             const createIssueLink = await request("/api/v1/integrations/issue-links", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -982,7 +1068,7 @@ async function run() {
             );
 
             const notificationActionAudits = await request(
-                `/api/v1/integrations/notification-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=10`
+                `/api/v1/integrations/notification-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=100`
             );
             printResult("GET /api/v1/integrations/notification-action-audits", notificationActionAudits);
             assert(notificationActionAudits.response.status === 200, "notification action-audit list must return 200");
@@ -1118,7 +1204,7 @@ async function run() {
             assert(retryWebhooks.response.status === 200, "webhook retry endpoint must return 200");
 
             const listWebhookActionAudits = await request(
-                `/api/v1/integrations/webhook-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=10`
+                `/api/v1/integrations/webhook-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=100`
             );
             printResult("GET /api/v1/integrations/webhook-action-audits", listWebhookActionAudits);
             assert(listWebhookActionAudits.response.status === 200, "webhook action-audit list must return 200");
@@ -1299,7 +1385,7 @@ async function run() {
             assert(retryIssueLinks.response.status === 200, "issue-link retry sync endpoint must return 200");
 
             const listIssueLinkActionAudits = await request(
-                `/api/v1/integrations/issue-link-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=10`
+                `/api/v1/integrations/issue-link-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=100`
             );
             printResult("GET /api/v1/integrations/issue-link-action-audits", listIssueLinkActionAudits);
             assert(listIssueLinkActionAudits.response.status === 200, "issue-link action-audit list must return 200");
@@ -1378,6 +1464,154 @@ async function run() {
                     integrationsAlerts.payload.alerts.some((alert) => alert.code === "webhook_auth_failures_high"),
                 "integration alerts must surface webhook auth failure alert when threshold is zero"
             );
+
+            const activityAfterIntegrations = await request("/api/v1/activity?limit=50&type=integration_event");
+            printResult("GET /api/v1/activity?limit=50&type=integration_event", activityAfterIntegrations);
+            assert(
+                allowStatus("activity", activityAfterIntegrations.response.status, 200),
+                "post-integrations activity endpoint status mismatch"
+            );
+            if (activityAfterIntegrations.response.status === 200) {
+                assert(
+                    Array.isArray(activityAfterIntegrations.payload?.activities),
+                    "post-integrations activity payload must include activities[]"
+                );
+                assert(
+                    activityAfterIntegrations.payload?.filter === "integration_event",
+                    "integration activity filter response must echo integration_event"
+                );
+                assert(
+                    activityAfterIntegrations.payload.activities.every((entry) => entry?.type === "integration_event"),
+                    "integration activity filter response must only include integration_event entries"
+                );
+                const integrationActivity = activityAfterIntegrations.payload.activities.find(
+                    (entry) => entry && entry.type === "integration_event"
+                );
+                assert(Boolean(integrationActivity), "post-integrations activity feed must include integration_event entries");
+                assert(
+                    typeof integrationActivity.integration?.scope === "string",
+                    "integration_event must include integration.scope"
+                );
+                assert(
+                    typeof integrationActivity.integration?.action === "string",
+                    "integration_event must include integration.action"
+                );
+                assert(
+                    integrationActivity.integration?.outcome === "success" ||
+                        integrationActivity.integration?.outcome === "error",
+                    "integration_event must include integration.outcome"
+                );
+                const localSnapshotInIntegrationFilter = activityAfterIntegrations.payload.activities.find(
+                    (entry) => entry?.id === "act-stack-local" || entry?.title === "Stack Snapshot Synced"
+                );
+                assert(
+                    !localSnapshotInIntegrationFilter,
+                    "integration_event activity filter must exclude local stack snapshot fallback event"
+                );
+            } else {
+                assertErrorPayload("activity", activityAfterIntegrations.payload);
+            }
+
+            const activityAiReview = await request("/api/v1/activity?limit=20&type=ai_review");
+            printResult("GET /api/v1/activity?limit=20&type=ai_review", activityAiReview);
+            assert(
+                allowStatus("activity", activityAiReview.response.status, 200),
+                "ai_review activity filter endpoint status mismatch"
+            );
+            if (activityAiReview.response.status === 200) {
+                assert(Array.isArray(activityAiReview.payload?.activities), "ai_review activity payload must include activities[]");
+                assert(activityAiReview.payload?.filter === "ai_review", "ai_review activity filter must echo ai_review");
+                assert(
+                    activityAiReview.payload.activities.every((entry) => entry?.type === "ai_review"),
+                    "ai_review activity filter must only include ai_review entries"
+                );
+                assert(activityAiReview.payload.activities.length > 0, "ai_review activity filter should return at least one entry");
+            } else {
+                assertErrorPayload("activity ai_review", activityAiReview.payload);
+            }
+
+            const activityReviewRequested = await request("/api/v1/activity?limit=20&type=review_requested");
+            printResult("GET /api/v1/activity?limit=20&type=review_requested", activityReviewRequested);
+            assert(
+                allowStatus("activity", activityReviewRequested.response.status, 200),
+                "review_requested activity filter endpoint status mismatch"
+            );
+            if (activityReviewRequested.response.status === 200) {
+                assert(
+                    Array.isArray(activityReviewRequested.payload?.activities),
+                    "review_requested activity payload must include activities[]"
+                );
+                assert(
+                    activityReviewRequested.payload?.filter === "review_requested",
+                    "review_requested activity filter must echo review_requested"
+                );
+                assert(
+                    activityReviewRequested.payload.activities.every((entry) => entry?.type === "review_requested"),
+                    "review_requested activity filter must only include review_requested entries"
+                );
+                assert(
+                    activityReviewRequested.payload.activities.length > 0,
+                    "review_requested activity filter should return at least one entry"
+                );
+            } else {
+                assertErrorPayload("activity review_requested", activityReviewRequested.payload);
+            }
+
+            const activityPrMerged = await request("/api/v1/activity?limit=20&type=pr_merged");
+            printResult("GET /api/v1/activity?limit=20&type=pr_merged", activityPrMerged);
+            assert(
+                allowStatus("activity", activityPrMerged.response.status, 200),
+                "pr_merged activity filter endpoint status mismatch"
+            );
+            if (activityPrMerged.response.status === 200) {
+                assert(Array.isArray(activityPrMerged.payload?.activities), "pr_merged activity payload must include activities[]");
+                assert(activityPrMerged.payload?.filter === "pr_merged", "pr_merged activity filter must echo pr_merged");
+                assert(
+                    activityPrMerged.payload.activities.every((entry) => entry?.type === "pr_merged"),
+                    "pr_merged activity filter must only include pr_merged entries"
+                );
+            } else {
+                assertErrorPayload("activity pr_merged", activityPrMerged.payload);
+            }
+
+            const activityStackUpdated = await request("/api/v1/activity?limit=20&type=stack_updated");
+            printResult("GET /api/v1/activity?limit=20&type=stack_updated", activityStackUpdated);
+            assert(
+                allowStatus("activity", activityStackUpdated.response.status, 200),
+                "stack_updated activity filter endpoint status mismatch"
+            );
+            if (activityStackUpdated.response.status === 200) {
+                assert(
+                    Array.isArray(activityStackUpdated.payload?.activities),
+                    "stack_updated activity payload must include activities[]"
+                );
+                assert(
+                    activityStackUpdated.payload?.filter === "stack_updated",
+                    "stack_updated activity filter must echo stack_updated"
+                );
+                assert(
+                    activityStackUpdated.payload.activities.every((entry) => entry?.type === "stack_updated"),
+                    "stack_updated activity filter must only include stack_updated entries"
+                );
+                assert(
+                    activityStackUpdated.payload.activities.length > 0,
+                    "stack_updated activity filter should return at least one entry"
+                );
+                const localSnapshotActivity = activityStackUpdated.payload.activities.find(
+                    (entry) => entry?.id === "act-stack-local" || entry?.title === "Stack Snapshot Synced"
+                );
+                assert(
+                    Boolean(localSnapshotActivity),
+                    "stack_updated activity filter must include local snapshot fallback event"
+                );
+            } else {
+                assertErrorPayload("activity stack_updated", activityStackUpdated.payload);
+            }
+
+            const activityUnsupportedType = await request("/api/v1/activity?limit=5&type=unsupported_event");
+            printResult("GET /api/v1/activity?limit=5&type=unsupported_event", activityUnsupportedType);
+            assert(activityUnsupportedType.response.status === 400, "unsupported activity type filter must return 400");
+            assertErrorPayload("activity unsupported type", activityUnsupportedType.payload);
         }
 
         if (firstRepoId && stacks.response.status === 200) {
@@ -1471,8 +1705,8 @@ async function run() {
             assert(deletedStack.response.status === 404, "deleted stack detail must return 404");
         }
 
-        const activity = await request("/api/v1/activity?limit=5");
-        printResult("GET /api/v1/activity?limit=5", activity);
+        const activity = await request("/api/v1/activity?limit=50");
+        printResult("GET /api/v1/activity?limit=50", activity);
         assert(
             allowStatus("activity", activity.response.status, 200),
             "activity endpoint status mismatch"

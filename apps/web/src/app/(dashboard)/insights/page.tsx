@@ -261,7 +261,7 @@ export default function InsightsPage() {
                     <div className="space-y-3">
                         {data.reviewerHealth.topReviewers.map((reviewer, i) => (
                             <div
-                                key={reviewer.username}
+                                key={`${reviewer.username}-${i}`}
                                 className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-lg"
                             >
                                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-nexus-500 to-purple-600 flex items-center justify-center text-white font-bold">
