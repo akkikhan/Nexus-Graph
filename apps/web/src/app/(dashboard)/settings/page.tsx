@@ -20,6 +20,7 @@ import {
     fetchIntegrationAlerts,
     fetchIntegrationConnections,
     fetchIntegrationMetrics,
+    fetchIntegrationWebhookActionAudits,
     fetchIntegrationWebhookEvents,
     exportIntegrationWebhookAuthEvents,
     fetchIntegrationWebhookAuthEvents,
@@ -29,6 +30,7 @@ import {
     IntegrationAlertStatus,
     IntegrationConnection,
     IntegrationMetrics,
+    IntegrationWebhookActionAuditEvent,
     IntegrationWebhookEvent,
     IntegrationWebhookAuthEvent,
 } from "../../../lib/api";
@@ -254,6 +256,11 @@ function formatWebhookStatus(status: IntegrationWebhookEvent["status"]): string 
     return status.split("_").join(" ");
 }
 
+function formatWebhookAuditAction(action: string): string {
+    const normalized = action.startsWith("integration.webhook.") ? action.slice("integration.webhook.".length) : action;
+    return normalized.split("_").join(" ");
+}
+
 function formatAuthTimestamp(value: string): string {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
@@ -292,9 +299,6 @@ export default function SettingsPage() {
     } | null>(null);
     const [webhookActionMessage, setWebhookActionMessage] = useState("");
     const [webhookActionError, setWebhookActionError] = useState("");
-    const [webhookActionHistory, setWebhookActionHistory] = useState<
-        Array<{ at: string; level: "success" | "error"; message: string }>
-    >([]);
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
     const [exportError, setExportError] = useState("");
 
@@ -397,6 +401,21 @@ export default function SettingsPage() {
                 status: webhookStatusFilter === "all" ? undefined : webhookStatusFilter,
                 limit: WEBHOOK_RECOVERY_PAGE_SIZE,
                 offset: 0,
+        }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: webhookActionAuditsData,
+        isLoading: webhookActionAuditsLoading,
+        isFetching: webhookActionAuditsFetching,
+        error: webhookActionAuditsError,
+        refetch: refetchWebhookActionAudits,
+    } = useQuery({
+        queryKey: ["settings", "integration-webhook-action-audits", integrationRepoId],
+        queryFn: () =>
+            fetchIntegrationWebhookActionAudits({
+                repoId: integrationRepoId,
+                limit: 8,
             }),
         refetchInterval: 30_000,
     });
@@ -418,11 +437,20 @@ export default function SettingsPage() {
     const authEvents = authEventsData?.events || [];
     const integrationConnections = integrationConnectionsData?.connections || [];
     const webhookEvents = webhookEventsData?.events || [];
+    const webhookActionAudits = webhookActionAuditsData?.events || [];
     const hasNextAuthPage = authEvents.length === WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
     const integrationLoading =
-        integrationConnectionsLoading || integrationMetricsLoading || integrationAlertsLoading || webhookEventsLoading;
+        integrationConnectionsLoading ||
+        integrationMetricsLoading ||
+        integrationAlertsLoading ||
+        webhookEventsLoading ||
+        webhookActionAuditsLoading;
     const integrationFetching =
-        integrationConnectionsFetching || integrationMetricsFetching || integrationAlertsFetching || webhookEventsFetching;
+        integrationConnectionsFetching ||
+        integrationMetricsFetching ||
+        integrationAlertsFetching ||
+        webhookEventsFetching ||
+        webhookActionAuditsFetching;
     const integrationStatusByProvider = useMemo(() => {
         return {
             slack: connectionStatusForProvider(integrationConnections, "slack"),
@@ -492,7 +520,6 @@ export default function SettingsPage() {
         setWebhookStatusFilter("all");
         setWebhookActionMessage("");
         setWebhookActionError("");
-        setWebhookActionHistory([]);
     };
 
     const downloadBlob = (filename: string, blob: Blob) => {
@@ -524,21 +551,18 @@ export default function SettingsPage() {
         setWebhookActionError("");
         setRetryingDueWebhooks(true);
         try {
-            const result = await retryDueIntegrationWebhooks(20);
+            const result = await retryDueIntegrationWebhooks(20, integrationRepoId);
             const message = `Retried ${result.processed} due webhook event(s).`;
             setWebhookActionMessage(message);
-            setWebhookActionHistory((prev) => [
-                { at: new Date().toISOString(), level: "success", message },
-                ...prev.slice(0, 4),
+            await Promise.all([
+                refetchWebhookEvents(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchWebhookActionAudits(),
             ]);
-            await Promise.all([refetchWebhookEvents(), refetchIntegrationMetrics(), refetchIntegrationAlerts()]);
         } catch (error) {
             const message = getErrorMessage(error, "Failed to retry due webhooks.");
             setWebhookActionError(message);
-            setWebhookActionHistory((prev) => [
-                { at: new Date().toISOString(), level: "error", message },
-                ...prev.slice(0, 4),
-            ]);
         } finally {
             setRetryingDueWebhooks(false);
         }
@@ -563,18 +587,15 @@ export default function SettingsPage() {
             );
             const message = `Webhook ${result.event.externalEventId} is now ${formatWebhookStatus(result.event.status)}.`;
             setWebhookActionMessage(message);
-            setWebhookActionHistory((prev) => [
-                { at: new Date().toISOString(), level: "success", message },
-                ...prev.slice(0, 4),
+            await Promise.all([
+                refetchWebhookEvents(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchWebhookActionAudits(),
             ]);
-            await Promise.all([refetchWebhookEvents(), refetchIntegrationMetrics(), refetchIntegrationAlerts()]);
         } catch (error) {
             const message = getErrorMessage(error, "Failed to process webhook event.");
             setWebhookActionError(message);
-            setWebhookActionHistory((prev) => [
-                { at: new Date().toISOString(), level: "error", message },
-                ...prev.slice(0, 4),
-            ]);
         } finally {
             setProcessingWebhookAction(null);
         }
@@ -977,17 +998,26 @@ export default function SettingsPage() {
                                         {webhookActionError}
                                     </div>
                                 ) : null}
-                                {webhookActionHistory.length > 0 ? (
+                                {webhookActionAuditsLoading ? (
+                                    <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 text-xs text-zinc-500">
+                                        Loading persisted action audit...
+                                    </div>
+                                ) : webhookActionAuditsError ? (
+                                    <div className="rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                                        Failed to load action audit: {getErrorMessage(webhookActionAuditsError, "Unavailable")}
+                                    </div>
+                                ) : webhookActionAudits.length > 0 ? (
                                     <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 space-y-1">
                                         <div className="text-[11px] uppercase tracking-wide text-zinc-500">Recent Actions</div>
-                                        {webhookActionHistory.map((entry) => (
+                                        {webhookActionAudits.map((entry: IntegrationWebhookActionAuditEvent) => (
                                             <div
-                                                key={`${entry.at}-${entry.message}`}
+                                                key={entry.id}
                                                 className={`text-xs ${
-                                                    entry.level === "success" ? "text-zinc-300" : "text-red-300"
+                                                    entry.outcome === "success" ? "text-zinc-300" : "text-red-300"
                                                 }`}
                                             >
-                                                {formatAuthTimestamp(entry.at)} - {entry.message}
+                                                {formatAuthTimestamp(entry.createdAt)} - {entry.summary}
+                                                <span className="text-zinc-500"> ({formatWebhookAuditAction(entry.action)})</span>
                                             </div>
                                         ))}
                                     </div>

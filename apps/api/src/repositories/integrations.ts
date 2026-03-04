@@ -3,7 +3,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import * as nexusDb from "../db/index.js";
 
 const { db } = nexusDb;
@@ -14,6 +14,8 @@ const notificationDeliveryAttempts = (nexusDb as any).notificationDeliveryAttemp
 const integrationWebhookEvents = (nexusDb as any).integrationWebhookEvents;
 const integrationWebhookAuthEvents = (nexusDb as any).integrationWebhookAuthEvents;
 const issueLinkSyncEvents = (nexusDb as any).issueLinkSyncEvents;
+const repositories = (nexusDb as any).repositories;
+const auditLog = (nexusDb as any).auditLog;
 
 type IntegrationProvider = "slack" | "linear" | "jira";
 type IntegrationConnectionStatus = "active" | "disabled" | "error";
@@ -24,6 +26,7 @@ type IntegrationWebhookAuthOutcome = "rejected" | "config_error";
 type IssueLinkSyncStatus = "pending" | "synced" | "failed" | "dead_letter";
 type IntegrationAlertSeverity = "warning" | "critical";
 type IntegrationAlertStatus = "healthy" | "warning" | "critical";
+type WebhookActionAuditOutcome = "success" | "error";
 
 const PROVIDERS: IntegrationProvider[] = ["slack", "linear", "jira"];
 const ISSUE_LINK_PROVIDERS = new Set<IntegrationProvider>(["linear", "jira"]);
@@ -227,6 +230,27 @@ function normalizeWebhookAuthEvent(row: any) {
     };
 }
 
+function normalizeWebhookActionAudit(row: any) {
+    const metadata =
+        row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+    const metadataOutcome = String(metadata.outcome || "").toLowerCase();
+    const outcome: WebhookActionAuditOutcome = metadataOutcome === "error" ? "error" : "success";
+    return {
+        id: row.id,
+        action: row.action,
+        entityType: row.entityType,
+        entityId: row.entityId || undefined,
+        repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
+        webhookEventId: typeof metadata.webhookEventId === "string" ? metadata.webhookEventId : undefined,
+        outcome,
+        summary: typeof metadata.summary === "string" ? metadata.summary : "",
+        metadata,
+        createdAt: toIso(row.createdAt),
+    };
+}
+
 function computeBackoffMs(attemptNumber: number): number {
     return Math.min(60_000, 2_000 * Math.max(attemptNumber, 1));
 }
@@ -266,6 +290,18 @@ async function findWebhookEvent(webhookEventId: string) {
 
 async function findIssueLink(issueLinkId: string) {
     const [row] = await db.select().from(issueLinks).where(eq(issueLinks.id, issueLinkId)).limit(1);
+    return row || null;
+}
+
+async function findRepository(repoId: string) {
+    const [row] = await db
+        .select({
+            id: repositories.id,
+            orgId: repositories.orgId,
+        })
+        .from(repositories)
+        .where(eq(repositories.id, repoId))
+        .limit(1);
     return row || null;
 }
 
@@ -711,6 +747,69 @@ export const integrationsRepository = {
         return rows.map(normalizeWebhookAuthEvent);
     },
 
+    async listWebhookActionAudits(filters: {
+        repoId?: string;
+        limit?: number;
+    }) {
+        const conditions = [eq(auditLog.entityType, "integration_webhook"), sql`${auditLog.action} LIKE 'integration.webhook.%'`];
+        if (filters.repoId) {
+            const repo = await findRepository(filters.repoId);
+            if (!repo) return [];
+            conditions.push(eq(auditLog.orgId, repo.orgId));
+            conditions.push(sql`${auditLog.metadata} ->> 'repoId' = ${filters.repoId}`);
+        }
+
+        const rows = await db
+            .select()
+            .from(auditLog)
+            .where(and(...conditions))
+            .orderBy(desc(auditLog.createdAt))
+            .limit(Math.min(Math.max(filters.limit ?? 20, 1), 100));
+
+        return rows.map(normalizeWebhookActionAudit);
+    },
+
+    async recordWebhookActionAudit(input: {
+        action: string;
+        repoId?: string;
+        webhookEventId?: string;
+        outcome: WebhookActionAuditOutcome;
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) {
+        if (!input.repoId) return { reason: "repo_id_required" as const };
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const action = (input.action || "").trim();
+        const summary = (input.summary || "").trim();
+        if (!action || !summary) return { reason: "invalid_audit_payload" as const };
+
+        const [inserted] = await db
+            .insert(auditLog)
+            .values({
+                orgId: repo.orgId,
+                action,
+                entityType: "integration_webhook",
+                entityId: input.webhookEventId || null,
+                metadata: sanitizeUnknown({
+                    outcome: input.outcome,
+                    summary,
+                    repoId: input.repoId,
+                    webhookEventId: input.webhookEventId,
+                    ...(input.metadata || {}),
+                }),
+                createdAt: new Date(),
+            })
+            .returning();
+
+        if (!inserted) return { reason: "insert_failed" as const };
+        return {
+            reason: "ok" as const,
+            event: normalizeWebhookActionAudit(inserted),
+        };
+    },
+
     async processWebhookEvent(
         webhookEventId: string,
         input: {
@@ -780,27 +879,35 @@ export const integrationsRepository = {
         };
     },
 
-    async retryDueWebhookEvents(limit = 20) {
+    async retryDueWebhookEvents(limit = 20, repoId?: string) {
         const now = new Date();
+        const conditions = [
+            inArray(integrationWebhookEvents.status, WEBHOOK_RETRYABLE_STATUSES),
+            lte(integrationWebhookEvents.nextAttemptAt, now),
+        ];
+        if (repoId) conditions.push(eq(integrationWebhookEvents.repoId, repoId));
         const due = await db
             .select()
             .from(integrationWebhookEvents)
-            .where(
-                and(
-                    inArray(integrationWebhookEvents.status, WEBHOOK_RETRYABLE_STATUSES),
-                    lte(integrationWebhookEvents.nextAttemptAt, now)
-                )
-            )
+            .where(and(...conditions))
             .orderBy(asc(integrationWebhookEvents.nextAttemptAt))
             .limit(Math.min(Math.max(limit, 1), 100));
 
-        const outcomes: Array<{ id: string; reason: string; status?: IntegrationWebhookStatus }> = [];
+        const outcomes: Array<{
+            id: string;
+            reason: string;
+            status?: IntegrationWebhookStatus;
+            repoId?: string;
+            externalEventId?: string;
+        }> = [];
         for (const row of due) {
             const result = await this.processWebhookEvent(row.id);
             outcomes.push({
                 id: row.id,
                 reason: result.reason,
                 status: (result as any).event?.status,
+                repoId: row.repoId || undefined,
+                externalEventId: row.externalEventId || undefined,
             });
         }
 

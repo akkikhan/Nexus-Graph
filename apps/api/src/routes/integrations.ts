@@ -147,6 +147,12 @@ const processWebhookSchema = z.object({
 
 const retryWebhooksSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(20),
+    repoId: z.string().optional(),
+});
+
+const listWebhookActionAuditsSchema = z.object({
+    repoId: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 const slackActionSchema = z.object({
@@ -250,6 +256,21 @@ async function recordWebhookAuthFailure(input: {
         await integrationsRepository.recordWebhookAuthFailure(input);
     } catch {
         // Best effort: rejection response should not depend on auth-event telemetry persistence.
+    }
+}
+
+async function recordWebhookActionAudit(input: {
+    action: string;
+    repoId?: string;
+    webhookEventId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata?: Record<string, unknown>;
+}) {
+    try {
+        await integrationsRepository.recordWebhookActionAudit(input);
+    } catch {
+        // Best effort: webhook action must not fail due to audit insert issues.
     }
 }
 
@@ -458,6 +479,26 @@ integrationsRouter.get("/webhooks", zValidator("query", listWebhookEventsSchema)
     }
 });
 
+integrationsRouter.get("/webhook-action-audits", zValidator("query", listWebhookActionAuditsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const events = await integrationsRepository.listWebhookActionAudits(query);
+        return c.json({
+            events,
+            total: events.length,
+            limit: query.limit,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration webhook action-audit listing",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
 integrationsRouter.get("/webhook-auth-events", zValidator("query", listWebhookAuthEventsSchema), async (c) => {
     const query = c.req.valid("query");
     try {
@@ -618,6 +659,19 @@ integrationsRouter.post("/webhooks/:id/process", zValidator("json", processWebho
             );
         }
         if (result.reason === "update_failed") return c.json({ error: "Failed to update webhook event state" }, 500);
+        await recordWebhookActionAudit({
+            action: body.simulateFailure ? "integration.webhook.manual_fail" : "integration.webhook.manual_process",
+            repoId: result.event.repoId,
+            webhookEventId: result.event.id,
+            outcome: result.event.status === "failed" || result.event.status === "dead_letter" ? "error" : "success",
+            summary: `Webhook ${result.event.externalEventId} is now ${result.event.status}.`,
+            metadata: {
+                mode: body.simulateFailure ? "fail" : "process",
+                eventType: result.event.eventType,
+                attempts: result.event.attempts,
+                maxAttempts: result.event.maxAttempts,
+            },
+        });
         return c.json({
             success: true,
             reason: result.reason,
@@ -637,7 +691,24 @@ integrationsRouter.post("/webhooks/:id/process", zValidator("json", processWebho
 integrationsRouter.post("/webhooks/retry", zValidator("json", retryWebhooksSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const result = await integrationsRepository.retryDueWebhookEvents(body.limit);
+        const result = await integrationsRepository.retryDueWebhookEvents(body.limit, body.repoId);
+        for (const outcome of result.outcomes) {
+            if (!outcome.repoId) continue;
+            await recordWebhookActionAudit({
+                action: "integration.webhook.retry_due",
+                repoId: outcome.repoId,
+                webhookEventId: outcome.id,
+                outcome:
+                    outcome.status === "failed" || outcome.status === "dead_letter" || outcome.reason === "update_failed"
+                        ? "error"
+                        : "success",
+                summary: `Retried webhook ${outcome.externalEventId || outcome.id} -> ${outcome.status || outcome.reason}.`,
+                metadata: {
+                    reason: outcome.reason,
+                    status: outcome.status,
+                },
+            });
+        }
         return c.json({
             success: true,
             ...result,

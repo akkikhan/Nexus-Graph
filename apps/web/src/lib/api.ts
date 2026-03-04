@@ -649,6 +649,25 @@ export interface IntegrationWebhookEventsResponse {
     offset: number;
 }
 
+export interface IntegrationWebhookActionAuditEvent {
+    id: string;
+    action: string;
+    entityType: string;
+    entityId?: string;
+    repoId?: string;
+    webhookEventId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationWebhookActionAuditsResponse {
+    events: IntegrationWebhookActionAuditEvent[];
+    total: number;
+    limit: number;
+}
+
 export async function fetchIntegrationWebhookEvents(options: {
     provider?: "slack" | "linear" | "jira";
     repoId?: string;
@@ -665,6 +684,18 @@ export async function fetchIntegrationWebhookEvents(options: {
     const query = params.toString();
     const res = await fetch(`${API_BASE_URL}/integrations/webhooks${query ? `?${query}` : ""}`);
     return parseResponse<IntegrationWebhookEventsResponse>(res, "Failed to fetch integration webhooks");
+}
+
+export async function fetchIntegrationWebhookActionAudits(options: {
+    repoId?: string;
+    limit?: number;
+} = {}): Promise<IntegrationWebhookActionAuditsResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/webhook-action-audits${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationWebhookActionAuditsResponse>(res, "Failed to fetch webhook action audits");
 }
 
 export async function processIntegrationWebhookEvent(
@@ -691,19 +722,21 @@ export async function processIntegrationWebhookEvent(
     );
 }
 
-export async function retryDueIntegrationWebhooks(limit = 20): Promise<{
+export async function retryDueIntegrationWebhooks(limit = 20, repoId?: string): Promise<{
     success: boolean;
     processed: number;
     outcomes: Array<{
         id: string;
         reason: string;
         status?: "received" | "processed" | "failed" | "dead_letter";
+        repoId?: string;
+        externalEventId?: string;
     }>;
 }> {
     const res = await fetch(`${API_BASE_URL}/integrations/webhooks/retry`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ limit }),
+        body: JSON.stringify({ limit, repoId }),
     });
     return parseResponse<{
         success: boolean;
@@ -712,6 +745,8 @@ export async function retryDueIntegrationWebhooks(limit = 20): Promise<{
             id: string;
             reason: string;
             status?: "received" | "processed" | "failed" | "dead_letter";
+            repoId?: string;
+            externalEventId?: string;
         }>;
     }>(res, "Failed to retry due integration webhooks");
 }

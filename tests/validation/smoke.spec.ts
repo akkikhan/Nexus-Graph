@@ -468,6 +468,58 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
             updatedAt: nowIso,
         },
     ];
+    const webhookActionAudits: Array<{
+        id: string;
+        action: string;
+        entityType: string;
+        entityId?: string;
+        repoId?: string;
+        webhookEventId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata: Record<string, unknown>;
+        createdAt: string;
+    }> = [];
+
+    const appendWebhookActionAudit = (entry: {
+        action: string;
+        entityId?: string;
+        repoId?: string;
+        webhookEventId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) => {
+        webhookActionAudits.unshift({
+            id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            action: entry.action,
+            entityType: "integration_webhook",
+            entityId: entry.entityId,
+            repoId: entry.repoId,
+            webhookEventId: entry.webhookEventId,
+            outcome: entry.outcome,
+            summary: entry.summary,
+            metadata: entry.metadata || {},
+            createdAt: new Date().toISOString(),
+        });
+    };
+
+    await page.route("**/api/v1/integrations/webhook-action-audits**", async (route) => {
+        const url = new URL(route.request().url());
+        const repoId = url.searchParams.get("repoId");
+        const limit = Number(url.searchParams.get("limit") || 20);
+        const filtered = webhookActionAudits.filter((event) => {
+            if (repoId && event.repoId !== repoId) return false;
+            return true;
+        });
+        await route.fulfill(
+            jsonResponse(200, {
+                events: filtered.slice(0, Math.max(limit, 1)),
+                total: filtered.length,
+                limit: Math.max(limit, 1),
+            })
+        );
+    });
 
     await page.route("**/api/v1/integrations/webhooks**", async (route) => {
         const url = new URL(route.request().url());
@@ -482,9 +534,33 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                     event.status = "processed";
                     event.attempts += 1;
                     event.updatedAt = new Date().toISOString();
-                    return { id: event.id, reason: "processed", status: event.status };
+                    appendWebhookActionAudit({
+                        action: "integration.webhook.retry_due",
+                        entityId: event.id,
+                        repoId: event.repoId,
+                        webhookEventId: event.id,
+                        outcome: "success",
+                        summary: `Retried webhook ${event.externalEventId} -> ${event.status}.`,
+                        metadata: {
+                            reason: "processed",
+                            status: event.status,
+                        },
+                    });
+                    return {
+                        id: event.id,
+                        reason: "processed",
+                        status: event.status,
+                        repoId: event.repoId,
+                        externalEventId: event.externalEventId,
+                    };
                 }
-                return { id: event.id, reason: "skipped", status: event.status };
+                return {
+                    id: event.id,
+                    reason: "skipped",
+                    status: event.status,
+                    repoId: event.repoId,
+                    externalEventId: event.externalEventId,
+                };
             });
             await route.fulfill(
                 jsonResponse(200, {
@@ -510,6 +586,17 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                 event.attempts += 1;
                 event.status = event.attempts >= event.maxAttempts ? "dead_letter" : "failed";
                 event.updatedAt = new Date().toISOString();
+                appendWebhookActionAudit({
+                    action: "integration.webhook.manual_fail",
+                    entityId: event.id,
+                    repoId: event.repoId,
+                    webhookEventId: event.id,
+                    outcome: "error",
+                    summary: `Webhook ${event.externalEventId} is now ${event.status}.`,
+                    metadata: {
+                        mode: "fail",
+                    },
+                });
                 await route.fulfill(
                     jsonResponse(200, {
                         success: true,
@@ -523,6 +610,17 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
             event.attempts += 1;
             event.processedAt = new Date().toISOString();
             event.updatedAt = new Date().toISOString();
+            appendWebhookActionAudit({
+                action: "integration.webhook.manual_process",
+                entityId: event.id,
+                repoId: event.repoId,
+                webhookEventId: event.id,
+                outcome: "success",
+                summary: `Webhook ${event.externalEventId} is now ${event.status}.`,
+                metadata: {
+                    mode: "process",
+                },
+            });
             await route.fulfill(
                 jsonResponse(200, {
                     success: true,

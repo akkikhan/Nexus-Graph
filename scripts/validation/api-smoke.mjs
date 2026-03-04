@@ -1090,10 +1090,29 @@ async function run() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     limit: 10,
+                    repoId: firstRepoId,
                 }),
             });
             printResult("POST /api/v1/integrations/webhooks/retry", retryWebhooks);
             assert(retryWebhooks.response.status === 200, "webhook retry endpoint must return 200");
+
+            const listWebhookActionAudits = await request(
+                `/api/v1/integrations/webhook-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=10`
+            );
+            printResult("GET /api/v1/integrations/webhook-action-audits", listWebhookActionAudits);
+            assert(listWebhookActionAudits.response.status === 200, "webhook action-audit list must return 200");
+            assert(
+                Array.isArray(listWebhookActionAudits.payload?.events),
+                "webhook action-audit list must include events[]"
+            );
+            assert(
+                listWebhookActionAudits.payload.events.some((event) => event.action === "integration.webhook.manual_fail"),
+                "webhook action-audit list should include manual failure audit entry"
+            );
+            assert(
+                listWebhookActionAudits.payload.events.some((event) => event.action === "integration.webhook.manual_process"),
+                "webhook action-audit list should include manual process audit entry"
+            );
 
             const slackActionExternalId = `slack-action-${Date.now()}`;
             const slackActionPayload = {

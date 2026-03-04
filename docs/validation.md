@@ -68,6 +68,7 @@ Checks:
 - `GET /api/v1/integrations/notifications/:id`
 - `POST /api/v1/integrations/webhooks/provider/:provider` (durable webhook ingestion with idempotency)
 - `GET /api/v1/integrations/webhooks`
+- `GET /api/v1/integrations/webhook-action-audits` (durable operator action audit feed for webhook process/retry controls)
 - `GET /api/v1/integrations/webhook-auth-events` (auth rejection/config-error telemetry listing)
 - `GET /api/v1/integrations/webhook-auth-events/export` (server-side JSON/CSV export of filtered auth-event telemetry)
 - `POST /api/v1/integrations/webhooks/:id/process`
@@ -126,7 +127,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Insights dashboard load
 - Settings diagnostics panel load (webhook auth events + filter path)
 - Settings integrations operations snapshot (connections + metrics + alerts)
-- Settings webhook recovery actions (list/process/fail/retry controls + recent action feed)
+- Settings webhook recovery actions (list/process/fail/retry controls + persisted action audit feed)
 - Settings diagnostics export controls (JSON/CSV) render and trigger server-side export requests
 
 Prerequisite:
