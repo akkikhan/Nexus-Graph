@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { integrationsRepository } from "../repositories/integrations.js";
+import { verifyIntegrationWebhookSignature } from "../lib/webhook-security.js";
 
 const integrationsRouter = new Hono();
 
@@ -360,6 +361,31 @@ integrationsRouter.get("/webhooks", zValidator("query", listWebhookEventsSchema)
 integrationsRouter.post("/webhooks/provider/:provider", zValidator("json", ingestWebhookSchema), async (c) => {
     const provider = c.req.param("provider");
     const body = c.req.valid("json");
+    const signature = c.req.header("x-nexus-webhook-signature");
+    const timestamp = c.req.header("x-nexus-webhook-timestamp");
+    const verification = providerSchema.safeParse(provider);
+    if (verification.success) {
+        const verified = verifyIntegrationWebhookSignature({
+            provider: verification.data,
+            eventType: body.eventType,
+            externalEventId: body.externalEventId,
+            body,
+            signatureHeader: signature,
+            timestampHeader: timestamp,
+        });
+        if (!verified.ok) {
+            return c.json(
+                {
+                    error:
+                        verified.status === 503
+                            ? "Webhook signature configuration unavailable"
+                            : "Invalid webhook signature",
+                    code: verified.reason,
+                },
+                verified.status
+            );
+        }
+    }
     try {
         const result = await integrationsRepository.ingestWebhook({
             provider,
@@ -441,6 +467,28 @@ integrationsRouter.post("/webhooks/retry", zValidator("json", retryWebhooksSchem
 
 integrationsRouter.post("/slack/actions", zValidator("json", slackActionSchema), async (c) => {
     const body = c.req.valid("json");
+    const signature = c.req.header("x-nexus-webhook-signature");
+    const timestamp = c.req.header("x-nexus-webhook-timestamp");
+    const verified = verifyIntegrationWebhookSignature({
+        provider: "slack",
+        eventType: `slack.action.${body.actionType}`,
+        externalEventId: body.externalEventId,
+        body,
+        signatureHeader: signature,
+        timestampHeader: timestamp,
+    });
+    if (!verified.ok) {
+        return c.json(
+            {
+                error:
+                    verified.status === 503
+                        ? "Webhook signature configuration unavailable"
+                        : "Invalid webhook signature",
+                code: verified.reason,
+            },
+            verified.status
+        );
+    }
     try {
         const result = await integrationsRepository.handleSlackActionCallback(body);
         if (result.reason === "duplicate") {

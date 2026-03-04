@@ -1,16 +1,59 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash, createHmac } from "node:crypto";
 
 const API_BASE_URL = (process.env.API_BASE_URL || "http://localhost:3001").replace(/\/+$/, "");
 const ALLOW_DEGRADED = process.env.ALLOW_DEGRADED !== "false";
 const AUTO_START_API = process.env.AUTO_START_API !== "false";
 const PNPM_BIN = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const WEBHOOK_SECRET_ENV_MAP = {
+    slack: "NEXUS_WEBHOOK_SIGNING_SECRET_SLACK",
+    linear: "NEXUS_WEBHOOK_SIGNING_SECRET_LINEAR",
+    jira: "NEXUS_WEBHOOK_SIGNING_SECRET_JIRA",
+};
 
 function assert(condition, message) {
     if (!condition) {
         throw new Error(message);
     }
+}
+
+function stableStringify(value) {
+    if (value === null || typeof value === "number" || typeof value === "boolean" || typeof value === "string") {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+        const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+        return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`).join(",")}}`;
+    }
+    return JSON.stringify(String(value));
+}
+
+function resolveWebhookSigningSecret(provider) {
+    const envName = WEBHOOK_SECRET_ENV_MAP[provider];
+    const configured = String(process.env[envName] || "").trim();
+    if (configured) return configured;
+    if (process.env.NODE_ENV === "production") {
+        throw new Error(`Missing ${envName} for webhook signing`);
+    }
+    return `nexus-dev-${provider}-webhook-secret`;
+}
+
+function createSignedWebhookHeaders({ provider, eventType, externalEventId, body, timestampSeconds }) {
+    const secret = resolveWebhookSigningSecret(provider);
+    const ts = Number(timestampSeconds || Math.floor(Date.now() / 1000));
+    const payloadHash = createHash("sha256").update(stableStringify(body), "utf8").digest("hex");
+    const canonical = [String(ts), provider, eventType.trim(), externalEventId.trim(), payloadHash].join(".");
+    const signature = `v1=${createHmac("sha256", secret).update(canonical, "utf8").digest("hex")}`;
+    return {
+        "Content-Type": "application/json",
+        "x-nexus-webhook-timestamp": String(ts),
+        "x-nexus-webhook-signature": signature,
+    };
 }
 
 function sleep(ms) {
@@ -938,17 +981,46 @@ async function run() {
             );
 
             const webhookExternalId = `slack-webhook-${Date.now()}`;
-            const ingestWebhook = await request("/api/v1/integrations/webhooks/provider/slack", {
+            const webhookPayload = {
+                eventType: "message.channels",
+                externalEventId: webhookExternalId,
+                repoId: firstRepoId,
+                payload: {
+                    text: "Webhook smoke payload",
+                },
+            };
+            const ingestWebhookUnsigned = await request("/api/v1/integrations/webhooks/provider/slack", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    eventType: "message.channels",
-                    externalEventId: webhookExternalId,
-                    repoId: firstRepoId,
-                    payload: {
-                        text: "Webhook smoke payload",
-                    },
+                body: JSON.stringify(webhookPayload),
+            });
+            printResult("POST /api/v1/integrations/webhooks/provider/slack (unsigned)", ingestWebhookUnsigned);
+            assert(ingestWebhookUnsigned.response.status === 401, "unsigned webhook ingest must return 401");
+
+            const staleTimestampSeconds = Math.floor(Date.now() / 1000) - 600;
+            const ingestWebhookStale = await request("/api/v1/integrations/webhooks/provider/slack", {
+                method: "POST",
+                headers: createSignedWebhookHeaders({
+                    provider: "slack",
+                    eventType: webhookPayload.eventType,
+                    externalEventId: webhookPayload.externalEventId,
+                    body: webhookPayload,
+                    timestampSeconds: staleTimestampSeconds,
                 }),
+                body: JSON.stringify(webhookPayload),
+            });
+            printResult("POST /api/v1/integrations/webhooks/provider/slack (stale timestamp)", ingestWebhookStale);
+            assert(ingestWebhookStale.response.status === 401, "stale webhook timestamp must return 401");
+
+            const ingestWebhook = await request("/api/v1/integrations/webhooks/provider/slack", {
+                method: "POST",
+                headers: createSignedWebhookHeaders({
+                    provider: "slack",
+                    eventType: webhookPayload.eventType,
+                    externalEventId: webhookPayload.externalEventId,
+                    body: webhookPayload,
+                }),
+                body: JSON.stringify(webhookPayload),
             });
             printResult("POST /api/v1/integrations/webhooks/provider/slack", ingestWebhook);
             assert(ingestWebhook.response.status === 201, "webhook ingest must return 201");
@@ -957,10 +1029,19 @@ async function run() {
 
             const ingestWebhookDuplicate = await request("/api/v1/integrations/webhooks/provider/slack", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: createSignedWebhookHeaders({
+                    provider: "slack",
+                    eventType: webhookPayload.eventType,
+                    externalEventId: webhookPayload.externalEventId,
+                    body: {
+                        eventType: webhookPayload.eventType,
+                        externalEventId: webhookPayload.externalEventId,
+                        repoId: firstRepoId,
+                    },
+                }),
                 body: JSON.stringify({
-                    eventType: "message.channels",
-                    externalEventId: webhookExternalId,
+                    eventType: webhookPayload.eventType,
+                    externalEventId: webhookPayload.externalEventId,
                     repoId: firstRepoId,
                 }),
             });
@@ -1015,27 +1096,51 @@ async function run() {
             assert(retryWebhooks.response.status === 200, "webhook retry endpoint must return 200");
 
             const slackActionExternalId = `slack-action-${Date.now()}`;
-            const slackAction = await request("/api/v1/integrations/slack/actions", {
+            const slackActionPayload = {
+                externalEventId: slackActionExternalId,
+                repoId: firstRepoId,
+                teamId: "T-SMOKE",
+                channelId: "C123SMOKE",
+                userId: "U123SMOKE",
+                actionType: "approve_queue",
+                payload: {
+                    actionValue: "approve",
+                },
+            };
+            const slackActionUnsigned = await request("/api/v1/integrations/slack/actions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    externalEventId: slackActionExternalId,
-                    repoId: firstRepoId,
-                    teamId: "T-SMOKE",
-                    channelId: "C123SMOKE",
-                    userId: "U123SMOKE",
-                    actionType: "approve_queue",
-                    payload: {
-                        actionValue: "approve",
-                    },
+                body: JSON.stringify(slackActionPayload),
+            });
+            printResult("POST /api/v1/integrations/slack/actions (unsigned)", slackActionUnsigned);
+            assert(slackActionUnsigned.response.status === 401, "unsigned slack action callback must return 401");
+
+            const slackAction = await request("/api/v1/integrations/slack/actions", {
+                method: "POST",
+                headers: createSignedWebhookHeaders({
+                    provider: "slack",
+                    eventType: `slack.action.${slackActionPayload.actionType}`,
+                    externalEventId: slackActionPayload.externalEventId,
+                    body: slackActionPayload,
                 }),
+                body: JSON.stringify(slackActionPayload),
             });
             printResult("POST /api/v1/integrations/slack/actions", slackAction);
             assert(slackAction.response.status === 201, "slack action callback must return 201");
 
             const slackActionDuplicate = await request("/api/v1/integrations/slack/actions", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: createSignedWebhookHeaders({
+                    provider: "slack",
+                    eventType: "slack.action.approve_queue",
+                    externalEventId: slackActionExternalId,
+                    body: {
+                        externalEventId: slackActionExternalId,
+                        repoId: firstRepoId,
+                        teamId: "T-SMOKE",
+                        actionType: "approve_queue",
+                    },
+                }),
                 body: JSON.stringify({
                     externalEventId: slackActionExternalId,
                     repoId: firstRepoId,

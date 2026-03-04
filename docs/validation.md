@@ -107,6 +107,7 @@ Degraded-mode behavior:
 - `insights` endpoints return `503` with `{ error, details }` when DB is unavailable.
 - Degraded `503` is accepted when payload includes an `error` field.
 - Set `ALLOW_DEGRADED=false` to require strict `200` responses.
+- Integrations webhook ingestion now includes abuse checks for missing signature and stale timestamps (`401` paths validated in smoke).
 
 ## Web Smoke Coverage
 
