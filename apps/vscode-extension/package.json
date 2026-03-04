@@ -1,0 +1,119 @@
+{
+    "name": "@nexus/vscode-extension",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Nexus VS Code extension MVP for inbox summary and pull request actions",
+    "main": "./dist/extension.js",
+    "engines": {
+        "vscode": "^1.90.0"
+    },
+    "activationEvents": [
+        "onView:nexusInbox",
+        "onCommand:nexus.refreshInbox",
+        "onCommand:nexus.showInboxSummary",
+        "onCommand:nexus.pullRequestActions",
+        "onCommand:nexus.requestAiReview"
+    ],
+    "contributes": {
+        "views": {
+            "explorer": [
+                {
+                    "id": "nexusInbox",
+                    "name": "Nexus Inbox"
+                }
+            ]
+        },
+        "commands": [
+            {
+                "command": "nexus.refreshInbox",
+                "title": "Nexus: Refresh Inbox"
+            },
+            {
+                "command": "nexus.showInboxSummary",
+                "title": "Nexus: Show Inbox Summary"
+            },
+            {
+                "command": "nexus.pullRequestActions",
+                "title": "Nexus: Pull Request Actions"
+            },
+            {
+                "command": "nexus.requestAiReview",
+                "title": "Nexus: Request AI Review"
+            },
+            {
+                "command": "nexus.openPullRequest",
+                "title": "Nexus: Open Pull Request"
+            }
+        ],
+        "menus": {
+            "view/title": [
+                {
+                    "command": "nexus.refreshInbox",
+                    "when": "view == nexusInbox",
+                    "group": "navigation"
+                },
+                {
+                    "command": "nexus.showInboxSummary",
+                    "when": "view == nexusInbox",
+                    "group": "navigation"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "nexus.pullRequestActions",
+                    "when": "view == nexusInbox && viewItem == nexusPullRequest",
+                    "group": "inline"
+                },
+                {
+                    "command": "nexus.requestAiReview",
+                    "when": "view == nexusInbox && viewItem == nexusPullRequest",
+                    "group": "inline"
+                },
+                {
+                    "command": "nexus.openPullRequest",
+                    "when": "view == nexusInbox && viewItem == nexusPullRequest",
+                    "group": "navigation"
+                }
+            ]
+        },
+        "configuration": {
+            "title": "Nexus",
+            "properties": {
+                "nexus.apiBaseUrl": {
+                    "type": "string",
+                    "default": "http://localhost:3001",
+                    "description": "Base URL for Nexus API server."
+                },
+                "nexus.webBaseUrl": {
+                    "type": "string",
+                    "default": "http://localhost:3000",
+                    "description": "Base URL for Nexus web dashboard."
+                },
+                "nexus.inboxLimit": {
+                    "type": "number",
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Maximum number of pull requests to load in Nexus Inbox."
+                },
+                "nexus.requestTimeoutMs": {
+                    "type": "number",
+                    "default": 8000,
+                    "minimum": 1000,
+                    "maximum": 60000,
+                    "description": "HTTP timeout in milliseconds for Nexus API requests."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "build": "tsc -p ./tsconfig.json",
+        "test": "vitest run"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@types/vscode": "^1.90.0",
+        "typescript": "^5.7.0",
+        "vitest": "^2.1.0"
+    }
+}

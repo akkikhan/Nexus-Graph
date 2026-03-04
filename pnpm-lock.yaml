@@ -125,6 +125,21 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.19.10)
 
+  apps/vscode-extension:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.10
+      '@types/vscode':
+        specifier: ^1.90.0
+        version: 1.109.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.10)
+
   apps/web:
     dependencies:
       '@tanstack/react-query':
@@ -1501,6 +1516,9 @@ packages:
 
   '@types/uuid@10.0.0':
     resolution: {integrity: sha512-7gqG38EyHgyP1S+7+xomFtL+ZNHcKv6DwNaCZmJmo1vgMugyF3TCnXVg4t1uk89mLNwnLtnY3TpOpCOyp1/xHQ==}
+
+  '@types/vscode@1.109.0':
+    resolution: {integrity: sha512-0Pf95rnwEIwDbmXGC08r0B4TQhAbsHQ5UyTIgVgoieDe4cOnf92usuR5dEczb6bTKEp7ziZH4TV1TRGPPCExtw==}
 
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
@@ -3891,6 +3909,8 @@ snapshots:
       '@types/node': 22.19.10
 
   '@types/uuid@10.0.0': {}
+
+  '@types/vscode@1.109.0': {}
 
   '@types/ws@8.18.1':
     dependencies:

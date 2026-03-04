@@ -22,6 +22,7 @@
 | `@nexus/cli` | Command-line interface |
 | `@nexus/web` | Web dashboard (Next.js) |
 | `@nexus/api` | API server |
+| `@nexus/vscode-extension` | VS Code inbox and PR actions MVP |
 | `@nexus/core` | Shared business logic |
 | `@nexus/ai` | AI engine with multi-LLM support |
 | `@nexus/git` | Git operations |
@@ -42,6 +43,9 @@ pnpm build
 
 # Run tests
 pnpm test
+
+# Run VS Code extension tests
+pnpm --filter @nexus/vscode-extension test
 ```
 
 ## 🖥️ CLI Usage
@@ -101,6 +105,8 @@ pnpm smoke:web
 ```
 
 Detailed guide: `docs/validation.md`
+
+VS Code extension guide: `docs/vscode-extension.md`
 
 ## Database Environments
 

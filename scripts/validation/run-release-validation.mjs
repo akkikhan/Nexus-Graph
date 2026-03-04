@@ -99,6 +99,8 @@ async function stopService(child) {
 }
 
 async function run() {
+    await runCommand("VS Code extension tests", PNPM_BIN, ["--filter", "@nexus/vscode-extension", "test"]);
+
     process.stdout.write(
         `[validate:release] starting API and Web services (api=${API_BASE_URL}, web=${WEB_BASE_URL})...\n`
     );

@@ -160,6 +160,7 @@ Prerequisite:
 
 What it does:
 
+- Runs VS Code extension unit tests (`@nexus/vscode-extension`)
 - Starts API and Web services
 - Waits for readiness checks
 - Runs API smoke
