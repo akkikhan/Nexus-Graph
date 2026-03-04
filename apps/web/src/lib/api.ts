@@ -379,3 +379,53 @@ export async function fetchSystemHealth(): Promise<SystemHealth> {
     const res = await fetch(`${API_BASE_URL}/health`);
     return parseResponse<SystemHealth>(res, "Failed to fetch system health");
 }
+
+export interface IntegrationWebhookAuthEvent {
+    id: string;
+    provider: "slack" | "linear" | "jira";
+    repoId?: string;
+    eventType: string;
+    externalEventId: string;
+    outcome: "rejected" | "config_error";
+    reason: string;
+    statusCode: number;
+    signaturePresent: boolean;
+    timestampPresent: boolean;
+    requestTimestamp?: string;
+    requestSkewSeconds?: number;
+    details?: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationWebhookAuthEventListOptions {
+    provider?: "slack" | "linear" | "jira";
+    repoId?: string;
+    outcome?: "rejected" | "config_error";
+    reason?: string;
+    sinceMinutes?: number;
+    limit?: number;
+    offset?: number;
+}
+
+export interface IntegrationWebhookAuthEventsResponse {
+    events: IntegrationWebhookAuthEvent[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export async function fetchIntegrationWebhookAuthEvents(
+    options: IntegrationWebhookAuthEventListOptions = {}
+): Promise<IntegrationWebhookAuthEventsResponse> {
+    const params = new URLSearchParams();
+    if (options.provider) params.set("provider", options.provider);
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.outcome) params.set("outcome", options.outcome);
+    if (options.reason) params.set("reason", options.reason);
+    if (typeof options.sinceMinutes === "number") params.set("sinceMinutes", String(options.sinceMinutes));
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/webhook-auth-events${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationWebhookAuthEventsResponse>(res, "Failed to fetch webhook auth events");
+}

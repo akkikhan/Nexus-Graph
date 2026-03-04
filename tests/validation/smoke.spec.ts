@@ -297,3 +297,77 @@ test("insights dashboard load", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /AI Insights/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Sprint completion at risk/i)).toBeVisible({ timeout: 20000 });
 });
+
+test("settings diagnostics: webhook auth events visible with filters", async ({ page }) => {
+    await page.route("**/api/v1/health", async (route) => {
+        await route.fulfill(
+            jsonResponse(200, {
+                status: "healthy",
+                version: "0.1.0",
+                timestamp: new Date().toISOString(),
+                database: {
+                    connected: true,
+                    latencyMs: 9,
+                },
+                websocket: {
+                    status: "ready",
+                    connectedClients: 2,
+                },
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/webhook-auth-events**", async (route) => {
+        const url = new URL(route.request().url());
+        const provider = url.searchParams.get("provider");
+        const reason = url.searchParams.get("reason");
+        const events = [
+            {
+                id: "auth-1",
+                provider: "slack",
+                eventType: "message.channels",
+                externalEventId: "evt-1",
+                outcome: "rejected",
+                reason: "missing_signature_headers",
+                statusCode: 401,
+                signaturePresent: false,
+                timestampPresent: false,
+                createdAt: new Date().toISOString(),
+            },
+            {
+                id: "auth-2",
+                provider: "slack",
+                eventType: "slack.action.approve_queue",
+                externalEventId: "evt-2",
+                outcome: "rejected",
+                reason: "timestamp_out_of_window",
+                statusCode: 401,
+                signaturePresent: true,
+                timestampPresent: true,
+                createdAt: new Date().toISOString(),
+            },
+        ].filter((event) => {
+            if (provider && event.provider !== provider) return false;
+            if (reason && !event.reason.includes(reason)) return false;
+            return true;
+        });
+
+        await route.fulfill(
+            jsonResponse(200, {
+                events,
+                total: events.length,
+                limit: 12,
+                offset: 0,
+            })
+        );
+    });
+
+    await page.goto("/settings", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: /^Settings$/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Integration Diagnostics/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
+
+    const reasonInput = page.getByPlaceholder("missing_signature_headers");
+    await reasonInput.fill("timestamp_out_of_window");
+    await expect(page.getByText(/timestamp out of window/i)).toBeVisible({ timeout: 20000 });
+});

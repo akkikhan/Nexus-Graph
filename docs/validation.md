@@ -123,6 +123,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Queue turbo toggle
 - Activity filter switching
 - Insights dashboard load
+- Settings diagnostics panel load (webhook auth events + filter path)
 
 Prerequisite:
 

@@ -4,15 +4,22 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import {
+    AlertTriangle,
     Bell,
     Bot,
     ChevronRight,
     Database,
     GitBranch,
     Globe,
+    RefreshCw,
     Server,
+    ShieldAlert,
 } from "lucide-react";
-import { fetchSystemHealth } from "../../../lib/api";
+import {
+    fetchIntegrationWebhookAuthEvents,
+    fetchSystemHealth,
+    IntegrationWebhookAuthEvent,
+} from "../../../lib/api";
 
 type SelectOption = {
     label: string;
@@ -219,13 +226,65 @@ function statusClass(status: "connected" | "disconnected" | "coming_soon"): stri
     return "text-zinc-400";
 }
 
+type AuthProviderFilter = "all" | "slack" | "linear" | "jira";
+type AuthOutcomeFilter = "all" | "rejected" | "config_error";
+
+const WEBHOOK_DIAGNOSTICS_PAGE_SIZE = 12;
+
+function formatAuthReason(reason: string): string {
+    return reason.split("_").join(" ");
+}
+
+function formatAuthTimestamp(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+}
+
 export default function SettingsPage() {
     const [values, setValues] = useState(initialValues);
     const [saveMessage, setSaveMessage] = useState<string>("");
+    const [authProvider, setAuthProvider] = useState<AuthProviderFilter>("all");
+    const [authOutcome, setAuthOutcome] = useState<AuthOutcomeFilter>("all");
+    const [authReason, setAuthReason] = useState("");
+    const [authSinceMinutes, setAuthSinceMinutes] = useState<number>(60);
+    const [authRepoId, setAuthRepoId] = useState("");
+    const [authPage, setAuthPage] = useState(0);
 
     const { data: health, isLoading: healthLoading } = useQuery({
         queryKey: ["system", "health"],
         queryFn: fetchSystemHealth,
+        refetchInterval: 30_000,
+    });
+
+    const authOffset = authPage * WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
+    const {
+        data: authEventsData,
+        isLoading: authEventsLoading,
+        isFetching: authEventsFetching,
+        error: authEventsError,
+        refetch: refetchAuthEvents,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "webhook-auth-events",
+            authProvider,
+            authOutcome,
+            authReason,
+            authSinceMinutes,
+            authRepoId,
+            authOffset,
+        ],
+        queryFn: () =>
+            fetchIntegrationWebhookAuthEvents({
+                provider: authProvider === "all" ? undefined : authProvider,
+                outcome: authOutcome === "all" ? undefined : authOutcome,
+                reason: authReason.trim() || undefined,
+                sinceMinutes: authSinceMinutes,
+                repoId: authRepoId.trim() || undefined,
+                limit: WEBHOOK_DIAGNOSTICS_PAGE_SIZE,
+                offset: authOffset,
+            }),
         refetchInterval: 30_000,
     });
 
@@ -242,6 +301,19 @@ export default function SettingsPage() {
             statusClass: health.status === "healthy" ? "text-green-400" : "text-yellow-400",
         };
     }, [health, healthLoading]);
+
+    const authEvents = authEventsData?.events || [];
+    const hasNextAuthPage = authEvents.length === WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
+    const authEventsSummary = useMemo(() => {
+        const missingSignature = authEvents.filter((event) => event.reason === "missing_signature_headers").length;
+        const staleTimestamp = authEvents.filter((event) => event.reason === "timestamp_out_of_window").length;
+        const invalidSignature = authEvents.filter((event) => event.reason === "invalid_signature").length;
+        return {
+            missingSignature,
+            staleTimestamp,
+            invalidSignature,
+        };
+    }, [authEvents]);
 
     const setValue = (key: string, value: string | number | boolean) => {
         setValues((prev) => ({ ...prev, [key]: value }));
@@ -273,6 +345,15 @@ export default function SettingsPage() {
     const onResetDefaults = () => {
         setValues(initialValues);
         setSaveMessage("Settings reset to defaults. Click Save Changes to persist.");
+    };
+
+    const onResetDiagnostics = () => {
+        setAuthProvider("all");
+        setAuthOutcome("all");
+        setAuthReason("");
+        setAuthSinceMinutes(60);
+        setAuthRepoId("");
+        setAuthPage(0);
     };
 
     return (
@@ -316,6 +397,196 @@ export default function SettingsPage() {
                         <div className="font-semibold text-zinc-300">
                             {health?.websocket?.status || "Unknown"}
                         </div>
+                    </div>
+                </div>
+            </motion.div>
+
+            <motion.div
+                initial={{ opacity: 0, y: 18 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 }}
+                className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-5 space-y-5"
+            >
+                <div className="flex items-start justify-between gap-4">
+                    <div>
+                        <h2 className="text-white font-semibold mb-1 flex items-center gap-2">
+                            <ShieldAlert className="w-4 h-4 text-yellow-400" />
+                            Integration Diagnostics
+                        </h2>
+                        <p className="text-sm text-zinc-500">
+                            Webhook auth rejection telemetry for debugging signature and timestamp failures.
+                        </p>
+                    </div>
+                    <button
+                        onClick={() => refetchAuthEvents()}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-zinc-700 text-zinc-200 hover:bg-zinc-800/70 transition-colors text-sm"
+                    >
+                        <RefreshCw className={`w-4 h-4 ${authEventsFetching ? "animate-spin" : ""}`} />
+                        Refresh
+                    </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-500">Provider</label>
+                        <select
+                            value={authProvider}
+                            onChange={(e) => {
+                                setAuthProvider(e.target.value as AuthProviderFilter);
+                                setAuthPage(0);
+                            }}
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                        >
+                            <option value="all">All providers</option>
+                            <option value="slack">Slack</option>
+                            <option value="linear">Linear</option>
+                            <option value="jira">Jira</option>
+                        </select>
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-500">Outcome</label>
+                        <select
+                            value={authOutcome}
+                            onChange={(e) => {
+                                setAuthOutcome(e.target.value as AuthOutcomeFilter);
+                                setAuthPage(0);
+                            }}
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                        >
+                            <option value="all">All outcomes</option>
+                            <option value="rejected">Rejected</option>
+                            <option value="config_error">Config Error</option>
+                        </select>
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-500">Since</label>
+                        <select
+                            value={String(authSinceMinutes)}
+                            onChange={(e) => {
+                                setAuthSinceMinutes(Number(e.target.value));
+                                setAuthPage(0);
+                            }}
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                        >
+                            <option value="15">Last 15 min</option>
+                            <option value="60">Last 60 min</option>
+                            <option value="360">Last 6 hours</option>
+                            <option value="1440">Last 24 hours</option>
+                        </select>
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-500">Reason</label>
+                        <input
+                            value={authReason}
+                            onChange={(e) => {
+                                setAuthReason(e.target.value);
+                                setAuthPage(0);
+                            }}
+                            placeholder="missing_signature_headers"
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                        />
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-500">Repo Id (optional)</label>
+                        <input
+                            value={authRepoId}
+                            onChange={(e) => {
+                                setAuthRepoId(e.target.value);
+                                setAuthPage(0);
+                            }}
+                            placeholder="repo uuid"
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                        />
+                    </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 text-xs text-zinc-400">
+                    <div className="flex items-center gap-3">
+                        <span className="inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-yellow-400" />
+                            Missing signature: {authEventsSummary.missingSignature}
+                        </span>
+                        <span>Stale timestamp: {authEventsSummary.staleTimestamp}</span>
+                        <span>Invalid signature: {authEventsSummary.invalidSignature}</span>
+                    </div>
+                    <button
+                        onClick={onResetDiagnostics}
+                        className="text-zinc-300 hover:text-white transition-colors"
+                    >
+                        Clear Filters
+                    </button>
+                </div>
+
+                {authEventsLoading ? (
+                    <div className="py-8 text-sm text-zinc-400">Loading diagnostic events...</div>
+                ) : authEventsError ? (
+                    <div className="py-6 px-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-sm">
+                        Failed to load diagnostics: {(authEventsError as Error).message}
+                    </div>
+                ) : authEvents.length === 0 ? (
+                    <div className="py-8 text-sm text-zinc-500">No webhook auth failures for the selected filters.</div>
+                ) : (
+                    <div className="rounded-lg border border-zinc-800 overflow-x-auto">
+                        <div className="min-w-[920px]">
+                            <div className="grid grid-cols-[130px_120px_1fr_120px_90px_90px_190px] gap-2 px-4 py-2 text-xs uppercase tracking-wide text-zinc-500 bg-zinc-950/60">
+                                <span>Provider</span>
+                                <span>Outcome</span>
+                                <span>Reason / Event</span>
+                                <span>Status</span>
+                                <span>Sig</span>
+                                <span>TS</span>
+                                <span>Created</span>
+                            </div>
+                            <div className="divide-y divide-zinc-800">
+                                {authEvents.map((event: IntegrationWebhookAuthEvent) => (
+                                    <div
+                                        key={event.id}
+                                        className="grid grid-cols-[130px_120px_1fr_120px_90px_90px_190px] gap-2 px-4 py-3 text-sm text-zinc-200"
+                                    >
+                                        <span className="capitalize">{event.provider}</span>
+                                        <span className={event.outcome === "config_error" ? "text-red-400" : "text-yellow-300"}>
+                                            {event.outcome === "config_error" ? "Config Error" : "Rejected"}
+                                        </span>
+                                        <div className="min-w-0">
+                                            <div className="truncate">{formatAuthReason(event.reason)}</div>
+                                            <div className="text-xs text-zinc-500 truncate">
+                                                {event.eventType} - {event.externalEventId}
+                                            </div>
+                                        </div>
+                                        <span>{event.statusCode}</span>
+                                        <span>{event.signaturePresent ? "Present" : "Missing"}</span>
+                                        <span>{event.timestampPresent ? "Present" : "Missing"}</span>
+                                        <span className="text-xs text-zinc-400">{formatAuthTimestamp(event.createdAt)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <div className="flex items-center justify-between">
+                    <div className="text-xs text-zinc-500">
+                        Page {authPage + 1} - showing up to {WEBHOOK_DIAGNOSTICS_PAGE_SIZE} events
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setAuthPage((prev) => Math.max(prev - 1, 0))}
+                            disabled={authPage === 0}
+                            className="px-3 py-1.5 rounded border border-zinc-700 text-sm text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                        >
+                            Previous
+                        </button>
+                        <button
+                            onClick={() => setAuthPage((prev) => prev + 1)}
+                            disabled={!hasNextAuthPage}
+                            className="px-3 py-1.5 rounded border border-zinc-700 text-sm text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                        >
+                            Next
+                        </button>
                     </div>
                 </div>
             </motion.div>
