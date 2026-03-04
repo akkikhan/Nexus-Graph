@@ -21,6 +21,7 @@ import { webhookRouter } from "./routes/webhooks.js";
 import { activityRouter } from "./routes/activity.js";
 import { queueRouter } from "./routes/queue.js";
 import { chatRouter } from "./routes/chat.js";
+import { agentRouter } from "./routes/agent.js";
 
 // Import realtime
 import { initRealtimeServer, getRealtimeServer } from "./realtime/websocket.js";
@@ -97,6 +98,7 @@ v1.route("/webhooks", webhookRouter);
 v1.route("/activity", activityRouter);
 v1.route("/queue", queueRouter);
 v1.route("/chat", chatRouter);
+v1.route("/agents", agentRouter);
 
 // Mount v1 API
 app.route("/api/v1", v1);

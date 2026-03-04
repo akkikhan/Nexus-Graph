@@ -433,6 +433,233 @@ async function run() {
                 persistedAssistantMessage.provenance?.provider === "smoke-provider",
                 "chat assistant message must preserve provenance provider"
             );
+
+            const createAgentRun = await request("/api/v1/agents/runs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    userId: "20000000-0000-4000-8000-000000000001",
+                    repoId: firstRepoId,
+                    prId: createdPrId,
+                    prompt: `Refactor auth middleware and open PR. token=${rawSecret}`,
+                    plan: {
+                        steps: [
+                            "Inspect auth middleware",
+                            "Draft refactor plan",
+                            "Generate patch",
+                        ],
+                    },
+                }),
+            });
+            printResult("POST /api/v1/agents/runs", createAgentRun);
+            assert(createAgentRun.response.status === 201, "agent run create must return 201");
+            const agentRunId = createAgentRun.payload?.run?.id;
+            assert(agentRunId, "agent run create must return run.id");
+            assert(createAgentRun.payload?.run?.status === "planned", "agent run should start in planned state");
+            assert(
+                createAgentRun.payload?.run?.prompt?.includes("[REDACTED_SECRET]"),
+                "agent run prompt must redact secrets"
+            );
+
+            const agentRunDetailPlanned = await request(`/api/v1/agents/runs/${agentRunId}`);
+            printResult(`GET /api/v1/agents/runs/${agentRunId}`, agentRunDetailPlanned);
+            assert(agentRunDetailPlanned.response.status === 200, "agent run detail must return 200");
+            assert(agentRunDetailPlanned.payload?.run?.status === "planned", "agent run detail should show planned");
+
+            const listAgentRuns = await request(`/api/v1/agents/runs?prId=${encodeURIComponent(createdPrId)}&limit=10`);
+            printResult("GET /api/v1/agents/runs", listAgentRuns);
+            assert(listAgentRuns.response.status === 200, "agent runs list must return 200");
+            assert(Array.isArray(listAgentRuns.payload?.runs), "agent runs list must include runs[]");
+            assert(
+                listAgentRuns.payload.runs.some((run) => run.id === agentRunId),
+                "agent runs list must include created run"
+            );
+
+            const invalidTransitionPlannedToCompleted = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "completed",
+                    message: "This should fail due to invalid transition.",
+                }),
+            });
+            printResult(
+                `POST /api/v1/agents/runs/${agentRunId}/transition (planned->completed invalid)`,
+                invalidTransitionPlannedToCompleted
+            );
+            assert(
+                invalidTransitionPlannedToCompleted.response.status === 409,
+                "invalid planned->completed transition must return 409"
+            );
+
+            const transitionToRunning = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "running",
+                    message: "Execution started.",
+                    actor: "smoke-runner",
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${agentRunId}/transition (running)`, transitionToRunning);
+            assert(transitionToRunning.response.status === 200, "planned->running transition must return 200");
+            assert(transitionToRunning.payload?.run?.status === "running", "agent run should transition to running");
+
+            const awaitingApprovalWithoutReason = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "awaiting_approval",
+                    actor: "smoke-runner",
+                }),
+            });
+            printResult(
+                `POST /api/v1/agents/runs/${agentRunId}/transition (awaiting_approval invalid)`,
+                awaitingApprovalWithoutReason
+            );
+            assert(
+                awaitingApprovalWithoutReason.response.status === 400,
+                "awaiting_approval transition without reason must return 400"
+            );
+
+            const awaitingApproval = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "awaiting_approval",
+                    awaitingApprovalReason: "Needs human checkpoint before file mutations.",
+                    actor: "smoke-runner",
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${agentRunId}/transition (awaiting_approval)`, awaitingApproval);
+            assert(awaitingApproval.response.status === 200, "running->awaiting_approval transition must return 200");
+            assert(
+                awaitingApproval.payload?.run?.status === "awaiting_approval",
+                "agent run should transition to awaiting_approval"
+            );
+
+            const createAgentAuditEvent = await request(`/api/v1/agents/runs/${agentRunId}/audit`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    type: "command",
+                    actor: "smoke-runner",
+                    command: `git commit -m \"test\" && echo ${rawSecret}`,
+                    message: "Executed command for agent planning.",
+                    details: {
+                        exitCode: 0,
+                        phase: "planning",
+                    },
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${agentRunId}/audit`, createAgentAuditEvent);
+            assert(createAgentAuditEvent.response.status === 201, "agent audit append must return 201");
+            assert(
+                createAgentAuditEvent.payload?.event?.command?.includes("[REDACTED_SECRET]"),
+                "agent audit command must redact secrets"
+            );
+
+            const auditEvents = await request(`/api/v1/agents/runs/${agentRunId}/audit?limit=20`);
+            printResult(`GET /api/v1/agents/runs/${agentRunId}/audit`, auditEvents);
+            assert(auditEvents.response.status === 200, "agent audit listing must return 200");
+            assert(Array.isArray(auditEvents.payload?.events), "agent audit listing must include events[]");
+            assert(auditEvents.payload.events.length >= 3, "agent audit listing should include lifecycle + command events");
+            assert(
+                auditEvents.payload.events.some((event) => event.type === "status_transition"),
+                "agent audit listing must include status transition events"
+            );
+
+            const transitionApprovalToRunning = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "running",
+                    actor: "human-approver",
+                    message: "Approval granted. Continue execution.",
+                }),
+            });
+            printResult(
+                `POST /api/v1/agents/runs/${agentRunId}/transition (awaiting_approval->running)`,
+                transitionApprovalToRunning
+            );
+            assert(
+                transitionApprovalToRunning.response.status === 200,
+                "awaiting_approval->running transition must return 200"
+            );
+
+            const transitionToCompleted = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "completed",
+                    actor: "smoke-runner",
+                    message: "Agent run completed successfully.",
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${agentRunId}/transition (completed)`, transitionToCompleted);
+            assert(transitionToCompleted.response.status === 200, "running->completed transition must return 200");
+            assert(transitionToCompleted.payload?.run?.status === "completed", "agent run should transition to completed");
+
+            const invalidCompletedToRunning = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "running",
+                    actor: "smoke-runner",
+                    message: "This should fail because run is completed.",
+                }),
+            });
+            printResult(
+                `POST /api/v1/agents/runs/${agentRunId}/transition (completed->running invalid)`,
+                invalidCompletedToRunning
+            );
+            assert(
+                invalidCompletedToRunning.response.status === 409,
+                "completed->running transition must return 409"
+            );
+
+            const createFailingRun = await request("/api/v1/agents/runs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    userId: "20000000-0000-4000-8000-000000000001",
+                    repoId: firstRepoId,
+                    prompt: "Attempt risky refactor and capture failure path.",
+                }),
+            });
+            printResult("POST /api/v1/agents/runs (failing run)", createFailingRun);
+            assert(createFailingRun.response.status === 201, "failing agent run create must return 201");
+            const failingRunId = createFailingRun.payload?.run?.id;
+            assert(failingRunId, "failing run create must return run.id");
+
+            const failingRunToRunning = await request(`/api/v1/agents/runs/${failingRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "running",
+                    message: "Failing run started.",
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${failingRunId}/transition (running)`, failingRunToRunning);
+            assert(failingRunToRunning.response.status === 200, "failing run planned->running must return 200");
+
+            const failingRunToFailed = await request(`/api/v1/agents/runs/${failingRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "failed",
+                    actor: "smoke-runner",
+                    message: "Run failed as part of smoke scenario.",
+                    errorMessage: `Provider refused token ${rawSecret}`,
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${failingRunId}/transition (failed)`, failingRunToFailed);
+            assert(failingRunToFailed.response.status === 200, "running->failed transition must return 200");
+            assert(failingRunToFailed.payload?.run?.status === "failed", "failing run should transition to failed");
+            assert(
+                failingRunToFailed.payload?.run?.errorMessage?.includes("[REDACTED_SECRET]"),
+                "failed run error message must redact secrets"
+            );
         }
 
         if (firstRepoId && stacks.response.status === 200) {

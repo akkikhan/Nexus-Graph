@@ -49,6 +49,12 @@ Checks:
 - `POST /api/v1/chat/sessions/:id/messages` (validation + persistence + provenance)
 - `GET /api/v1/chat/sessions/:id`
 - `GET /api/v1/chat/sessions/:id/messages`
+- `POST /api/v1/agents/runs`
+- `GET /api/v1/agents/runs`
+- `GET /api/v1/agents/runs/:id`
+- `POST /api/v1/agents/runs/:id/transition` (lifecycle transition checks + invalid transition guardrails)
+- `POST /api/v1/agents/runs/:id/audit` (audit append with redaction)
+- `GET /api/v1/agents/runs/:id/audit`
 - `GET /api/v1/stacks`
 - `POST /api/v1/stacks` (ephemeral smoke stack create)
 - `POST /api/v1/stacks/:id/branches` (base + child branch)

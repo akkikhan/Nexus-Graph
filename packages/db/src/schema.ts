@@ -32,6 +32,15 @@ export const queueStatusEnum = pgEnum("queue_status", ["pending", "running", "pa
 export const aiReviewJobStatusEnum = pgEnum("ai_review_job_status", ["queued", "running", "completed", "failed"]);
 export const chatSessionStatusEnum = pgEnum("chat_session_status", ["active", "archived"]);
 export const chatMessageRoleEnum = pgEnum("chat_message_role", ["user", "assistant", "system", "tool"]);
+export const agentRunStatusEnum = pgEnum("agent_run_status", ["planned", "running", "awaiting_approval", "completed", "failed"]);
+export const agentRunAuditTypeEnum = pgEnum("agent_run_audit_type", [
+    "status_transition",
+    "checkpoint",
+    "command",
+    "file_edit",
+    "note",
+    "error",
+]);
 
 // ============================================================================
 // USERS & ORGANIZATIONS
@@ -331,6 +340,48 @@ export const chatMessages = pgTable("chat_messages", {
 }));
 
 // ============================================================================
+// AGENT RUNS & AUDIT TRAIL
+// ============================================================================
+
+export const agentRuns = pgTable("agent_runs", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "set null" }),
+    prId: uuid("pr_id").references(() => pullRequests.id, { onDelete: "set null" }),
+    stackId: uuid("stack_id").references(() => stacks.id, { onDelete: "set null" }),
+    prompt: text("prompt").notNull(),
+    plan: jsonb("plan").default({}),
+    status: agentRunStatusEnum("status").default("planned").notNull(),
+    requiresApproval: boolean("requires_approval").default(false).notNull(),
+    awaitingApprovalReason: text("awaiting_approval_reason"),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    errorMessage: text("error_message"),
+    metadata: jsonb("metadata").default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    statusCreatedIdx: index("agent_runs_status_created_idx").on(table.status, table.createdAt),
+    userStatusIdx: index("agent_runs_user_status_idx").on(table.userId, table.status),
+    repoStatusIdx: index("agent_runs_repo_status_idx").on(table.repoId, table.status),
+}));
+
+export const agentRunAuditEvents = pgTable("agent_run_audit_events", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+    type: agentRunAuditTypeEnum("type").default("note").notNull(),
+    actor: text("actor").default("system").notNull(),
+    message: text("message"),
+    command: text("command"),
+    filePath: text("file_path"),
+    details: jsonb("details").default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    runCreatedIdx: index("agent_run_audit_events_run_created_idx").on(table.runId, table.createdAt),
+    typeIdx: index("agent_run_audit_events_type_idx").on(table.type),
+}));
+
+// ============================================================================
 // AI CONFIGURATION
 // ============================================================================
 
@@ -412,6 +463,7 @@ export const usersRelations = relations(users, ({ many }) => ({
     comments: many(comments),
     aiReviewJobsRequested: many(aiReviewJobs),
     chatSessions: many(chatSessions),
+    agentRuns: many(agentRuns),
 }));
 
 export const organizationsRelations = relations(organizations, ({ many }) => ({
@@ -442,6 +494,7 @@ export const repositoriesRelations = relations(repositories, ({ one, many }) => 
     pullRequests: many(pullRequests),
     mergeQueue: many(mergeQueue),
     chatSessions: many(chatSessions),
+    agentRuns: many(agentRuns),
 }));
 
 export const stacksRelations = relations(stacks, ({ one, many }) => ({
@@ -455,6 +508,7 @@ export const stacksRelations = relations(stacks, ({ one, many }) => ({
     }),
     branches: many(branches),
     chatSessions: many(chatSessions),
+    agentRuns: many(agentRuns),
 }));
 
 export const branchesRelations = relations(branches, ({ one, many }) => ({
@@ -491,6 +545,7 @@ export const pullRequestsRelations = relations(pullRequests, ({ one, many }) => 
     comments: many(comments),
     aiReviewJobs: many(aiReviewJobs),
     chatSessions: many(chatSessions),
+    agentRuns: many(agentRuns),
 }));
 
 export const reviewsRelations = relations(reviews, ({ one, many }) => ({
@@ -555,5 +610,32 @@ export const chatMessagesRelations = relations(chatMessages, ({ one }) => ({
     session: one(chatSessions, {
         fields: [chatMessages.sessionId],
         references: [chatSessions.id],
+    }),
+}));
+
+export const agentRunsRelations = relations(agentRuns, ({ one, many }) => ({
+    user: one(users, {
+        fields: [agentRuns.userId],
+        references: [users.id],
+    }),
+    repository: one(repositories, {
+        fields: [agentRuns.repoId],
+        references: [repositories.id],
+    }),
+    pullRequest: one(pullRequests, {
+        fields: [agentRuns.prId],
+        references: [pullRequests.id],
+    }),
+    stack: one(stacks, {
+        fields: [agentRuns.stackId],
+        references: [stacks.id],
+    }),
+    auditEvents: many(agentRunAuditEvents),
+}));
+
+export const agentRunAuditEventsRelations = relations(agentRunAuditEvents, ({ one }) => ({
+    run: one(agentRuns, {
+        fields: [agentRunAuditEvents.runId],
+        references: [agentRuns.id],
     }),
 }));
