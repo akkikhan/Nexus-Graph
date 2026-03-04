@@ -2,15 +2,19 @@
     "name": "@nexus/menubar-app",
     "version": "0.1.0",
     "private": true,
+    "type": "module",
     "description": "Nexus menu bar MVP for inbox summary and quick pull request actions",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "scripts": {
         "build": "tsc -p ./tsconfig.json",
-        "test": "vitest run"
+        "test": "vitest run",
+        "start:electron": "electron ./dist/electronMain.js",
+        "dev:electron": "pnpm build && electron ./dist/electronMain.js"
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
+        "electron": "^37.0.0",
         "typescript": "^5.7.0",
         "vitest": "^2.1.0"
     },

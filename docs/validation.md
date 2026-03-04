@@ -160,7 +160,7 @@ Prerequisite:
 
 What it does:
 
-- Runs menu bar app unit tests (`@nexus/menubar-app`)
+- Runs menu bar app unit tests (`@nexus/menubar-app`, including Electron tray template/action wiring coverage)
 - Runs VS Code extension unit tests (`@nexus/vscode-extension`)
 - Starts API and Web services
 - Waits for readiness checks

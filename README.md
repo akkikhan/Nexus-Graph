@@ -50,6 +50,9 @@ pnpm --filter @nexus/vscode-extension test
 
 # Run menu bar app tests
 pnpm --filter @nexus/menubar-app test
+
+# Launch Electron tray shell
+pnpm --filter @nexus/menubar-app dev:electron
 ```
 
 ## 🖥️ CLI Usage

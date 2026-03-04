@@ -15,5 +15,9 @@ export {
     type MenuBarAppConfig,
     type MenuBarSystemAdapter,
 } from "./menuBarApp.js";
+export {
+    buildTrayTemplate,
+    toElectronTemplate,
+    type TrayTemplateItem,
+} from "./electronTrayMenu.js";
 export type { PullRequest, PullRequestStatus, PullRequestActionId } from "./types.js";
-
