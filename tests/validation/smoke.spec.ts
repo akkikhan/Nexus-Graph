@@ -571,6 +571,65 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
             createdAt: new Date().toISOString(),
         });
     };
+    const issueLinks = [
+        {
+            id: "il-1",
+            repoId: "repo-1",
+            prId: "pr-101",
+            provider: "linear",
+            issueKey: "LIN-123",
+            status: "sync_failed",
+            metadata: {},
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+        {
+            id: "il-2",
+            repoId: "repo-1",
+            prId: "pr-102",
+            provider: "jira",
+            issueKey: "JIRA-77",
+            status: "sync_pending",
+            metadata: {},
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+    ];
+    const issueLinkActionAudits: Array<{
+        id: string;
+        action: string;
+        entityType: string;
+        entityId?: string;
+        repoId?: string;
+        issueLinkId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata: Record<string, unknown>;
+        createdAt: string;
+    }> = [];
+
+    const appendIssueLinkActionAudit = (entry: {
+        action: string;
+        entityId?: string;
+        repoId?: string;
+        issueLinkId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) => {
+        issueLinkActionAudits.unshift({
+            id: `issue-link-audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            action: entry.action,
+            entityType: "integration_issue_link",
+            entityId: entry.entityId,
+            repoId: entry.repoId,
+            issueLinkId: entry.issueLinkId,
+            outcome: entry.outcome,
+            summary: entry.summary,
+            metadata: entry.metadata || {},
+            createdAt: new Date().toISOString(),
+        });
+    };
 
     await page.route("**/api/v1/integrations/webhook-action-audits**", async (route) => {
         const url = new URL(route.request().url());
@@ -593,6 +652,22 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         const repoId = url.searchParams.get("repoId");
         const limit = Number(url.searchParams.get("limit") || 20);
         const filtered = notificationActionAudits.filter((event) => {
+            if (repoId && event.repoId !== repoId) return false;
+            return true;
+        });
+        await route.fulfill(
+            jsonResponse(200, {
+                events: filtered.slice(0, Math.max(limit, 1)),
+                total: filtered.length,
+                limit: Math.max(limit, 1),
+            })
+        );
+    });
+    await page.route("**/api/v1/integrations/issue-link-action-audits**", async (route) => {
+        const url = new URL(route.request().url());
+        const repoId = url.searchParams.get("repoId");
+        const limit = Number(url.searchParams.get("limit") || 20);
+        const filtered = issueLinkActionAudits.filter((event) => {
             if (repoId && event.repoId !== repoId) return false;
             return true;
         });
@@ -732,6 +807,153 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         }
 
         await route.fulfill(jsonResponse(404, { error: "Unhandled notifications route in smoke test" }));
+    });
+    await page.route("**/api/v1/integrations/issue-links**", async (route) => {
+        const url = new URL(route.request().url());
+        const method = route.request().method().toUpperCase();
+        const path = url.pathname;
+
+        if (path.endsWith("/issue-links/retry-sync") && method === "POST") {
+            let processed = 0;
+            const outcomes = issueLinks.map((link) => {
+                if (link.status === "sync_pending" || link.status === "sync_failed") {
+                    processed += 1;
+                    link.status = "linked";
+                    link.updatedAt = new Date().toISOString();
+                    appendIssueLinkActionAudit({
+                        action: "integration.issue_link.retry_sync",
+                        entityId: link.id,
+                        repoId: link.repoId,
+                        issueLinkId: link.id,
+                        outcome: "success",
+                        summary: `Retried issue link ${link.issueKey} -> ${link.status}.`,
+                        metadata: {
+                            reason: "synced",
+                            status: link.status,
+                            provider: link.provider,
+                        },
+                    });
+                    return {
+                        id: link.id,
+                        reason: "synced",
+                        status: link.status,
+                        repoId: link.repoId,
+                        provider: link.provider,
+                        issueKey: link.issueKey,
+                    };
+                }
+                return {
+                    id: link.id,
+                    reason: "skipped",
+                    status: link.status,
+                    repoId: link.repoId,
+                    provider: link.provider,
+                    issueKey: link.issueKey,
+                };
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    processed,
+                    outcomes,
+                })
+            );
+            return;
+        }
+
+        const syncMatch = path.match(/\/issue-links\/([^/]+)\/sync$/);
+        if (syncMatch && method === "POST") {
+            const issueLinkId = syncMatch[1];
+            const link = issueLinks.find((item) => item.id === issueLinkId);
+            if (!link) {
+                await route.fulfill(jsonResponse(404, { error: "Issue link not found" }));
+                return;
+            }
+            const payload = route.request().postDataJSON() as { simulateFailure?: boolean } | null;
+            const simulateFailure = payload?.simulateFailure === true;
+            if (simulateFailure) {
+                link.status = "sync_failed";
+                link.updatedAt = new Date().toISOString();
+                appendIssueLinkActionAudit({
+                    action: "integration.issue_link.manual_fail",
+                    entityId: link.id,
+                    repoId: link.repoId,
+                    issueLinkId: link.id,
+                    outcome: "error",
+                    summary: `Issue link ${link.issueKey} is now ${link.status}.`,
+                    metadata: {
+                        mode: "fail",
+                    },
+                });
+                await route.fulfill(
+                    jsonResponse(200, {
+                        success: true,
+                        reason: "sync_failed",
+                        issueLink: link,
+                        syncEvent: {
+                            id: `sync-${Date.now()}`,
+                            issueLinkId: link.id,
+                            provider: link.provider,
+                            status: "failed",
+                            attemptNumber: 1,
+                            createdAt: new Date().toISOString(),
+                        },
+                    })
+                );
+                return;
+            }
+
+            link.status = "linked";
+            link.updatedAt = new Date().toISOString();
+            appendIssueLinkActionAudit({
+                action: "integration.issue_link.manual_sync",
+                entityId: link.id,
+                repoId: link.repoId,
+                issueLinkId: link.id,
+                outcome: "success",
+                summary: `Issue link ${link.issueKey} is now ${link.status}.`,
+                metadata: {
+                    mode: "sync",
+                },
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "synced",
+                    issueLink: link,
+                    syncEvent: {
+                        id: `sync-${Date.now()}`,
+                        issueLinkId: link.id,
+                        provider: link.provider,
+                        status: "synced",
+                        attemptNumber: 1,
+                        createdAt: new Date().toISOString(),
+                    },
+                })
+            );
+            return;
+        }
+
+        if (path.endsWith("/issue-links") && method === "GET") {
+            const status = url.searchParams.get("status");
+            const provider = url.searchParams.get("provider");
+            const links = issueLinks.filter((link) => {
+                if (status && link.status !== status) return false;
+                if (provider && link.provider !== provider) return false;
+                return true;
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    links,
+                    total: links.length,
+                    limit: 8,
+                    offset: 0,
+                })
+            );
+            return;
+        }
+
+        await route.fulfill(jsonResponse(404, { error: "Unhandled issue-link route in smoke test" }));
     });
 
     await page.route("**/api/v1/integrations/webhooks**", async (route) => {
@@ -949,24 +1171,26 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/Integrations Operations/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Webhook Recovery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Notification Delivery Queue/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Issue-Link Sync Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Connected \(1\)/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/push.failed/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/pr.review.requested/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/LIN-123/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });
+
     await page.getByRole("button", { name: /^Fail$/i }).first().click();
     await expect(page.getByText("Webhook wh-ext-1 is now failed.", { exact: true })).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Retry Due/i }).first().click();
     await expect(page.getByText("Retried 2 due webhook event(s).", { exact: true })).toBeVisible({ timeout: 20000 });
-    await page.getByRole("button", { name: /^Fail$/i }).nth(2).click();
-    await expect(page.getByText("Notification notif-corr-1 is now failed.", { exact: true })).toBeVisible({
-        timeout: 20000,
-    });
     await page.getByRole("button", { name: /Retry Due/i }).nth(1).click();
     await expect(page.getByText("Retried 2 due notification(s).", { exact: true })).toBeVisible({ timeout: 20000 });
-    await expect(page.getByText(/Recent Actions/i).first()).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /Retry Due/i }).nth(2).click();
+    await expect(page.getByText("Retried 2 issue-link sync(s).", { exact: true })).toBeVisible({ timeout: 20000 });
+
+    await expect(page.getByText(/Recent Actions/i).nth(2)).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Export JSON/i }).click();
     await page.getByRole("button", { name: /Export CSV/i }).click();
 

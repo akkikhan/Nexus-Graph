@@ -518,6 +518,151 @@ export async function fetchIntegrationConnections(options: {
     return parseResponse<IntegrationConnectionsResponse>(res, "Failed to fetch integration connections");
 }
 
+export interface IntegrationIssueLink {
+    id: string;
+    repoId: string;
+    prId: string;
+    provider: "linear" | "jira";
+    issueKey: string;
+    issueTitle?: string;
+    issueUrl?: string;
+    externalIssueId?: string;
+    status: "linked" | "sync_pending" | "sync_failed";
+    metadata: Record<string, unknown>;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface IntegrationIssueLinksResponse {
+    links: IntegrationIssueLink[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export interface IntegrationIssueLinkSyncEvent {
+    id: string;
+    issueLinkId: string;
+    provider: "linear" | "jira";
+    status: "pending" | "synced" | "failed" | "dead_letter";
+    attemptNumber: number;
+    errorMessage?: string;
+    responseCode?: number;
+    latencyMs?: number;
+    details: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationIssueLinkActionAuditEvent {
+    id: string;
+    action: string;
+    entityType: string;
+    entityId?: string;
+    repoId?: string;
+    issueLinkId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationIssueLinkActionAuditsResponse {
+    events: IntegrationIssueLinkActionAuditEvent[];
+    total: number;
+    limit: number;
+}
+
+export async function fetchIntegrationIssueLinks(options: {
+    repoId?: string;
+    prId?: string;
+    provider?: "linear" | "jira";
+    status?: "linked" | "sync_pending" | "sync_failed";
+    limit?: number;
+    offset?: number;
+} = {}): Promise<IntegrationIssueLinksResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.prId) params.set("prId", options.prId);
+    if (options.provider) params.set("provider", options.provider);
+    if (options.status) params.set("status", options.status);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/issue-links${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationIssueLinksResponse>(res, "Failed to fetch issue links");
+}
+
+export async function syncIntegrationIssueLink(
+    id: string,
+    input: {
+        simulateFailure?: boolean;
+        responseCode?: number;
+        latencyMs?: number;
+        errorMessage?: string;
+        details?: Record<string, unknown>;
+    } = {}
+): Promise<{
+    success: boolean;
+    reason: string;
+    issueLink: IntegrationIssueLink;
+    syncEvent: IntegrationIssueLinkSyncEvent;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/issue-links/${id}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{
+        success: boolean;
+        reason: string;
+        issueLink: IntegrationIssueLink;
+        syncEvent: IntegrationIssueLinkSyncEvent;
+    }>(res, "Failed to sync issue link");
+}
+
+export async function retryIntegrationIssueLinkSyncs(limit = 20, repoId?: string): Promise<{
+    success: boolean;
+    processed: number;
+    outcomes: Array<{
+        id: string;
+        reason: string;
+        status?: "linked" | "sync_pending" | "sync_failed";
+        repoId?: string;
+        provider?: "linear" | "jira";
+        issueKey?: string;
+    }>;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/issue-links/retry-sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit, repoId }),
+    });
+    return parseResponse<{
+        success: boolean;
+        processed: number;
+        outcomes: Array<{
+            id: string;
+            reason: string;
+            status?: "linked" | "sync_pending" | "sync_failed";
+            repoId?: string;
+            provider?: "linear" | "jira";
+            issueKey?: string;
+        }>;
+    }>(res, "Failed to retry issue-link syncs");
+}
+
+export async function fetchIntegrationIssueLinkActionAudits(options: {
+    repoId?: string;
+    limit?: number;
+} = {}): Promise<IntegrationIssueLinkActionAuditsResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/issue-link-action-audits${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationIssueLinkActionAuditsResponse>(res, "Failed to fetch issue-link action audits");
+}
+
 export interface IntegrationMetrics {
     totals: {
         connections: number;

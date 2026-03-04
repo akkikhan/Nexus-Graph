@@ -272,6 +272,27 @@ function normalizeNotificationActionAudit(row: any) {
     };
 }
 
+function normalizeIssueLinkActionAudit(row: any) {
+    const metadata =
+        row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+    const metadataOutcome = String(metadata.outcome || "").toLowerCase();
+    const outcome: WebhookActionAuditOutcome = metadataOutcome === "error" ? "error" : "success";
+    return {
+        id: row.id,
+        action: row.action,
+        entityType: row.entityType,
+        entityId: row.entityId || undefined,
+        repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
+        issueLinkId: typeof metadata.issueLinkId === "string" ? metadata.issueLinkId : undefined,
+        outcome,
+        summary: typeof metadata.summary === "string" ? metadata.summary : "",
+        metadata,
+        createdAt: toIso(row.createdAt),
+    };
+}
+
 function computeBackoffMs(attemptNumber: number): number {
     return Math.min(60_000, 2_000 * Math.max(attemptNumber, 1));
 }
@@ -500,6 +521,69 @@ export const integrationsRepository = {
         return events.map(normalizeIssueLinkSyncEvent);
     },
 
+    async listIssueLinkActionAudits(filters: {
+        repoId?: string;
+        limit?: number;
+    }) {
+        const conditions = [eq(auditLog.entityType, "integration_issue_link"), sql`${auditLog.action} LIKE 'integration.issue_link.%'`];
+        if (filters.repoId) {
+            const repo = await findRepository(filters.repoId);
+            if (!repo) return [];
+            conditions.push(eq(auditLog.orgId, repo.orgId));
+            conditions.push(sql`${auditLog.metadata} ->> 'repoId' = ${filters.repoId}`);
+        }
+
+        const rows = await db
+            .select()
+            .from(auditLog)
+            .where(and(...conditions))
+            .orderBy(desc(auditLog.createdAt))
+            .limit(Math.min(Math.max(filters.limit ?? 20, 1), 100));
+
+        return rows.map(normalizeIssueLinkActionAudit);
+    },
+
+    async recordIssueLinkActionAudit(input: {
+        action: string;
+        repoId?: string;
+        issueLinkId?: string;
+        outcome: WebhookActionAuditOutcome;
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) {
+        if (!input.repoId) return { reason: "repo_id_required" as const };
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const action = (input.action || "").trim();
+        const summary = (input.summary || "").trim();
+        if (!action || !summary) return { reason: "invalid_audit_payload" as const };
+
+        const [inserted] = await db
+            .insert(auditLog)
+            .values({
+                orgId: repo.orgId,
+                action,
+                entityType: "integration_issue_link",
+                entityId: input.issueLinkId || null,
+                metadata: sanitizeUnknown({
+                    outcome: input.outcome,
+                    summary,
+                    repoId: input.repoId,
+                    issueLinkId: input.issueLinkId,
+                    ...(input.metadata || {}),
+                }),
+                createdAt: new Date(),
+            })
+            .returning();
+
+        if (!inserted) return { reason: "insert_failed" as const };
+        return {
+            reason: "ok" as const,
+            event: normalizeIssueLinkActionAudit(inserted),
+        };
+    },
+
     async syncIssueLinkBacklink(
         issueLinkId: string,
         input: {
@@ -632,21 +716,33 @@ export const integrationsRepository = {
         };
     },
 
-    async retryIssueLinkSyncs(limit = 20) {
+    async retryIssueLinkSyncs(limit = 20, repoId?: string) {
+        const conditions = [inArray(issueLinks.status, ISSUE_LINK_RETRYABLE_STATUSES)];
+        if (repoId) conditions.push(eq(issueLinks.repoId, repoId));
         const rows = await db
             .select()
             .from(issueLinks)
-            .where(inArray(issueLinks.status, ISSUE_LINK_RETRYABLE_STATUSES))
+            .where(and(...conditions))
             .orderBy(asc(issueLinks.updatedAt))
             .limit(Math.min(Math.max(limit, 1), 100));
 
-        const outcomes: Array<{ id: string; reason: string; status?: IssueLinkStatus }> = [];
+        const outcomes: Array<{
+            id: string;
+            reason: string;
+            status?: IssueLinkStatus;
+            repoId?: string;
+            provider?: IntegrationProvider;
+            issueKey?: string;
+        }> = [];
         for (const row of rows) {
             const result = await this.syncIssueLinkBacklink(row.id);
             outcomes.push({
                 id: row.id,
                 reason: result.reason,
                 status: (result as any).issueLink?.status,
+                repoId: row.repoId || undefined,
+                provider: (row.provider as IntegrationProvider) || undefined,
+                issueKey: row.issueKey || undefined,
             });
         }
 

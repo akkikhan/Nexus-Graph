@@ -62,6 +62,7 @@ Checks:
 - `POST /api/v1/integrations/issue-links/:id/sync` (back-link sync attempt)
 - `GET /api/v1/integrations/issue-links/:id/sync-events`
 - `POST /api/v1/integrations/issue-links/retry-sync`
+- `GET /api/v1/integrations/issue-link-action-audits` (durable operator action audit feed for issue-link sync/retry controls)
 - `POST /api/v1/integrations/notifications` (durable notification enqueue)
 - `POST /api/v1/integrations/notifications/:id/deliver` (delivery attempt + retry/dead-letter transitions)
 - `POST /api/v1/integrations/notifications/retry`
@@ -130,6 +131,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Settings integrations operations snapshot (connections + metrics + alerts)
 - Settings webhook recovery actions (list/process/fail/retry controls + persisted action audit feed)
 - Settings notification delivery actions (list/deliver/fail/retry controls + persisted action audit feed)
+- Settings issue-link sync actions (list/sync/fail/retry controls + persisted action audit feed)
 - Settings diagnostics export controls (JSON/CSV) render and trigger server-side export requests
 
 Prerequisite:

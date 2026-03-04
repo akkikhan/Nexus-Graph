@@ -19,6 +19,8 @@ import {
     IntegrationWebhookAuthEventListOptions,
     fetchIntegrationAlerts,
     fetchIntegrationConnections,
+    fetchIntegrationIssueLinkActionAudits,
+    fetchIntegrationIssueLinks,
     fetchIntegrationMetrics,
     fetchIntegrationNotificationActionAudits,
     fetchIntegrationNotifications,
@@ -28,11 +30,15 @@ import {
     exportIntegrationWebhookAuthEvents,
     fetchIntegrationWebhookAuthEvents,
     processIntegrationWebhookEvent,
+    retryIntegrationIssueLinkSyncs,
     retryDueIntegrationNotifications,
     retryDueIntegrationWebhooks,
+    syncIntegrationIssueLink,
     fetchSystemHealth,
     IntegrationAlertStatus,
     IntegrationConnection,
+    IntegrationIssueLink,
+    IntegrationIssueLinkActionAuditEvent,
     IntegrationMetrics,
     IntegrationNotificationActionAuditEvent,
     IntegrationNotificationDelivery,
@@ -252,6 +258,8 @@ type WebhookStatusFilter = "all" | "received" | "processed" | "failed" | "dead_l
 type WebhookActionMode = "process" | "fail";
 type NotificationStatusFilter = "all" | "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
 type NotificationActionMode = "deliver" | "fail";
+type IssueLinkStatusFilter = "all" | "linked" | "sync_pending" | "sync_failed";
+type IssueLinkActionMode = "sync" | "fail";
 
 const WEBHOOK_DIAGNOSTICS_PAGE_SIZE = 12;
 const WEBHOOK_RECOVERY_PAGE_SIZE = 8;
@@ -268,6 +276,10 @@ function formatNotificationStatus(status: IntegrationNotificationDelivery["statu
     return status.split("_").join(" ");
 }
 
+function formatIssueLinkStatus(status: IntegrationIssueLink["status"]): string {
+    return status.split("_").join(" ");
+}
+
 function formatWebhookAuditAction(action: string): string {
     const normalized = action.startsWith("integration.webhook.") ? action.slice("integration.webhook.".length) : action;
     return normalized.split("_").join(" ");
@@ -277,6 +289,11 @@ function formatNotificationAuditAction(action: string): string {
     const normalized = action.startsWith("integration.notification.")
         ? action.slice("integration.notification.".length)
         : action;
+    return normalized.split("_").join(" ");
+}
+
+function formatIssueLinkAuditAction(action: string): string {
+    const normalized = action.startsWith("integration.issue_link.") ? action.slice("integration.issue_link.".length) : action;
     return normalized.split("_").join(" ");
 }
 
@@ -312,8 +329,10 @@ export default function SettingsPage() {
     const [authPage, setAuthPage] = useState(0);
     const [webhookStatusFilter, setWebhookStatusFilter] = useState<WebhookStatusFilter>("all");
     const [notificationStatusFilter, setNotificationStatusFilter] = useState<NotificationStatusFilter>("all");
+    const [issueLinkStatusFilter, setIssueLinkStatusFilter] = useState<IssueLinkStatusFilter>("all");
     const [retryingDueWebhooks, setRetryingDueWebhooks] = useState(false);
     const [retryingDueNotifications, setRetryingDueNotifications] = useState(false);
+    const [retryingIssueLinkSyncs, setRetryingIssueLinkSyncs] = useState(false);
     const [processingWebhookAction, setProcessingWebhookAction] = useState<{
         id: string;
         mode: WebhookActionMode;
@@ -322,10 +341,16 @@ export default function SettingsPage() {
         id: string;
         mode: NotificationActionMode;
     } | null>(null);
+    const [processingIssueLinkAction, setProcessingIssueLinkAction] = useState<{
+        id: string;
+        mode: IssueLinkActionMode;
+    } | null>(null);
     const [webhookActionMessage, setWebhookActionMessage] = useState("");
     const [webhookActionError, setWebhookActionError] = useState("");
     const [notificationActionMessage, setNotificationActionMessage] = useState("");
     const [notificationActionError, setNotificationActionError] = useState("");
+    const [issueLinkActionMessage, setIssueLinkActionMessage] = useState("");
+    const [issueLinkActionError, setIssueLinkActionError] = useState("");
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
     const [exportError, setExportError] = useState("");
 
@@ -480,6 +505,46 @@ export default function SettingsPage() {
             fetchIntegrationNotificationActionAudits({
                 repoId: integrationRepoId,
                 limit: 8,
+        }),
+        refetchInterval: 30_000,
+    });
+    const issueLinkProvider = authProvider === "linear" || authProvider === "jira" ? authProvider : undefined;
+    const {
+        data: issueLinksData,
+        isLoading: issueLinksLoading,
+        isFetching: issueLinksFetching,
+        error: issueLinksError,
+        refetch: refetchIssueLinks,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "integration-issue-links",
+            integrationRepoId,
+            issueLinkProvider,
+            issueLinkStatusFilter,
+        ],
+        queryFn: () =>
+            fetchIntegrationIssueLinks({
+                repoId: integrationRepoId,
+                provider: issueLinkProvider,
+                status: issueLinkStatusFilter === "all" ? undefined : issueLinkStatusFilter,
+                limit: 8,
+                offset: 0,
+            }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: issueLinkActionAuditsData,
+        isLoading: issueLinkActionAuditsLoading,
+        isFetching: issueLinkActionAuditsFetching,
+        error: issueLinkActionAuditsError,
+        refetch: refetchIssueLinkActionAudits,
+    } = useQuery({
+        queryKey: ["settings", "integration-issue-link-action-audits", integrationRepoId],
+        queryFn: () =>
+            fetchIntegrationIssueLinkActionAudits({
+                repoId: integrationRepoId,
+                limit: 8,
             }),
         refetchInterval: 30_000,
     });
@@ -504,6 +569,8 @@ export default function SettingsPage() {
     const webhookActionAudits = webhookActionAuditsData?.events || [];
     const notificationDeliveries = notificationDeliveriesData?.deliveries || [];
     const notificationActionAudits = notificationActionAuditsData?.events || [];
+    const issueLinks = issueLinksData?.links || [];
+    const issueLinkActionAudits = issueLinkActionAuditsData?.events || [];
     const hasNextAuthPage = authEvents.length === WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
     const integrationLoading =
         integrationConnectionsLoading ||
@@ -512,7 +579,9 @@ export default function SettingsPage() {
         webhookEventsLoading ||
         webhookActionAuditsLoading ||
         notificationDeliveriesLoading ||
-        notificationActionAuditsLoading;
+        notificationActionAuditsLoading ||
+        issueLinksLoading ||
+        issueLinkActionAuditsLoading;
     const integrationFetching =
         integrationConnectionsFetching ||
         integrationMetricsFetching ||
@@ -520,7 +589,9 @@ export default function SettingsPage() {
         webhookEventsFetching ||
         webhookActionAuditsFetching ||
         notificationDeliveriesFetching ||
-        notificationActionAuditsFetching;
+        notificationActionAuditsFetching ||
+        issueLinksFetching ||
+        issueLinkActionAuditsFetching;
     const integrationStatusByProvider = useMemo(() => {
         return {
             slack: connectionStatusForProvider(integrationConnections, "slack"),
@@ -589,10 +660,13 @@ export default function SettingsPage() {
         setAuthPage(0);
         setWebhookStatusFilter("all");
         setNotificationStatusFilter("all");
+        setIssueLinkStatusFilter("all");
         setWebhookActionMessage("");
         setWebhookActionError("");
         setNotificationActionMessage("");
         setNotificationActionError("");
+        setIssueLinkActionMessage("");
+        setIssueLinkActionError("");
     };
 
     const downloadBlob = (filename: string, blob: Blob) => {
@@ -726,6 +800,61 @@ export default function SettingsPage() {
             setNotificationActionError(message);
         } finally {
             setProcessingNotificationAction(null);
+        }
+    };
+
+    const onRetryIssueLinkSyncs = async () => {
+        setIssueLinkActionMessage("");
+        setIssueLinkActionError("");
+        setRetryingIssueLinkSyncs(true);
+        try {
+            const result = await retryIntegrationIssueLinkSyncs(20, integrationRepoId);
+            const message = `Retried ${result.processed} issue-link sync(s).`;
+            setIssueLinkActionMessage(message);
+            await Promise.all([
+                refetchIssueLinks(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchIssueLinkActionAudits(),
+            ]);
+        } catch (error) {
+            const message = getErrorMessage(error, "Failed to retry issue-link syncs.");
+            setIssueLinkActionError(message);
+        } finally {
+            setRetryingIssueLinkSyncs(false);
+        }
+    };
+
+    const onSyncIssueLink = async (link: IntegrationIssueLink, mode: IssueLinkActionMode) => {
+        setIssueLinkActionMessage("");
+        setIssueLinkActionError("");
+        setProcessingIssueLinkAction({
+            id: link.id,
+            mode,
+        });
+        try {
+            const result = await syncIntegrationIssueLink(
+                link.id,
+                mode === "fail"
+                    ? {
+                          simulateFailure: true,
+                          errorMessage: "Manual failure drill from settings issue-link queue",
+                      }
+                    : {}
+            );
+            const message = `Issue link ${result.issueLink.issueKey} is now ${formatIssueLinkStatus(result.issueLink.status)}.`;
+            setIssueLinkActionMessage(message);
+            await Promise.all([
+                refetchIssueLinks(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchIssueLinkActionAudits(),
+            ]);
+        } catch (error) {
+            const message = getErrorMessage(error, "Failed to sync issue link.");
+            setIssueLinkActionError(message);
+        } finally {
+            setProcessingIssueLinkAction(null);
         }
     };
 
@@ -1310,6 +1439,148 @@ export default function SettingsPage() {
                                                         {" "}
                                                         ({formatNotificationAuditAction(entry.action)})
                                                     </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                </div>
+
+                                <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-white">Issue-Link Sync Queue</h4>
+                                            <p className="text-xs text-zinc-500">
+                                                Trigger Linear/Jira issue-link sync retries and failure drills.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={onRetryIssueLinkSyncs}
+                                            disabled={retryingIssueLinkSyncs}
+                                            className="px-3 py-1.5 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                        >
+                                            {retryingIssueLinkSyncs ? "Retrying..." : "Retry Due"}
+                                        </button>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 text-xs">
+                                        <label className="text-zinc-500">Status</label>
+                                        <select
+                                            value={issueLinkStatusFilter}
+                                            onChange={(e) => setIssueLinkStatusFilter(e.target.value as IssueLinkStatusFilter)}
+                                            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                                        >
+                                            <option value="all">All</option>
+                                            <option value="sync_pending">Sync Pending</option>
+                                            <option value="sync_failed">Sync Failed</option>
+                                            <option value="linked">Linked</option>
+                                        </select>
+                                    </div>
+
+                                    {issueLinksLoading ? (
+                                        <div className="text-sm text-zinc-400">Loading issue links...</div>
+                                    ) : issueLinksError ? (
+                                        <div className="rounded bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
+                                            Failed to load issue links: {getErrorMessage(issueLinksError, "Unavailable")}
+                                        </div>
+                                    ) : issueLinks.length === 0 ? (
+                                        <div className="text-sm text-zinc-500">No issue links for selected filters.</div>
+                                    ) : (
+                                        <div className="rounded border border-zinc-800 overflow-x-auto">
+                                            <div className="min-w-[900px]">
+                                                <div className="grid grid-cols-[120px_140px_1fr_120px_190px] gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500 bg-zinc-950/60">
+                                                    <span>Provider</span>
+                                                    <span>Status</span>
+                                                    <span>Issue</span>
+                                                    <span>Updated</span>
+                                                    <span>Action</span>
+                                                </div>
+                                                <div className="divide-y divide-zinc-800">
+                                                    {issueLinks.map((link) => {
+                                                        const actionable = link.status === "sync_pending" || link.status === "sync_failed";
+                                                        return (
+                                                            <div
+                                                                key={link.id}
+                                                                className="grid grid-cols-[120px_140px_1fr_120px_190px] gap-2 px-3 py-2 text-sm text-zinc-200 items-center"
+                                                            >
+                                                                <span className="capitalize">{link.provider}</span>
+                                                                <span
+                                                                    className={
+                                                                        link.status === "sync_failed"
+                                                                            ? "text-red-300"
+                                                                            : link.status === "linked"
+                                                                              ? "text-green-300"
+                                                                              : "text-yellow-300"
+                                                                    }
+                                                                >
+                                                                    {formatIssueLinkStatus(link.status)}
+                                                                </span>
+                                                                <div className="min-w-0">
+                                                                    <div className="truncate">{link.issueKey}</div>
+                                                                    <div className="text-xs text-zinc-500 truncate">{link.prId}</div>
+                                                                </div>
+                                                                <span className="text-xs text-zinc-400">
+                                                                    {formatAuthTimestamp(link.updatedAt)}
+                                                                </span>
+                                                                <div className="flex items-center gap-2">
+                                                                    <button
+                                                                        onClick={() => onSyncIssueLink(link, "sync")}
+                                                                        disabled={!actionable || processingIssueLinkAction?.id === link.id}
+                                                                        className="px-2 py-1 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                                                    >
+                                                                        {processingIssueLinkAction?.id === link.id &&
+                                                                        processingIssueLinkAction.mode === "sync"
+                                                                            ? "Syncing..."
+                                                                            : "Sync"}
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => onSyncIssueLink(link, "fail")}
+                                                                        disabled={!actionable || processingIssueLinkAction?.id === link.id}
+                                                                        className="px-2 py-1 rounded border border-red-800/60 text-xs text-red-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-red-900/40 transition-colors"
+                                                                    >
+                                                                        {processingIssueLinkAction?.id === link.id &&
+                                                                        processingIssueLinkAction.mode === "fail"
+                                                                            ? "Failing..."
+                                                                            : "Fail"}
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {issueLinkActionMessage ? (
+                                        <div className="text-xs text-green-300 bg-green-500/10 border border-green-500/20 rounded px-3 py-2">
+                                            {issueLinkActionMessage}
+                                        </div>
+                                    ) : null}
+                                    {issueLinkActionError ? (
+                                        <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                                            {issueLinkActionError}
+                                        </div>
+                                    ) : null}
+                                    {issueLinkActionAuditsLoading ? (
+                                        <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 text-xs text-zinc-500">
+                                            Loading persisted action audit...
+                                        </div>
+                                    ) : issueLinkActionAuditsError ? (
+                                        <div className="rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                                            Failed to load action audit: {getErrorMessage(issueLinkActionAuditsError, "Unavailable")}
+                                        </div>
+                                    ) : issueLinkActionAudits.length > 0 ? (
+                                        <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 space-y-1">
+                                            <div className="text-[11px] uppercase tracking-wide text-zinc-500">Recent Actions</div>
+                                            {issueLinkActionAudits.map((entry: IntegrationIssueLinkActionAuditEvent) => (
+                                                <div
+                                                    key={entry.id}
+                                                    className={`text-xs ${
+                                                        entry.outcome === "success" ? "text-zinc-300" : "text-red-300"
+                                                    }`}
+                                                >
+                                                    {formatAuthTimestamp(entry.createdAt)} - {entry.summary}
+                                                    <span className="text-zinc-500"> ({formatIssueLinkAuditAction(entry.action)})</span>
                                                 </div>
                                             ))}
                                         </div>

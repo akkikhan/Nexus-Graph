@@ -69,6 +69,12 @@ const syncIssueLinkSchema = z.object({
 
 const retryIssueLinksSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(20),
+    repoId: z.string().optional(),
+});
+
+const listIssueLinkActionAuditsSchema = z.object({
+    repoId: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 const listNotificationsSchema = z.object({
@@ -295,6 +301,21 @@ async function recordNotificationActionAudit(input: {
     }
 }
 
+async function recordIssueLinkActionAudit(input: {
+    action: string;
+    repoId?: string;
+    issueLinkId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata?: Record<string, unknown>;
+}) {
+    try {
+        await integrationsRepository.recordIssueLinkActionAudit(input);
+    } catch {
+        // Best effort: issue-link operation should not fail due to audit insert issues.
+    }
+}
+
 integrationsRouter.get("/connections", zValidator("query", listConnectionsSchema), async (c) => {
     const query = c.req.valid("query");
     try {
@@ -417,6 +438,26 @@ integrationsRouter.get("/issue-links/:id/sync-events", zValidator("query", listI
     }
 });
 
+integrationsRouter.get("/issue-link-action-audits", zValidator("query", listIssueLinkActionAuditsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const events = await integrationsRepository.listIssueLinkActionAudits(query);
+        return c.json({
+            events,
+            total: events.length,
+            limit: query.limit,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for issue-link action-audit listing",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
 integrationsRouter.post("/issue-links/:id/sync", zValidator("json", syncIssueLinkSchema), async (c) => {
     const id = c.req.param("id");
     const body = c.req.valid("json");
@@ -443,6 +484,20 @@ integrationsRouter.post("/issue-links/:id/sync", zValidator("json", syncIssueLin
             );
         }
         if (result.reason === "sync_update_failed") return c.json({ error: "Failed to update issue link sync state" }, 500);
+        await recordIssueLinkActionAudit({
+            action: body.simulateFailure ? "integration.issue_link.manual_fail" : "integration.issue_link.manual_sync",
+            repoId: result.issueLink.repoId,
+            issueLinkId: result.issueLink.id,
+            outcome: result.reason === "sync_failed" ? "error" : "success",
+            summary: `Issue link ${result.issueLink.issueKey} is now ${result.issueLink.status}.`,
+            metadata: {
+                mode: body.simulateFailure ? "fail" : "sync",
+                provider: result.issueLink.provider,
+                syncReason: result.reason,
+                syncEventStatus: result.syncEvent?.status,
+                syncAttemptNumber: result.syncEvent?.attemptNumber,
+            },
+        });
         return c.json({
             success: true,
             reason: result.reason,
@@ -463,7 +518,23 @@ integrationsRouter.post("/issue-links/:id/sync", zValidator("json", syncIssueLin
 integrationsRouter.post("/issue-links/retry-sync", zValidator("json", retryIssueLinksSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const result = await integrationsRepository.retryIssueLinkSyncs(body.limit);
+        const result = await integrationsRepository.retryIssueLinkSyncs(body.limit, body.repoId);
+        for (const outcome of result.outcomes) {
+            if (!outcome.repoId) continue;
+            await recordIssueLinkActionAudit({
+                action: "integration.issue_link.retry_sync",
+                repoId: outcome.repoId,
+                issueLinkId: outcome.id,
+                outcome:
+                    outcome.status === "sync_failed" || outcome.reason === "sync_update_failed" ? "error" : "success",
+                summary: `Retried issue link ${outcome.issueKey || outcome.id} -> ${outcome.status || outcome.reason}.`,
+                metadata: {
+                    reason: outcome.reason,
+                    status: outcome.status,
+                    provider: outcome.provider,
+                },
+            });
+        }
         return c.json({
             success: true,
             ...result,

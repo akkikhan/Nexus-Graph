@@ -1272,15 +1272,49 @@ async function run() {
                 "issue link sync events must include failed + successful attempts"
             );
 
+            const syncIssueLinkBeforeRetry = await request(`/api/v1/integrations/issue-links/${issueLinkId}/sync`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    simulateFailure: true,
+                    errorMessage: "Issue link queued for retry-sync smoke validation",
+                }),
+            });
+            printResult(`POST /api/v1/integrations/issue-links/${issueLinkId}/sync (prepare retry)`, syncIssueLinkBeforeRetry);
+            assert(syncIssueLinkBeforeRetry.response.status === 200, "issue link retry preparation sync must return 200");
+            assert(
+                syncIssueLinkBeforeRetry.payload?.issueLink?.status === "sync_failed",
+                "retry preparation sync should set sync_failed status"
+            );
+
             const retryIssueLinks = await request("/api/v1/integrations/issue-links/retry-sync", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     limit: 10,
+                    repoId: firstRepoId,
                 }),
             });
             printResult("POST /api/v1/integrations/issue-links/retry-sync", retryIssueLinks);
             assert(retryIssueLinks.response.status === 200, "issue-link retry sync endpoint must return 200");
+
+            const listIssueLinkActionAudits = await request(
+                `/api/v1/integrations/issue-link-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=10`
+            );
+            printResult("GET /api/v1/integrations/issue-link-action-audits", listIssueLinkActionAudits);
+            assert(listIssueLinkActionAudits.response.status === 200, "issue-link action-audit list must return 200");
+            assert(
+                Array.isArray(listIssueLinkActionAudits.payload?.events),
+                "issue-link action-audit list must include events[]"
+            );
+            assert(
+                listIssueLinkActionAudits.payload.events.some((event) => event.action === "integration.issue_link.manual_fail"),
+                "issue-link action-audit list should include manual failure audit entry"
+            );
+            assert(
+                listIssueLinkActionAudits.payload.events.some((event) => event.action === "integration.issue_link.retry_sync"),
+                "issue-link action-audit list should include retry audit entry"
+            );
 
             const integrationsMetrics = await request(`/api/v1/integrations/metrics?repoId=${encodeURIComponent(firstRepoId)}`);
             printResult("GET /api/v1/integrations/metrics", integrationsMetrics);
