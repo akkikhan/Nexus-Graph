@@ -141,9 +141,11 @@ async function run() {
         printResult("GET /api/v1/prs?limit=5", prs);
         assert(allowStatus("prs", prs.response.status, 200), "prs endpoint status mismatch");
         let firstPrId = null;
+        let firstRepoId = null;
         if (prs.response.status === 200) {
             assert(prs.payload && Array.isArray(prs.payload.prs), "prs payload must include prs[]");
             firstPrId = prs.payload.prs[0]?.id || null;
+            firstRepoId = prs.payload.prs[0]?.repository?.id || null;
         } else {
             assertErrorPayload("prs", prs.payload);
         }
@@ -156,8 +158,102 @@ async function run() {
                 stacks.payload && Array.isArray(stacks.payload.stacks),
                 "stacks payload must include stacks[]"
             );
+            if (!firstRepoId) {
+                firstRepoId = stacks.payload.stacks[0]?.repository?.id || null;
+            }
         } else {
             assertErrorPayload("stacks", stacks.payload);
+        }
+
+        if (firstRepoId && stacks.response.status === 200) {
+            const smokeStackName = `smoke-stack-${Date.now()}`;
+            const createStack = await request("/api/v1/stacks", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: smokeStackName,
+                    repositoryId: firstRepoId,
+                    baseBranch: "main",
+                }),
+            });
+            printResult("POST /api/v1/stacks", createStack);
+            assert(createStack.response.status === 201, "create stack must return 201");
+            const createdStackId = createStack.payload?.stack?.id;
+            assert(createdStackId, "create stack must return stack.id");
+
+            const addBaseBranch = await request(`/api/v1/stacks/${createdStackId}/branches`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    branchName: `smoke/${Date.now()}-base`,
+                }),
+            });
+            printResult(`POST /api/v1/stacks/${createdStackId}/branches (base)`, addBaseBranch);
+            assert(addBaseBranch.response.status === 200, "add base branch must return 200");
+            const firstBranchName = addBaseBranch.payload?.stack?.branches?.[0]?.name;
+            assert(firstBranchName, "add branch must include branch name");
+
+            const addFeatureBranch = await request(`/api/v1/stacks/${createdStackId}/branches`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    branchName: `smoke/${Date.now()}-feature`,
+                    parentBranchName: firstBranchName,
+                }),
+            });
+            printResult(`POST /api/v1/stacks/${createdStackId}/branches (feature)`, addFeatureBranch);
+            assert(addFeatureBranch.response.status === 200, "add feature branch must return 200");
+            const secondBranchName = addFeatureBranch.payload?.stack?.branches?.[0]?.name;
+            assert(secondBranchName, "feature branch response must include branch name");
+
+            const reorder = await request(`/api/v1/stacks/${createdStackId}/reorder`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    branches: [
+                        { branchName: secondBranchName, order: 0 },
+                        { branchName: firstBranchName, order: 1 },
+                    ],
+                }),
+            });
+            printResult(`PUT /api/v1/stacks/${createdStackId}/reorder`, reorder);
+            assert(reorder.response.status === 200, "reorder stack branches must return 200");
+            assert(Array.isArray(reorder.payload?.stack?.branches), "reorder response must include branches[]");
+
+            const syncStack = await request(`/api/v1/stacks/${createdStackId}/sync`, {
+                method: "POST",
+            });
+            printResult(`POST /api/v1/stacks/${createdStackId}/sync`, syncStack);
+            assert(syncStack.response.status === 200, "stack sync must return 200");
+            assert(
+                typeof syncStack.payload?.result?.branchesRebased === "number",
+                "stack sync must include branchesRebased"
+            );
+
+            const submitStack = await request(`/api/v1/stacks/${createdStackId}/submit`, {
+                method: "POST",
+            });
+            printResult(`POST /api/v1/stacks/${createdStackId}/submit`, submitStack);
+            assert(submitStack.response.status === 200, "stack submit must return 200");
+            assert(
+                typeof submitStack.payload?.prsCreated === "number",
+                "stack submit must include prsCreated"
+            );
+
+            const stackDetail = await request(`/api/v1/stacks/${createdStackId}`);
+            printResult(`GET /api/v1/stacks/${createdStackId}`, stackDetail);
+            assert(stackDetail.response.status === 200, "stack detail must return 200");
+            assert(Array.isArray(stackDetail.payload?.stack?.branches), "stack detail must include branches[]");
+
+            const deleteStack = await request(`/api/v1/stacks/${createdStackId}`, {
+                method: "DELETE",
+            });
+            printResult(`DELETE /api/v1/stacks/${createdStackId}`, deleteStack);
+            assert(deleteStack.response.status === 200, "delete stack must return 200");
+
+            const deletedStack = await request(`/api/v1/stacks/${createdStackId}`);
+            printResult(`GET /api/v1/stacks/${createdStackId} (deleted)`, deletedStack);
+            assert(deletedStack.response.status === 404, "deleted stack detail must return 404");
         }
 
         const activity = await request("/api/v1/activity?limit=5");

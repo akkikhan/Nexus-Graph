@@ -38,6 +38,14 @@ Checks:
 - `POST /api/v1/stacks/sync-local` (setup)
 - `GET /api/v1/prs?limit=5`
 - `GET /api/v1/stacks`
+- `POST /api/v1/stacks` (ephemeral smoke stack create)
+- `POST /api/v1/stacks/:id/branches` (base + child branch)
+- `PUT /api/v1/stacks/:id/reorder`
+- `POST /api/v1/stacks/:id/sync`
+- `POST /api/v1/stacks/:id/submit`
+- `GET /api/v1/stacks/:id` (detail)
+- `DELETE /api/v1/stacks/:id`
+- `GET /api/v1/stacks/:id` -> `404` after delete
 - `GET /api/v1/activity?limit=5`
 - `GET /api/v1/insights/dashboard`
 - `GET /api/v1/queue`

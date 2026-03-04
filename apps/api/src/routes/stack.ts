@@ -267,6 +267,8 @@ stackRouter.post(
             branches,
         };
 
+        let persistedToFile = false;
+        let fileWriteError: string | null = null;
         try {
             await mkdir(path.dirname(SERVER_STACK_FILE), { recursive: true });
             await writeFile(
@@ -274,20 +276,69 @@ stackRouter.post(
                 JSON.stringify(snapshot, null, 2),
                 "utf8"
             );
+            persistedToFile = true;
+        } catch (error: unknown) {
+            fileWriteError = error instanceof Error ? error.message : "Failed to write local stack file";
+        }
 
-            return c.json({
-                success: true,
-                stackName: body.stackName,
-                branches: body.snapshot.branches.length,
-                persistedTo: SERVER_STACK_FILE,
-            });
-        } catch (error: any) {
+        try {
+            const synced = await stackRepository.syncLocalSnapshot(body);
+            if (!synced) {
+                if (persistedToFile) {
+                    return c.json({
+                        success: true,
+                        stackName: body.stackName,
+                        branches: body.snapshot.branches.length,
+                        persistedTo: [SERVER_STACK_FILE],
+                        degraded: true,
+                        warning: "Database persistence unavailable; saved snapshot to local file only.",
+                    });
+                }
+                return c.json(
+                    {
+                        error: "Unable to resolve repository/user for stack sync",
+                    },
+                    404
+                );
+            }
+
+            const persistedTo = ["database"];
+            if (persistedToFile) persistedTo.push(SERVER_STACK_FILE);
+
             return c.json(
                 {
-                    success: false,
-                    error: error?.message || "Failed to persist local stack snapshot",
+                    success: true,
+                    stackId: synced.stackId,
+                    stackName: body.stackName,
+                    branches: synced.branches,
+                    persistedTo,
+                    ...(fileWriteError ? {
+                        degraded: true,
+                        warning: "Database sync succeeded, but local fallback file could not be updated.",
+                        fileError: fileWriteError,
+                    } : {}),
                 },
-                500
+                200
+            );
+        } catch (error) {
+            if (persistedToFile) {
+                return c.json({
+                    success: true,
+                    stackName: body.stackName,
+                    branches: body.snapshot.branches.length,
+                    persistedTo: [SERVER_STACK_FILE],
+                    degraded: true,
+                    warning: "Database unavailable for stack sync; snapshot stored locally.",
+                    details: errorMessage(error),
+                });
+            }
+
+            return c.json(
+                {
+                    error: "Database unavailable for local stack sync",
+                    details: errorMessage(error),
+                },
+                503
             );
         }
     }
@@ -372,14 +423,15 @@ stackRouter.get("/:id", async (c) => {
 stackRouter.post("/", zValidator("json", createStackSchema), async (c) => {
     const body = c.req.valid("json");
 
-    if (body.userId) {
-        try {
-            const created = await stackRepository.create({
-                repoId: body.repositoryId,
-                userId: body.userId,
-                name: body.name,
-                baseBranch: body.baseBranch,
-            });
+    try {
+        const created = await stackRepository.createResolved({
+            repositoryId: body.repositoryId,
+            userId: body.userId,
+            name: body.name,
+            baseBranch: body.baseBranch,
+        });
+
+        if (created) {
             return c.json({
                 stack: {
                     id: created.id,
@@ -389,10 +441,16 @@ stackRouter.post("/", zValidator("json", createStackSchema), async (c) => {
                     createdAt: created.createdAt,
                 },
             }, 201);
-        } catch (error: any) {
-            return c.json({
-                error: error?.message || "Failed to create stack",
-            }, 500);
+        }
+    } catch (error: any) {
+        if (body.userId) {
+            return c.json(
+                {
+                    error: "Database unavailable for stack creation",
+                    details: errorMessage(error),
+                },
+                503
+            );
         }
     }
 
@@ -416,19 +474,53 @@ stackRouter.post(
         const id = c.req.param("id");
         const body = c.req.valid("json");
 
-        return c.json({
-            success: true,
-            stack: {
-                id,
-                branches: [
-                    {
-                        name: body.branchName,
-                        parentBranch: body.parentBranchName,
-                        status: "pending",
-                    },
-                ],
-            },
-        });
+        try {
+            const result = await stackRepository.addBranchByName({
+                stackId: id,
+                branchName: body.branchName,
+                parentBranchName: body.parentBranchName,
+                prId: body.prId,
+            });
+
+            if (result.reason === "stack_not_found") {
+                return c.json({ error: "Stack not found" }, 404);
+            }
+
+            if (result.reason === "parent_not_found") {
+                return c.json(
+                    { error: `Parent branch not found: ${body.parentBranchName}` },
+                    404
+                );
+            }
+
+            const branch = result.branch;
+            if (!branch) {
+                return c.json({ error: "Failed to add branch" }, 500);
+            }
+
+            return c.json({
+                success: true,
+                stack: {
+                    id,
+                    branches: [
+                        {
+                            name: branch.name,
+                            parentBranch: body.parentBranchName,
+                            status: normalizeStatus(branch.prStatus),
+                        },
+                    ],
+                },
+                created: result.created,
+            });
+        } catch (error) {
+            return c.json(
+                {
+                    error: "Database unavailable for branch addition",
+                    details: errorMessage(error),
+                },
+                503
+            );
+        }
     }
 );
 
@@ -442,10 +534,41 @@ stackRouter.put(
         const id = c.req.param("id");
         const { branches } = c.req.valid("json");
 
-        return c.json({
-            success: true,
-            stack: { id, branches },
-        });
+        try {
+            const reordered = await stackRepository.reorderByBranchName(id, branches);
+            if (reordered.reason === "stack_not_found") {
+                return c.json({ error: "Stack not found" }, 404);
+            }
+
+            if (reordered.reason === "missing_branches") {
+                return c.json(
+                    {
+                        error: "Unknown branch names in reorder request",
+                        missingBranchNames: reordered.missingBranchNames,
+                    },
+                    400
+                );
+            }
+
+            return c.json({
+                success: true,
+                stack: {
+                    id,
+                    branches: reordered.branches.map((branch) => ({
+                        branchName: branch.name,
+                        order: branch.position,
+                    })),
+                },
+            });
+        } catch (error) {
+            return c.json(
+                {
+                    error: "Database unavailable for branch reorder",
+                    details: errorMessage(error),
+                },
+                503
+            );
+        }
     }
 );
 
@@ -455,21 +578,26 @@ stackRouter.put(
 stackRouter.post("/:id/sync", async (c) => {
     const id = c.req.param("id");
 
-    // In production:
-    // 1. Fetch latest from git remote
-    // 2. Rebase each branch on its parent
-    // 3. Force push if needed
-    // 4. Update PR base branches
+    try {
+        const result = await stackRepository.sync(id);
+        if (!result) {
+            return c.json({ error: "Stack not found" }, 404);
+        }
 
-    return c.json({
-        success: true,
-        message: "Stack synced successfully",
-        result: {
-            stackId: id,
-            branchesRebased: 3,
-            conflictsDetected: 0,
-        },
-    });
+        return c.json({
+            success: true,
+            message: "Stack synced successfully",
+            result,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for stack sync",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -478,16 +606,26 @@ stackRouter.post("/:id/sync", async (c) => {
 stackRouter.post("/:id/submit", async (c) => {
     const id = c.req.param("id");
 
-    // In production:
-    // 1. Create PRs for each branch without one
-    // 2. Set up proper base branch chain
-    // 3. Request AI reviews
+    try {
+        const submitted = await stackRepository.submit(id);
+        if (!submitted) {
+            return c.json({ error: "Stack not found" }, 404);
+        }
 
-    return c.json({
-        success: true,
-        message: "Stack submitted",
-        prsCreated: 2,
-    });
+        return c.json({
+            success: true,
+            message: "Stack submitted",
+            prsCreated: submitted.prsCreated,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for stack submit",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -496,10 +634,25 @@ stackRouter.post("/:id/submit", async (c) => {
 stackRouter.delete("/:id", async (c) => {
     const id = c.req.param("id");
 
-    return c.json({
-        success: true,
-        message: `Stack ${id} deleted`,
-    });
+    try {
+        const deleted = await stackRepository.delete(id);
+        if (!deleted) {
+            return c.json({ error: "Stack not found" }, 404);
+        }
+
+        return c.json({
+            success: true,
+            message: `Stack ${id} deleted`,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for stack deletion",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 export { stackRouter };
