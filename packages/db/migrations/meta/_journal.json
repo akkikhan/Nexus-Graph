@@ -8,6 +8,13 @@
       "when": 1770993295466,
       "tag": "0000_safe_firestar",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1772630878115,
+      "tag": "0001_sparkling_nicolaos",
+      "breakpoints": true
     }
   ]
 }

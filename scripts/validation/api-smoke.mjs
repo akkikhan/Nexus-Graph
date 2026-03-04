@@ -218,6 +218,80 @@ async function run() {
             assert(requestReview.response.status === 200, "request-review must return 200");
             assert(requestReview.payload?.success === true, "request-review must return success=true");
             assert(requestReview.payload?.jobId, "request-review must return jobId");
+            const reviewJobId = requestReview.payload.jobId;
+
+            const queuedJob = await request(`/api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId}`);
+            printResult(`GET /api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId}`, queuedJob);
+            assert(queuedJob.response.status === 200, "AI review job detail must return 200");
+            assert(queuedJob.payload?.job?.status === "queued", "AI review job must start in queued state");
+
+            const startReviewJob = await request(`/api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId}/start`, {
+                method: "POST",
+            });
+            printResult(`POST /api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId}/start`, startReviewJob);
+            assert(startReviewJob.response.status === 200, "AI review job start must return 200");
+            assert(startReviewJob.payload?.success === true, "AI review job start must return success=true");
+            assert(startReviewJob.payload?.job?.status === "running", "AI review job start must set running status");
+
+            const completeReviewJob = await request(`/api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId}/complete`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    summary: "Smoke AI review completed with persisted findings.",
+                    model: "smoke-ai-model",
+                    provider: "smoke-provider",
+                    findings: [
+                        {
+                            path: "src/auth/middleware.ts",
+                            line: 15,
+                            side: "RIGHT",
+                            body: "Ensure token parsing handles malformed input.",
+                            severity: "warning",
+                            category: "security",
+                        },
+                        {
+                            path: "src/api/route.ts",
+                            line: 22,
+                            side: "RIGHT",
+                            body: "Add retry guard around transient downstream failures.",
+                            severity: "error",
+                            category: "reliability",
+                        },
+                    ],
+                }),
+            });
+            printResult(`POST /api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId}/complete`, completeReviewJob);
+            assert(completeReviewJob.response.status === 200, "AI review job complete must return 200");
+            assert(completeReviewJob.payload?.success === true, "AI review job complete must return success=true");
+            assert(
+                completeReviewJob.payload?.job?.status === "completed",
+                "AI review job complete must set completed status"
+            );
+            assert(
+                completeReviewJob.payload?.findingsPersisted === 2,
+                "AI review completion must persist provided findings"
+            );
+
+            const completedJob = await request(`/api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId}`);
+            printResult(`GET /api/v1/prs/${createdPrId}/ai-review-jobs/${reviewJobId} (completed)`, completedJob);
+            assert(completedJob.response.status === 200, "completed AI review job detail must return 200");
+            assert(
+                completedJob.payload?.job?.status === "completed",
+                "completed AI review job detail must report completed status"
+            );
+            assert(
+                completedJob.payload?.job?.findingsCount === 2,
+                "completed AI review job detail must include findingsCount"
+            );
+
+            const createdPrReviews = await request(`/api/v1/reviews/pr/${createdPrId}`);
+            printResult(`GET /api/v1/reviews/pr/${createdPrId}`, createdPrReviews);
+            assert(createdPrReviews.response.status === 200, "created PR reviews must return 200");
+            assert(Array.isArray(createdPrReviews.payload?.reviews), "created PR reviews payload must include reviews[]");
+            const persistedAiReview = createdPrReviews.payload.reviews.find(
+                (review) => review.isAI === true && Array.isArray(review.comments) && review.comments.length > 0
+            );
+            assert(Boolean(persistedAiReview), "AI review completion must persist at least one AI review with comments");
         }
 
         if (firstRepoId && stacks.response.status === 200) {

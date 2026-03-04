@@ -41,6 +41,37 @@ const updatePRSchema = z.object({
     status: z.enum(["draft", "open", "approved", "changes_requested", "merged", "closed"]).optional(),
 });
 
+const aiReviewJobListSchema = z.object({
+    limit: z.coerce.number().min(1).max(100).default(20),
+});
+
+const completeAIReviewJobSchema = z.object({
+    summary: z.string().optional(),
+    findings: z
+        .array(
+            z.object({
+                path: z.string().optional(),
+                line: z.number().int().positive().optional(),
+                side: z.enum(["LEFT", "RIGHT"]).optional(),
+                body: z.string().min(1),
+                severity: z.enum(["critical", "error", "warning", "info"]).optional(),
+                category: z.string().optional(),
+                suggestionCode: z.string().optional(),
+            })
+        )
+        .optional(),
+    model: z.string().optional(),
+    provider: z.string().optional(),
+    riskScore: z.number().min(0).max(100).optional(),
+    riskLevel: z.enum(["low", "medium", "high", "critical"]).optional(),
+    riskFactors: z.array(z.unknown()).optional(),
+    estimatedReviewMinutes: z.number().int().min(0).optional(),
+});
+
+const failAIReviewJobSchema = z.object({
+    error: z.string().min(1),
+});
+
 function mapStatus(
     status: string | null | undefined
 ): "open" | "closed" | "merged" | "draft" {
@@ -95,6 +126,23 @@ function mapPR(pr: any) {
         comments: Array.isArray(pr.comments) ? pr.comments.length : 0,
         linesAdded: pr.linesAdded || 0,
         linesRemoved: pr.linesRemoved || 0,
+    };
+}
+
+function mapAIReviewJob(job: any) {
+    return {
+        id: job.id,
+        prId: job.prId,
+        status: job.status,
+        provider: job.provider || undefined,
+        model: job.model || undefined,
+        findingsCount: job.findingsCount || 0,
+        errorMessage: job.errorMessage || undefined,
+        startedAt: job.startedAt ? toIso(job.startedAt) : undefined,
+        completedAt: job.completedAt ? toIso(job.completedAt) : undefined,
+        createdAt: toIso(job.createdAt),
+        updatedAt: toIso(job.updatedAt),
+        metadata: job.metadata || {},
     };
 }
 
@@ -190,7 +238,7 @@ prRouter.post("/", zValidator("json", createPRSchema), async (c) => {
 
         let reviewJobId: string | undefined;
         if (body.requestAIReview) {
-            const queued = await prRepository.requestAIReview(created.id);
+            const queued = await prRepository.requestAIReview(created.id, body.userId);
             reviewJobId = queued?.jobId;
         }
 
@@ -287,6 +335,143 @@ prRouter.post("/:id/request-review", async (c) => {
         return c.json(
             {
                 error: "Database unavailable for pull request review request",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
+});
+
+/**
+ * GET /prs/:id/ai-review-jobs - List AI review jobs for a PR
+ */
+prRouter.get("/:id/ai-review-jobs", zValidator("query", aiReviewJobListSchema), async (c) => {
+    const id = c.req.param("id");
+    const query = c.req.valid("query");
+
+    try {
+        const jobs = await prRepository.listAIReviewJobs(id, query.limit);
+        return c.json({
+            jobs: jobs.map(mapAIReviewJob),
+            total: jobs.length,
+            limit: query.limit,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for AI review job listing",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
+});
+
+/**
+ * GET /prs/:id/ai-review-jobs/:jobId - Get AI review job status
+ */
+prRouter.get("/:id/ai-review-jobs/:jobId", async (c) => {
+    const id = c.req.param("id");
+    const jobId = c.req.param("jobId");
+
+    try {
+        const job = await prRepository.getAIReviewJob(id, jobId);
+        if (!job) return c.json({ error: "AI review job not found" }, 404);
+        return c.json({ job: mapAIReviewJob(job) });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for AI review job detail",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
+});
+
+/**
+ * POST /prs/:id/ai-review-jobs/:jobId/start - Mark AI review job running
+ */
+prRouter.post("/:id/ai-review-jobs/:jobId/start", async (c) => {
+    const id = c.req.param("id");
+    const jobId = c.req.param("jobId");
+
+    try {
+        const job = await prRepository.startAIReviewJob(id, jobId);
+        if (!job) return c.json({ error: "AI review job not found" }, 404);
+        return c.json({
+            success: true,
+            job: mapAIReviewJob(job),
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for AI review job start",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
+});
+
+/**
+ * POST /prs/:id/ai-review-jobs/:jobId/complete - Persist AI review findings
+ */
+prRouter.post("/:id/ai-review-jobs/:jobId/complete", zValidator("json", completeAIReviewJobSchema), async (c) => {
+    const id = c.req.param("id");
+    const jobId = c.req.param("jobId");
+    const body = c.req.valid("json");
+
+    try {
+        const result = await prRepository.completeAIReviewJob(id, jobId, body);
+        if (!result) return c.json({ error: "AI review job not found" }, 404);
+        if (result.blocked) {
+            return c.json(
+                {
+                    error: "AI review job cannot be completed from failed state",
+                    reason: result.reason,
+                    job: result.job ? mapAIReviewJob(result.job) : undefined,
+                },
+                409
+            );
+        }
+
+        return c.json({
+            success: true,
+            reason: result.reason,
+            findingsPersisted: result.findingsPersisted,
+            job: result.job ? mapAIReviewJob(result.job) : undefined,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for AI review completion",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
+});
+
+/**
+ * POST /prs/:id/ai-review-jobs/:jobId/fail - Persist AI review failure
+ */
+prRouter.post("/:id/ai-review-jobs/:jobId/fail", zValidator("json", failAIReviewJobSchema), async (c) => {
+    const id = c.req.param("id");
+    const jobId = c.req.param("jobId");
+    const body = c.req.valid("json");
+
+    try {
+        const job = await prRepository.failAIReviewJob(id, jobId, body.error);
+        if (!job) return c.json({ error: "AI review job not found" }, 404);
+        return c.json({
+            success: true,
+            job: mapAIReviewJob(job),
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for AI review failure update",
                 details: errorMessage(error),
             },
             503

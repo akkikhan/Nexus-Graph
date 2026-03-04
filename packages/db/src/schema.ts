@@ -29,6 +29,7 @@ export const prStatusEnum = pgEnum("pr_status", ["draft", "open", "approved", "c
 export const reviewStatusEnum = pgEnum("review_status", ["approved", "changes_requested", "commented"]);
 export const riskLevelEnum = pgEnum("risk_level", ["low", "medium", "high", "critical"]);
 export const queueStatusEnum = pgEnum("queue_status", ["pending", "running", "passed", "failed", "merged"]);
+export const aiReviewJobStatusEnum = pgEnum("ai_review_job_status", ["queued", "running", "completed", "failed"]);
 
 // ============================================================================
 // USERS & ORGANIZATIONS
@@ -263,6 +264,29 @@ export const mergeQueue = pgTable("merge_queue", {
 }));
 
 // ============================================================================
+// AI REVIEW JOBS
+// ============================================================================
+
+export const aiReviewJobs = pgTable("ai_review_jobs", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    prId: uuid("pr_id").notNull().references(() => pullRequests.id, { onDelete: "cascade" }),
+    requestedByUserId: uuid("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    status: aiReviewJobStatusEnum("status").default("queued").notNull(),
+    provider: text("provider"),
+    model: text("model"),
+    findingsCount: integer("findings_count").default(0).notNull(),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    metadata: jsonb("metadata").default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    prStatusIdx: index("ai_review_jobs_pr_status_idx").on(table.prId, table.status),
+    createdIdx: index("ai_review_jobs_created_idx").on(table.createdAt),
+}));
+
+// ============================================================================
 // AI CONFIGURATION
 // ============================================================================
 
@@ -342,6 +366,7 @@ export const usersRelations = relations(users, ({ many }) => ({
     pullRequests: many(pullRequests),
     reviews: many(reviews),
     comments: many(comments),
+    aiReviewJobsRequested: many(aiReviewJobs),
 }));
 
 export const organizationsRelations = relations(organizations, ({ many }) => ({
@@ -417,6 +442,7 @@ export const pullRequestsRelations = relations(pullRequests, ({ one, many }) => 
     }),
     reviews: many(reviews),
     comments: many(comments),
+    aiReviewJobs: many(aiReviewJobs),
 }));
 
 export const reviewsRelations = relations(reviews, ({ one, many }) => ({
@@ -442,6 +468,17 @@ export const commentsRelations = relations(comments, ({ one }) => ({
     }),
     user: one(users, {
         fields: [comments.userId],
+        references: [users.id],
+    }),
+}));
+
+export const aiReviewJobsRelations = relations(aiReviewJobs, ({ one }) => ({
+    pullRequest: one(pullRequests, {
+        fields: [aiReviewJobs.prId],
+        references: [pullRequests.id],
+    }),
+    requestedBy: one(users, {
+        fields: [aiReviewJobs.requestedByUserId],
         references: [users.id],
     }),
 }));
