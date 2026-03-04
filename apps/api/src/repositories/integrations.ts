@@ -11,15 +11,26 @@ const integrationConnections = (nexusDb as any).integrationConnections;
 const issueLinks = (nexusDb as any).issueLinks;
 const notificationDeliveries = (nexusDb as any).notificationDeliveries;
 const notificationDeliveryAttempts = (nexusDb as any).notificationDeliveryAttempts;
+const integrationWebhookEvents = (nexusDb as any).integrationWebhookEvents;
+const issueLinkSyncEvents = (nexusDb as any).issueLinkSyncEvents;
 
 type IntegrationProvider = "slack" | "linear" | "jira";
 type IntegrationConnectionStatus = "active" | "disabled" | "error";
 type IssueLinkStatus = "linked" | "sync_pending" | "sync_failed";
 type NotificationDeliveryStatus = "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
+type IntegrationWebhookStatus = "received" | "processed" | "failed" | "dead_letter";
+type IssueLinkSyncStatus = "pending" | "synced" | "failed" | "dead_letter";
 
 const PROVIDERS: IntegrationProvider[] = ["slack", "linear", "jira"];
 const ISSUE_LINK_PROVIDERS = new Set<IntegrationProvider>(["linear", "jira"]);
 const DELIVERY_RETRYABLE_STATUSES: NotificationDeliveryStatus[] = ["pending", "retrying", "failed"];
+const WEBHOOK_RETRYABLE_STATUSES: IntegrationWebhookStatus[] = ["received", "failed"];
+const ISSUE_LINK_RETRYABLE_STATUSES: IssueLinkStatus[] = ["sync_pending", "sync_failed"];
+
+const RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS = Number(process.env.NEXUS_ISSUE_LINK_MAX_SYNC_ATTEMPTS ?? 3);
+const ISSUE_LINK_MAX_SYNC_ATTEMPTS = Number.isFinite(RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS) && RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS > 0
+    ? Math.floor(RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS)
+    : 3;
 
 const SECRET_FIELD_PATTERN = /(?:token|secret|password|api[_-]?key|authorization|auth[_-]?header)/i;
 const SECRET_PATTERNS: RegExp[] = [
@@ -131,6 +142,42 @@ function normalizeAttempt(row: any) {
     };
 }
 
+function normalizeWebhookEvent(row: any) {
+    return {
+        id: row.id,
+        provider: row.provider,
+        repoId: row.repoId || undefined,
+        eventType: row.eventType,
+        externalEventId: row.externalEventId,
+        payload: row.payload || {},
+        status: row.status,
+        attempts: Number(row.attempts || 0),
+        maxAttempts: Number(row.maxAttempts || 0),
+        nextAttemptAt: row.nextAttemptAt ? toIso(row.nextAttemptAt) : undefined,
+        lastAttemptAt: row.lastAttemptAt ? toIso(row.lastAttemptAt) : undefined,
+        processedAt: row.processedAt ? toIso(row.processedAt) : undefined,
+        errorMessage: row.errorMessage || undefined,
+        correlationId: row.correlationId,
+        createdAt: toIso(row.createdAt),
+        updatedAt: toIso(row.updatedAt),
+    };
+}
+
+function normalizeIssueLinkSyncEvent(row: any) {
+    return {
+        id: row.id,
+        issueLinkId: row.issueLinkId,
+        provider: row.provider,
+        status: row.status,
+        attemptNumber: Number(row.attemptNumber || 0),
+        errorMessage: row.errorMessage || undefined,
+        responseCode: row.responseCode || undefined,
+        latencyMs: row.latencyMs || undefined,
+        details: row.details || {},
+        createdAt: toIso(row.createdAt),
+    };
+}
+
 function computeBackoffMs(attemptNumber: number): number {
     return Math.min(60_000, 2_000 * Math.max(attemptNumber, 1));
 }
@@ -147,6 +194,16 @@ async function findConnection(connectionId: string) {
 
 async function findDelivery(deliveryId: string) {
     const [row] = await db.select().from(notificationDeliveries).where(eq(notificationDeliveries.id, deliveryId)).limit(1);
+    return row || null;
+}
+
+async function findWebhookEvent(webhookEventId: string) {
+    const [row] = await db.select().from(integrationWebhookEvents).where(eq(integrationWebhookEvents.id, webhookEventId)).limit(1);
+    return row || null;
+}
+
+async function findIssueLink(issueLinkId: string) {
+    const [row] = await db.select().from(issueLinks).where(eq(issueLinks.id, issueLinkId)).limit(1);
     return row || null;
 }
 
@@ -274,7 +331,7 @@ export const integrationsRepository = {
                 issueTitle: input.issueTitle || null,
                 issueUrl: input.issueUrl || null,
                 externalIssueId: input.externalIssueId || null,
-                status: input.status || "linked",
+                status: input.status || "sync_pending",
                 metadata: sanitizeUnknown(input.metadata || {}),
                 createdAt: now,
                 updatedAt: now,
@@ -312,6 +369,394 @@ export const integrationsRepository = {
             .offset(Math.max(filters.offset ?? 0, 0));
 
         return rows.map(normalizeIssueLink);
+    },
+
+    async listIssueLinkSyncEvents(issueLinkId: string, limit = 50) {
+        const events = await db
+            .select()
+            .from(issueLinkSyncEvents)
+            .where(eq(issueLinkSyncEvents.issueLinkId, issueLinkId))
+            .orderBy(asc(issueLinkSyncEvents.attemptNumber))
+            .limit(Math.min(Math.max(limit, 1), 200));
+        return events.map(normalizeIssueLinkSyncEvent);
+    },
+
+    async syncIssueLinkBacklink(
+        issueLinkId: string,
+        input: {
+            simulateFailure?: boolean;
+            responseCode?: number;
+            latencyMs?: number;
+            errorMessage?: string;
+            details?: Record<string, unknown>;
+        } = {}
+    ) {
+        const link = await findIssueLink(issueLinkId);
+        if (!link) return { reason: "issue_link_not_found" as const };
+        if (!ISSUE_LINK_PROVIDERS.has(link.provider as IntegrationProvider)) {
+            return { reason: "invalid_issue_provider" as const, issueLink: normalizeIssueLink(link) };
+        }
+
+        const [latestAttempt] = await db
+            .select()
+            .from(issueLinkSyncEvents)
+            .where(eq(issueLinkSyncEvents.issueLinkId, issueLinkId))
+            .orderBy(desc(issueLinkSyncEvents.attemptNumber))
+            .limit(1);
+
+        if (latestAttempt?.status === "dead_letter") {
+            return {
+                reason: "sync_dead_lettered" as const,
+                issueLink: normalizeIssueLink(link),
+                syncEvent: normalizeIssueLinkSyncEvent(latestAttempt),
+            };
+        }
+
+        const attemptNumber = Number(latestAttempt?.attemptNumber || 0) + 1;
+        const shouldFail = input.simulateFailure === true;
+        const now = new Date();
+        const responseCode = Number(input.responseCode || (shouldFail ? 502 : 200));
+        const latencyMs = Math.max(Number(input.latencyMs || (shouldFail ? 410 : 140)), 0);
+
+        let updatedLink: any = null;
+        let createdSyncEvent: any = null;
+
+        await db.transaction(async (tx: any) => {
+            if (shouldFail) {
+                const deadLetter = attemptNumber >= ISSUE_LINK_MAX_SYNC_ATTEMPTS;
+                const nextStatus: IssueLinkSyncStatus = deadLetter ? "dead_letter" : "failed";
+                const safeError = redactSecrets((input.errorMessage || "Issue back-link sync failed").trim());
+
+                const [event] = await tx
+                    .insert(issueLinkSyncEvents)
+                    .values({
+                        issueLinkId,
+                        provider: link.provider,
+                        status: nextStatus,
+                        attemptNumber,
+                        errorMessage: safeError,
+                        responseCode,
+                        latencyMs,
+                        details: sanitizeUnknown(input.details || {}),
+                        createdAt: now,
+                    })
+                    .returning();
+
+                const [updated] = await tx
+                    .update(issueLinks)
+                    .set({
+                        status: "sync_failed",
+                        metadata: sanitizeUnknown({
+                            ...(link.metadata || {}),
+                            lastSync: {
+                                at: now.toISOString(),
+                                status: nextStatus,
+                                attemptNumber,
+                                errorMessage: safeError,
+                                responseCode,
+                                latencyMs,
+                            },
+                        }),
+                        updatedAt: now,
+                    })
+                    .where(eq(issueLinks.id, issueLinkId))
+                    .returning();
+
+                createdSyncEvent = event || null;
+                updatedLink = updated || null;
+                return;
+            }
+
+            const [event] = await tx
+                .insert(issueLinkSyncEvents)
+                .values({
+                    issueLinkId,
+                    provider: link.provider,
+                    status: "synced",
+                    attemptNumber,
+                    errorMessage: null,
+                    responseCode,
+                    latencyMs,
+                    details: sanitizeUnknown(input.details || {}),
+                    createdAt: now,
+                })
+                .returning();
+
+            const [updated] = await tx
+                .update(issueLinks)
+                .set({
+                    status: "linked",
+                    metadata: sanitizeUnknown({
+                        ...(link.metadata || {}),
+                        lastSync: {
+                            at: now.toISOString(),
+                            status: "synced",
+                            attemptNumber,
+                            responseCode,
+                            latencyMs,
+                        },
+                    }),
+                    updatedAt: now,
+                })
+                .where(eq(issueLinks.id, issueLinkId))
+                .returning();
+
+            createdSyncEvent = event || null;
+            updatedLink = updated || null;
+        });
+
+        if (!updatedLink || !createdSyncEvent) return { reason: "sync_update_failed" as const };
+        return {
+            reason: shouldFail ? "sync_failed" as const : "synced" as const,
+            issueLink: normalizeIssueLink(updatedLink),
+            syncEvent: normalizeIssueLinkSyncEvent(createdSyncEvent),
+        };
+    },
+
+    async retryIssueLinkSyncs(limit = 20) {
+        const rows = await db
+            .select()
+            .from(issueLinks)
+            .where(inArray(issueLinks.status, ISSUE_LINK_RETRYABLE_STATUSES))
+            .orderBy(asc(issueLinks.updatedAt))
+            .limit(Math.min(Math.max(limit, 1), 100));
+
+        const outcomes: Array<{ id: string; reason: string; status?: IssueLinkStatus }> = [];
+        for (const row of rows) {
+            const result = await this.syncIssueLinkBacklink(row.id);
+            outcomes.push({
+                id: row.id,
+                reason: result.reason,
+                status: (result as any).issueLink?.status,
+            });
+        }
+
+        return {
+            processed: rows.length,
+            outcomes,
+        };
+    },
+
+    async ingestWebhook(input: {
+        provider: string;
+        eventType: string;
+        externalEventId: string;
+        repoId?: string;
+        payload?: Record<string, unknown>;
+        maxAttempts?: number;
+        correlationId?: string;
+    }) {
+        const provider = normalizeProvider(input.provider);
+        if (!provider) return { reason: "invalid_provider" as const };
+
+        const [existing] = await db
+            .select()
+            .from(integrationWebhookEvents)
+            .where(
+                and(
+                    eq(integrationWebhookEvents.provider, provider),
+                    eq(integrationWebhookEvents.externalEventId, input.externalEventId.trim())
+                )
+            )
+            .limit(1);
+        if (existing) {
+            return {
+                reason: "webhook_exists" as const,
+                event: normalizeWebhookEvent(existing),
+            };
+        }
+
+        const maxAttempts = Math.min(Math.max(Number(input.maxAttempts ?? 3), 1), 10);
+        const correlationId = (input.correlationId || "").trim() || `wh-${randomUUID()}`;
+        const now = new Date();
+        const [inserted] = await db
+            .insert(integrationWebhookEvents)
+            .values({
+                provider,
+                repoId: input.repoId || null,
+                eventType: input.eventType.trim(),
+                externalEventId: input.externalEventId.trim(),
+                payload: sanitizeUnknown(input.payload || {}),
+                status: "received",
+                attempts: 0,
+                maxAttempts,
+                nextAttemptAt: now,
+                correlationId,
+                createdAt: now,
+                updatedAt: now,
+            })
+            .returning();
+        if (!inserted) return { reason: "insert_failed" as const };
+
+        return {
+            reason: "ok" as const,
+            event: normalizeWebhookEvent(inserted),
+        };
+    },
+
+    async listWebhookEvents(filters: {
+        provider?: string;
+        repoId?: string;
+        status?: IntegrationWebhookStatus;
+        limit?: number;
+        offset?: number;
+    }) {
+        const conditions = [];
+        const provider = normalizeProvider(filters.provider);
+        if (filters.provider && provider) conditions.push(eq(integrationWebhookEvents.provider, provider));
+        if (filters.repoId) conditions.push(eq(integrationWebhookEvents.repoId, filters.repoId));
+        if (filters.status) conditions.push(eq(integrationWebhookEvents.status, filters.status));
+
+        const rows = await db
+            .select()
+            .from(integrationWebhookEvents)
+            .where(conditions.length > 0 ? and(...conditions) : undefined)
+            .orderBy(desc(integrationWebhookEvents.createdAt))
+            .limit(Math.min(Math.max(filters.limit ?? 20, 1), 100))
+            .offset(Math.max(filters.offset ?? 0, 0));
+
+        return rows.map(normalizeWebhookEvent);
+    },
+
+    async processWebhookEvent(
+        webhookEventId: string,
+        input: {
+            simulateFailure?: boolean;
+            responseCode?: number;
+            latencyMs?: number;
+            errorMessage?: string;
+        } = {}
+    ) {
+        const event = await findWebhookEvent(webhookEventId);
+        if (!event) return { reason: "webhook_not_found" as const };
+        if (event.status === "processed" || event.status === "dead_letter") {
+            return {
+                reason: "terminal_status" as const,
+                event: normalizeWebhookEvent(event),
+            };
+        }
+
+        const attemptNumber = Number(event.attempts || 0) + 1;
+        const shouldFail = input.simulateFailure === true || Boolean((event.payload || {})["simulateFailure"]);
+        const now = new Date();
+        const responseCode = Number(input.responseCode || (shouldFail ? 500 : 200));
+        const latencyMs = Math.max(Number(input.latencyMs || (shouldFail ? 300 : 100)), 0);
+        const patch: Record<string, unknown> = {
+            attempts: attemptNumber,
+            lastAttemptAt: now,
+            updatedAt: now,
+        };
+
+        if (shouldFail) {
+            const deadLetter = attemptNumber >= Number(event.maxAttempts || 3);
+            patch.status = deadLetter ? "dead_letter" : "failed";
+            patch.nextAttemptAt = deadLetter ? now : new Date(now.getTime() + computeBackoffMs(attemptNumber));
+            patch.errorMessage = redactSecrets((input.errorMessage || "Webhook processing failed").trim());
+            patch.payload = sanitizeUnknown({
+                ...(event.payload || {}),
+                lastAttempt: {
+                    at: now.toISOString(),
+                    responseCode,
+                    latencyMs,
+                },
+            });
+        } else {
+            patch.status = "processed";
+            patch.processedAt = now;
+            patch.errorMessage = null;
+            patch.payload = sanitizeUnknown({
+                ...(event.payload || {}),
+                lastAttempt: {
+                    at: now.toISOString(),
+                    responseCode,
+                    latencyMs,
+                },
+            });
+        }
+
+        const [updated] = await db
+            .update(integrationWebhookEvents)
+            .set(patch)
+            .where(eq(integrationWebhookEvents.id, webhookEventId))
+            .returning();
+        if (!updated) return { reason: "update_failed" as const };
+
+        return {
+            reason: shouldFail ? "failed" as const : "processed" as const,
+            event: normalizeWebhookEvent(updated),
+        };
+    },
+
+    async retryDueWebhookEvents(limit = 20) {
+        const now = new Date();
+        const due = await db
+            .select()
+            .from(integrationWebhookEvents)
+            .where(
+                and(
+                    inArray(integrationWebhookEvents.status, WEBHOOK_RETRYABLE_STATUSES),
+                    lte(integrationWebhookEvents.nextAttemptAt, now)
+                )
+            )
+            .orderBy(asc(integrationWebhookEvents.nextAttemptAt))
+            .limit(Math.min(Math.max(limit, 1), 100));
+
+        const outcomes: Array<{ id: string; reason: string; status?: IntegrationWebhookStatus }> = [];
+        for (const row of due) {
+            const result = await this.processWebhookEvent(row.id);
+            outcomes.push({
+                id: row.id,
+                reason: result.reason,
+                status: (result as any).event?.status,
+            });
+        }
+
+        return {
+            processed: due.length,
+            outcomes,
+        };
+    },
+
+    async handleSlackActionCallback(input: {
+        externalEventId: string;
+        repoId?: string;
+        teamId: string;
+        channelId?: string;
+        userId?: string;
+        actionType: string;
+        payload?: Record<string, unknown>;
+        correlationId?: string;
+    }) {
+        const ingestion = await this.ingestWebhook({
+            provider: "slack",
+            eventType: `slack.action.${input.actionType.trim()}`,
+            externalEventId: input.externalEventId,
+            repoId: input.repoId,
+            payload: {
+                teamId: input.teamId,
+                channelId: input.channelId,
+                userId: input.userId,
+                actionType: input.actionType,
+                ...(input.payload || {}),
+            },
+            correlationId: input.correlationId,
+        });
+
+        if (ingestion.reason === "webhook_exists") {
+            return {
+                reason: "duplicate" as const,
+                event: ingestion.event,
+            };
+        }
+        if (ingestion.reason !== "ok") return ingestion;
+
+        const processing = await this.processWebhookEvent(ingestion.event.id);
+        return {
+            reason: "ok" as const,
+            event: ingestion.event,
+            processingReason: processing.reason,
+            processedEvent: (processing as any).event || undefined,
+        };
     },
 
     async enqueueNotification(input: {
@@ -536,10 +981,12 @@ export const integrationsRepository = {
         const connectionConditions = [];
         const issueConditions = [];
         const deliveryConditions = [];
+        const webhookConditions = [];
         if (repoId) {
             connectionConditions.push(eq(integrationConnections.repoId, repoId));
             issueConditions.push(eq(issueLinks.repoId, repoId));
             deliveryConditions.push(eq(notificationDeliveries.repoId, repoId));
+            webhookConditions.push(eq(integrationWebhookEvents.repoId, repoId));
         }
 
         const [connectionsCountRow] = await db
@@ -554,8 +1001,17 @@ export const integrationsRepository = {
             .select({ value: count() })
             .from(notificationDeliveries)
             .where(deliveryConditions.length > 0 ? and(...deliveryConditions) : undefined);
+        const [webhookEventsCountRow] = await db
+            .select({ value: count() })
+            .from(integrationWebhookEvents)
+            .where(webhookConditions.length > 0 ? and(...webhookConditions) : undefined);
+        const [issueSyncAttemptsCountRow] = await db
+            .select({ value: count() })
+            .from(issueLinkSyncEvents)
+            .leftJoin(issueLinks, eq(issueLinkSyncEvents.issueLinkId, issueLinks.id))
+            .where(issueConditions.length > 0 ? and(...issueConditions) : undefined);
 
-        const deliveredRows = await db
+        const deliveryStatusRows = await db
             .select({
                 status: notificationDeliveries.status,
                 value: count(),
@@ -563,6 +1019,25 @@ export const integrationsRepository = {
             .from(notificationDeliveries)
             .where(deliveryConditions.length > 0 ? and(...deliveryConditions) : undefined)
             .groupBy(notificationDeliveries.status);
+
+        const webhookStatusRows = await db
+            .select({
+                status: integrationWebhookEvents.status,
+                value: count(),
+            })
+            .from(integrationWebhookEvents)
+            .where(webhookConditions.length > 0 ? and(...webhookConditions) : undefined)
+            .groupBy(integrationWebhookEvents.status);
+
+        const issueSyncStatusRows = await db
+            .select({
+                status: issueLinkSyncEvents.status,
+                value: count(),
+            })
+            .from(issueLinkSyncEvents)
+            .leftJoin(issueLinks, eq(issueLinkSyncEvents.issueLinkId, issueLinks.id))
+            .where(issueConditions.length > 0 ? and(...issueConditions) : undefined)
+            .groupBy(issueLinkSyncEvents.status);
 
         const providerRows = await db
             .select({
@@ -573,7 +1048,7 @@ export const integrationsRepository = {
             .where(connectionConditions.length > 0 ? and(...connectionConditions) : undefined)
             .groupBy(integrationConnections.provider);
 
-        const retryQueueRows = await db
+        const notificationRetryQueueRows = await db
             .select({
                 value: count(),
             })
@@ -585,7 +1060,19 @@ export const integrationsRepository = {
                 )
             );
 
-        const [oldestDue] = await db
+        const webhookRetryQueueRows = await db
+            .select({
+                value: count(),
+            })
+            .from(integrationWebhookEvents)
+            .where(
+                and(
+                    webhookConditions.length > 0 ? and(...webhookConditions) : undefined,
+                    inArray(integrationWebhookEvents.status, WEBHOOK_RETRYABLE_STATUSES)
+                )
+            );
+
+        const [oldestNotificationDue] = await db
             .select({ nextAttemptAt: notificationDeliveries.nextAttemptAt })
             .from(notificationDeliveries)
             .where(
@@ -597,9 +1084,31 @@ export const integrationsRepository = {
             .orderBy(asc(notificationDeliveries.nextAttemptAt))
             .limit(1);
 
-        const statusCounts: Record<string, number> = {};
-        for (const row of deliveredRows) {
-            statusCounts[row.status] = Number(row.value || 0);
+        const [oldestWebhookDue] = await db
+            .select({ nextAttemptAt: integrationWebhookEvents.nextAttemptAt })
+            .from(integrationWebhookEvents)
+            .where(
+                and(
+                    webhookConditions.length > 0 ? and(...webhookConditions) : undefined,
+                    inArray(integrationWebhookEvents.status, WEBHOOK_RETRYABLE_STATUSES)
+                )
+            )
+            .orderBy(asc(integrationWebhookEvents.nextAttemptAt))
+            .limit(1);
+
+        const deliveryStatusCounts: Record<string, number> = {};
+        for (const row of deliveryStatusRows) {
+            deliveryStatusCounts[row.status] = Number(row.value || 0);
+        }
+
+        const webhookStatusCounts: Record<string, number> = {};
+        for (const row of webhookStatusRows) {
+            webhookStatusCounts[row.status] = Number(row.value || 0);
+        }
+
+        const issueSyncStatusCounts: Record<string, number> = {};
+        for (const row of issueSyncStatusRows) {
+            issueSyncStatusCounts[row.status] = Number(row.value || 0);
         }
 
         const providerCounts: Record<string, number> = {};
@@ -607,8 +1116,8 @@ export const integrationsRepository = {
             providerCounts[row.provider] = Number(row.value || 0);
         }
 
-        const delivered = statusCounts.delivered || 0;
-        const failed = (statusCounts.failed || 0) + (statusCounts.dead_letter || 0);
+        const delivered = deliveryStatusCounts.delivered || 0;
+        const failed = (deliveryStatusCounts.failed || 0) + (deliveryStatusCounts.dead_letter || 0);
         const denominator = delivered + failed;
 
         return {
@@ -616,16 +1125,30 @@ export const integrationsRepository = {
                 connections: Number(connectionsCountRow?.value || 0),
                 issueLinks: Number(issueLinksCountRow?.value || 0),
                 deliveries: Number(deliveriesCountRow?.value || 0),
-                pending: statusCounts.pending || 0,
-                retrying: statusCounts.retrying || 0,
+                webhookEvents: Number(webhookEventsCountRow?.value || 0),
+                issueSyncAttempts: Number(issueSyncAttemptsCountRow?.value || 0),
+                pending: deliveryStatusCounts.pending || 0,
+                retrying: deliveryStatusCounts.retrying || 0,
                 delivered,
-                failed: statusCounts.failed || 0,
-                deadLetter: statusCounts.dead_letter || 0,
+                failed: deliveryStatusCounts.failed || 0,
+                deadLetter: deliveryStatusCounts.dead_letter || 0,
+                webhooksReceived: webhookStatusCounts.received || 0,
+                webhooksProcessed: webhookStatusCounts.processed || 0,
+                webhooksFailed: webhookStatusCounts.failed || 0,
+                webhooksDeadLetter: webhookStatusCounts.dead_letter || 0,
+                issueSyncPending: issueSyncStatusCounts.pending || 0,
+                issueSyncSynced: issueSyncStatusCounts.synced || 0,
+                issueSyncFailed: issueSyncStatusCounts.failed || 0,
+                issueSyncDeadLetter: issueSyncStatusCounts.dead_letter || 0,
             },
             providers: providerCounts,
             retryQueue: {
-                queued: Number(retryQueueRows[0]?.value || 0),
-                oldestDueAt: oldestDue?.nextAttemptAt ? toIso(oldestDue.nextAttemptAt) : undefined,
+                notificationQueued: Number(notificationRetryQueueRows[0]?.value || 0),
+                webhookQueued: Number(webhookRetryQueueRows[0]?.value || 0),
+                oldestNotificationDueAt: oldestNotificationDue?.nextAttemptAt
+                    ? toIso(oldestNotificationDue.nextAttemptAt)
+                    : undefined,
+                oldestWebhookDueAt: oldestWebhookDue?.nextAttemptAt ? toIso(oldestWebhookDue.nextAttemptAt) : undefined,
             },
             successRatePct: denominator > 0 ? Math.round((delivered / denominator) * 100) : 100,
             generatedAt: new Date().toISOString(),

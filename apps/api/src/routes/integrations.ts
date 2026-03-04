@@ -13,6 +13,7 @@ const providerSchema = z.enum(["slack", "linear", "jira"]);
 const connectionStatusSchema = z.enum(["active", "disabled", "error"]);
 const issueLinkStatusSchema = z.enum(["linked", "sync_pending", "sync_failed"]);
 const deliveryStatusSchema = z.enum(["pending", "retrying", "delivered", "failed", "dead_letter"]);
+const webhookStatusSchema = z.enum(["received", "processed", "failed", "dead_letter"]);
 
 const listConnectionsSchema = z.object({
     repoId: z.string().optional(),
@@ -52,6 +53,22 @@ const createIssueLinkSchema = z.object({
     metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
+const listIssueLinkSyncEventsSchema = z.object({
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+const syncIssueLinkSchema = z.object({
+    simulateFailure: z.boolean().optional(),
+    responseCode: z.coerce.number().int().min(100).max(599).optional(),
+    latencyMs: z.coerce.number().int().min(0).optional(),
+    errorMessage: z.string().optional(),
+    details: z.record(z.string(), z.unknown()).optional(),
+});
+
+const retryIssueLinksSchema = z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
 const listNotificationsSchema = z.object({
     repoId: z.string().optional(),
     connectionId: z.string().optional(),
@@ -80,6 +97,45 @@ const deliverNotificationSchema = z.object({
 
 const retryNotificationsSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+const listWebhookEventsSchema = z.object({
+    provider: providerSchema.optional(),
+    repoId: z.string().optional(),
+    status: webhookStatusSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    offset: z.coerce.number().int().min(0).default(0),
+});
+
+const ingestWebhookSchema = z.object({
+    eventType: z.string().min(1),
+    externalEventId: z.string().min(1),
+    repoId: z.string().optional(),
+    payload: z.record(z.string(), z.unknown()).optional(),
+    maxAttempts: z.coerce.number().int().min(1).max(10).optional(),
+    correlationId: z.string().optional(),
+});
+
+const processWebhookSchema = z.object({
+    simulateFailure: z.boolean().optional(),
+    responseCode: z.coerce.number().int().min(100).max(599).optional(),
+    latencyMs: z.coerce.number().int().min(0).optional(),
+    errorMessage: z.string().optional(),
+});
+
+const retryWebhooksSchema = z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+const slackActionSchema = z.object({
+    externalEventId: z.string().min(1),
+    repoId: z.string().optional(),
+    teamId: z.string().min(1),
+    channelId: z.string().optional(),
+    userId: z.string().optional(),
+    actionType: z.string().min(1),
+    payload: z.record(z.string(), z.unknown()).optional(),
+    correlationId: z.string().optional(),
 });
 
 const metricsSchema = z.object({
@@ -184,6 +240,227 @@ integrationsRouter.post("/issue-links", zValidator("json", createIssueLinkSchema
         return c.json(
             {
                 error: "Database unavailable for issue link creation",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/issue-links/:id/sync-events", zValidator("query", listIssueLinkSyncEventsSchema), async (c) => {
+    const id = c.req.param("id");
+    const query = c.req.valid("query");
+    try {
+        const events = await integrationsRepository.listIssueLinkSyncEvents(id, query.limit);
+        return c.json({
+            events,
+            total: events.length,
+            limit: query.limit,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for issue link sync-event listing",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/issue-links/:id/sync", zValidator("json", syncIssueLinkSchema), async (c) => {
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.syncIssueLinkBacklink(id, body);
+        if (result.reason === "issue_link_not_found") return c.json({ error: "Issue link not found" }, 404);
+        if (result.reason === "invalid_issue_provider") {
+            return c.json(
+                {
+                    error: "Issue provider does not support back-link sync",
+                    issueLink: result.issueLink,
+                },
+                409
+            );
+        }
+        if (result.reason === "sync_dead_lettered") {
+            return c.json(
+                {
+                    error: "Issue link back-link sync is dead-lettered",
+                    issueLink: result.issueLink,
+                    syncEvent: result.syncEvent,
+                },
+                409
+            );
+        }
+        if (result.reason === "sync_update_failed") return c.json({ error: "Failed to update issue link sync state" }, 500);
+        return c.json({
+            success: true,
+            reason: result.reason,
+            issueLink: result.issueLink,
+            syncEvent: result.syncEvent,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for issue link back-link sync",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/issue-links/retry-sync", zValidator("json", retryIssueLinksSchema), async (c) => {
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.retryIssueLinkSyncs(body.limit);
+        return c.json({
+            success: true,
+            ...result,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for issue-link retry sync worker",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/webhooks", zValidator("query", listWebhookEventsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const events = await integrationsRepository.listWebhookEvents(query);
+        return c.json({
+            events,
+            total: events.length,
+            limit: query.limit,
+            offset: query.offset,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration webhook listing",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/webhooks/provider/:provider", zValidator("json", ingestWebhookSchema), async (c) => {
+    const provider = c.req.param("provider");
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.ingestWebhook({
+            provider,
+            ...body,
+        });
+        if (result.reason === "invalid_provider") return c.json({ error: "Unsupported webhook provider" }, 400);
+        if (result.reason === "webhook_exists") {
+            return c.json(
+                {
+                    error: "Webhook event already ingested",
+                    event: result.event,
+                },
+                409
+            );
+        }
+        if (result.reason === "insert_failed") return c.json({ error: "Failed to ingest webhook event" }, 500);
+        return c.json({ event: result.event }, 201);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for webhook ingestion",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/webhooks/:id/process", zValidator("json", processWebhookSchema), async (c) => {
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.processWebhookEvent(id, body);
+        if (result.reason === "webhook_not_found") return c.json({ error: "Webhook event not found" }, 404);
+        if (result.reason === "terminal_status") {
+            return c.json(
+                {
+                    error: "Webhook event is already terminal",
+                    event: result.event,
+                },
+                409
+            );
+        }
+        if (result.reason === "update_failed") return c.json({ error: "Failed to update webhook event state" }, 500);
+        return c.json({
+            success: true,
+            reason: result.reason,
+            event: result.event,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for webhook processing",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/webhooks/retry", zValidator("json", retryWebhooksSchema), async (c) => {
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.retryDueWebhookEvents(body.limit);
+        return c.json({
+            success: true,
+            ...result,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for webhook retry worker",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/slack/actions", zValidator("json", slackActionSchema), async (c) => {
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.handleSlackActionCallback(body);
+        if (result.reason === "duplicate") {
+            return c.json(
+                {
+                    error: "Slack callback already processed",
+                    event: result.event,
+                },
+                409
+            );
+        }
+        if (result.reason === "invalid_provider") return c.json({ error: "Unsupported provider for Slack callback" }, 400);
+        if (result.reason === "insert_failed") return c.json({ error: "Failed to ingest Slack callback" }, 500);
+        return c.json(
+            {
+                success: true,
+                event: result.event,
+                processingReason: result.processingReason,
+                processedEvent: result.processedEvent,
+            },
+            201
+        );
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for Slack callback handling",
                 details: details(error),
             },
             503

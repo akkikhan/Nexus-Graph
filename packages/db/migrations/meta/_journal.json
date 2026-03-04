@@ -43,6 +43,13 @@
       "when": 1772633878064,
       "tag": "0005_new_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1772634750400,
+      "tag": "0006_thick_steve_rogers",
+      "breakpoints": true
     }
   ]
 }

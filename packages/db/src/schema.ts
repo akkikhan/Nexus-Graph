@@ -51,6 +51,13 @@ export const notificationDeliveryStatusEnum = pgEnum("notification_delivery_stat
     "failed",
     "dead_letter",
 ]);
+export const integrationWebhookStatusEnum = pgEnum("integration_webhook_status", [
+    "received",
+    "processed",
+    "failed",
+    "dead_letter",
+]);
+export const issueLinkSyncStatusEnum = pgEnum("issue_link_sync_status", ["pending", "synced", "failed", "dead_letter"]);
 
 // ============================================================================
 // USERS & ORGANIZATIONS
@@ -480,6 +487,49 @@ export const notificationDeliveryAttempts = pgTable("notification_delivery_attem
     statusIdx: index("notification_delivery_attempts_status_idx").on(table.status),
 }));
 
+export const integrationWebhookEvents = pgTable("integration_webhook_events", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: integrationProviderEnum("provider").notNull(),
+    repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "set null" }),
+    eventType: text("event_type").notNull(),
+    externalEventId: text("external_event_id").notNull(),
+    payload: jsonb("payload").default({}),
+    status: integrationWebhookStatusEnum("status").default("received").notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(3).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at").defaultNow().notNull(),
+    lastAttemptAt: timestamp("last_attempt_at"),
+    processedAt: timestamp("processed_at"),
+    errorMessage: text("error_message"),
+    correlationId: text("correlation_id").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    providerExternalUniqueIdx: uniqueIndex("integration_webhook_events_provider_external_unique_idx").on(
+        table.provider,
+        table.externalEventId
+    ),
+    statusNextAttemptIdx: index("integration_webhook_events_status_next_attempt_idx").on(table.status, table.nextAttemptAt),
+    repoStatusIdx: index("integration_webhook_events_repo_status_idx").on(table.repoId, table.status),
+    correlationUniqueIdx: uniqueIndex("integration_webhook_events_correlation_unique_idx").on(table.correlationId),
+}));
+
+export const issueLinkSyncEvents = pgTable("issue_link_sync_events", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    issueLinkId: uuid("issue_link_id").notNull().references(() => issueLinks.id, { onDelete: "cascade" }),
+    provider: integrationProviderEnum("provider").notNull(),
+    status: issueLinkSyncStatusEnum("status").default("pending").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    errorMessage: text("error_message"),
+    responseCode: integer("response_code"),
+    latencyMs: integer("latency_ms"),
+    details: jsonb("details").default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    issueAttemptUniqueIdx: uniqueIndex("issue_link_sync_events_issue_attempt_unique_idx").on(table.issueLinkId, table.attemptNumber),
+    statusIdx: index("issue_link_sync_events_status_idx").on(table.status),
+}));
+
 // ============================================================================
 // AI CONFIGURATION
 // ============================================================================
@@ -597,6 +647,7 @@ export const repositoriesRelations = relations(repositories, ({ one, many }) => 
     integrationConnections: many(integrationConnections),
     issueLinks: many(issueLinks),
     notificationDeliveries: many(notificationDeliveries),
+    integrationWebhookEvents: many(integrationWebhookEvents),
 }));
 
 export const stacksRelations = relations(stacks, ({ one, many }) => ({
@@ -752,7 +803,7 @@ export const integrationConnectionsRelations = relations(integrationConnections,
     notificationDeliveries: many(notificationDeliveries),
 }));
 
-export const issueLinksRelations = relations(issueLinks, ({ one }) => ({
+export const issueLinksRelations = relations(issueLinks, ({ one, many }) => ({
     repository: one(repositories, {
         fields: [issueLinks.repoId],
         references: [repositories.id],
@@ -761,6 +812,7 @@ export const issueLinksRelations = relations(issueLinks, ({ one }) => ({
         fields: [issueLinks.prId],
         references: [pullRequests.id],
     }),
+    syncEvents: many(issueLinkSyncEvents),
 }));
 
 export const notificationDeliveriesRelations = relations(notificationDeliveries, ({ one, many }) => ({
@@ -783,5 +835,19 @@ export const notificationDeliveryAttemptsRelations = relations(notificationDeliv
     delivery: one(notificationDeliveries, {
         fields: [notificationDeliveryAttempts.deliveryId],
         references: [notificationDeliveries.id],
+    }),
+}));
+
+export const integrationWebhookEventsRelations = relations(integrationWebhookEvents, ({ one }) => ({
+    repository: one(repositories, {
+        fields: [integrationWebhookEvents.repoId],
+        references: [repositories.id],
+    }),
+}));
+
+export const issueLinkSyncEventsRelations = relations(issueLinkSyncEvents, ({ one }) => ({
+    issueLink: one(issueLinks, {
+        fields: [issueLinkSyncEvents.issueLinkId],
+        references: [issueLinks.id],
     }),
 }));

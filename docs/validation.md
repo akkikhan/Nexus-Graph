@@ -59,10 +59,18 @@ Checks:
 - `GET /api/v1/integrations/connections`
 - `POST /api/v1/integrations/issue-links` (Linear/Jira link persistence)
 - `GET /api/v1/integrations/issue-links`
+- `POST /api/v1/integrations/issue-links/:id/sync` (back-link sync attempt)
+- `GET /api/v1/integrations/issue-links/:id/sync-events`
+- `POST /api/v1/integrations/issue-links/retry-sync`
 - `POST /api/v1/integrations/notifications` (durable notification enqueue)
 - `POST /api/v1/integrations/notifications/:id/deliver` (delivery attempt + retry/dead-letter transitions)
 - `POST /api/v1/integrations/notifications/retry`
 - `GET /api/v1/integrations/notifications/:id`
+- `POST /api/v1/integrations/webhooks/provider/:provider` (durable webhook ingestion with idempotency)
+- `GET /api/v1/integrations/webhooks`
+- `POST /api/v1/integrations/webhooks/:id/process`
+- `POST /api/v1/integrations/webhooks/retry`
+- `POST /api/v1/integrations/slack/actions` (callback ingestion + processing)
 - `GET /api/v1/integrations/metrics`
 - `GET /api/v1/stacks`
 - `POST /api/v1/stacks` (ephemeral smoke stack create)

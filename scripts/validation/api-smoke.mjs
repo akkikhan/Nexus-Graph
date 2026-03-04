@@ -937,6 +937,158 @@ async function run() {
                 "notification detail must include valid delivery status"
             );
 
+            const webhookExternalId = `slack-webhook-${Date.now()}`;
+            const ingestWebhook = await request("/api/v1/integrations/webhooks/provider/slack", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    eventType: "message.channels",
+                    externalEventId: webhookExternalId,
+                    repoId: firstRepoId,
+                    payload: {
+                        text: "Webhook smoke payload",
+                    },
+                }),
+            });
+            printResult("POST /api/v1/integrations/webhooks/provider/slack", ingestWebhook);
+            assert(ingestWebhook.response.status === 201, "webhook ingest must return 201");
+            const webhookEventId = ingestWebhook.payload?.event?.id;
+            assert(webhookEventId, "webhook ingest must return event.id");
+
+            const ingestWebhookDuplicate = await request("/api/v1/integrations/webhooks/provider/slack", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    eventType: "message.channels",
+                    externalEventId: webhookExternalId,
+                    repoId: firstRepoId,
+                }),
+            });
+            printResult("POST /api/v1/integrations/webhooks/provider/slack (duplicate)", ingestWebhookDuplicate);
+            assert(ingestWebhookDuplicate.response.status === 409, "duplicate webhook ingest must return 409");
+
+            const processWebhookFailure = await request(`/api/v1/integrations/webhooks/${webhookEventId}/process`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    simulateFailure: true,
+                    errorMessage: `Webhook failed for ${rawSecret}`,
+                }),
+            });
+            printResult(`POST /api/v1/integrations/webhooks/${webhookEventId}/process (failed)`, processWebhookFailure);
+            assert(processWebhookFailure.response.status === 200, "webhook process failure path must return 200");
+            assert(
+                processWebhookFailure.payload?.event?.status === "failed" ||
+                    processWebhookFailure.payload?.event?.status === "dead_letter",
+                "failed webhook process should set failed/dead_letter status"
+            );
+
+            const processWebhookSuccess = await request(`/api/v1/integrations/webhooks/${webhookEventId}/process`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+            });
+            printResult(`POST /api/v1/integrations/webhooks/${webhookEventId}/process (success)`, processWebhookSuccess);
+            assert(processWebhookSuccess.response.status === 200, "webhook process success path must return 200");
+            assert(
+                processWebhookSuccess.payload?.event?.status === "processed",
+                "successful webhook process should set processed status"
+            );
+
+            const listWebhooks = await request(`/api/v1/integrations/webhooks?repoId=${encodeURIComponent(firstRepoId)}&limit=10`);
+            printResult("GET /api/v1/integrations/webhooks", listWebhooks);
+            assert(listWebhooks.response.status === 200, "webhook list must return 200");
+            assert(Array.isArray(listWebhooks.payload?.events), "webhook list must include events[]");
+            assert(
+                listWebhooks.payload.events.some((event) => event.id === webhookEventId),
+                "webhook list must include ingested event"
+            );
+
+            const retryWebhooks = await request("/api/v1/integrations/webhooks/retry", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    limit: 10,
+                }),
+            });
+            printResult("POST /api/v1/integrations/webhooks/retry", retryWebhooks);
+            assert(retryWebhooks.response.status === 200, "webhook retry endpoint must return 200");
+
+            const slackActionExternalId = `slack-action-${Date.now()}`;
+            const slackAction = await request("/api/v1/integrations/slack/actions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    externalEventId: slackActionExternalId,
+                    repoId: firstRepoId,
+                    teamId: "T-SMOKE",
+                    channelId: "C123SMOKE",
+                    userId: "U123SMOKE",
+                    actionType: "approve_queue",
+                    payload: {
+                        actionValue: "approve",
+                    },
+                }),
+            });
+            printResult("POST /api/v1/integrations/slack/actions", slackAction);
+            assert(slackAction.response.status === 201, "slack action callback must return 201");
+
+            const slackActionDuplicate = await request("/api/v1/integrations/slack/actions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    externalEventId: slackActionExternalId,
+                    repoId: firstRepoId,
+                    teamId: "T-SMOKE",
+                    actionType: "approve_queue",
+                }),
+            });
+            printResult("POST /api/v1/integrations/slack/actions (duplicate)", slackActionDuplicate);
+            assert(slackActionDuplicate.response.status === 409, "duplicate slack action callback must return 409");
+
+            const syncIssueLinkFail = await request(`/api/v1/integrations/issue-links/${issueLinkId}/sync`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    simulateFailure: true,
+                    errorMessage: `Back-link sync failed ${rawSecret}`,
+                }),
+            });
+            printResult(`POST /api/v1/integrations/issue-links/${issueLinkId}/sync (failed)`, syncIssueLinkFail);
+            assert(syncIssueLinkFail.response.status === 200, "issue link sync failure path must return 200");
+            assert(
+                syncIssueLinkFail.payload?.issueLink?.status === "sync_failed",
+                "failed issue link sync should set sync_failed status"
+            );
+
+            const syncIssueLinkSuccess = await request(`/api/v1/integrations/issue-links/${issueLinkId}/sync`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+            });
+            printResult(`POST /api/v1/integrations/issue-links/${issueLinkId}/sync (success)`, syncIssueLinkSuccess);
+            assert(syncIssueLinkSuccess.response.status === 200, "issue link sync success path must return 200");
+            assert(syncIssueLinkSuccess.payload?.issueLink?.status === "linked", "successful issue link sync should set linked");
+
+            const listIssueLinkSyncEvents = await request(`/api/v1/integrations/issue-links/${issueLinkId}/sync-events?limit=10`);
+            printResult(`GET /api/v1/integrations/issue-links/${issueLinkId}/sync-events`, listIssueLinkSyncEvents);
+            assert(listIssueLinkSyncEvents.response.status === 200, "issue link sync events list must return 200");
+            assert(Array.isArray(listIssueLinkSyncEvents.payload?.events), "issue link sync events must include events[]");
+            assert(
+                listIssueLinkSyncEvents.payload.events.length >= 2,
+                "issue link sync events must include failed + successful attempts"
+            );
+
+            const retryIssueLinks = await request("/api/v1/integrations/issue-links/retry-sync", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    limit: 10,
+                }),
+            });
+            printResult("POST /api/v1/integrations/issue-links/retry-sync", retryIssueLinks);
+            assert(retryIssueLinks.response.status === 200, "issue-link retry sync endpoint must return 200");
+
             const integrationsMetrics = await request(`/api/v1/integrations/metrics?repoId=${encodeURIComponent(firstRepoId)}`);
             printResult("GET /api/v1/integrations/metrics", integrationsMetrics);
             assert(integrationsMetrics.response.status === 200, "integration metrics must return 200");
@@ -947,6 +1099,14 @@ async function run() {
             assert(
                 typeof integrationsMetrics.payload?.totals?.deliveries === "number",
                 "integration metrics must include totals.deliveries"
+            );
+            assert(
+                typeof integrationsMetrics.payload?.totals?.webhookEvents === "number",
+                "integration metrics must include totals.webhookEvents"
+            );
+            assert(
+                typeof integrationsMetrics.payload?.totals?.issueSyncAttempts === "number",
+                "integration metrics must include totals.issueSyncAttempts"
             );
         }
 
