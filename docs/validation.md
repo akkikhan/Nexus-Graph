@@ -179,12 +179,14 @@ Jobs:
 - `api-smoke`
 - `web-smoke`
 - `release-validation` (depends on both)
+- `menubar-package` (depends on `release-validation`, builds Electron distribution artifacts)
 
 Failure artifacts uploaded:
 
 - `output/ci-logs/`
 - `output/playwright/`
 - `output/playwright-report/`
+- `output/menubar/` (Electron package artifacts)
 
 ## Environment Variables
 

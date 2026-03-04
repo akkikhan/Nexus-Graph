@@ -53,6 +53,9 @@ pnpm --filter @nexus/menubar-app test
 
 # Launch Electron tray shell
 pnpm --filter @nexus/menubar-app dev:electron
+
+# Build menu bar distribution artifacts
+pnpm --filter @nexus/menubar-app package:electron:ci
 ```
 
 ## 🖥️ CLI Usage

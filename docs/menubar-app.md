@@ -21,6 +21,23 @@ pnpm --filter @nexus/menubar-app test
 pnpm --filter @nexus/menubar-app start:electron
 ```
 
+## Packaging and Distribution
+
+Create unpacked app output for local verification:
+
+```bash
+pnpm --filter @nexus/menubar-app package:electron:dir
+```
+
+Create distributable zip artifacts (CI/release):
+
+```bash
+pnpm --filter @nexus/menubar-app package:electron:ci
+```
+
+Artifacts are written to `output/menubar/`.
+CI workflow `Validation` uploads these artifacts from the `menubar-package` job.
+
 ## Electron Environment
 
 - `NEXUS_API_BASE_URL` (default `http://localhost:3001`)

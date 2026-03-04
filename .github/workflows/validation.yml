@@ -89,3 +89,29 @@ jobs:
             output/playwright/
             output/playwright-report/
           if-no-files-found: ignore
+
+  menubar-package:
+    runs-on: ubuntu-latest
+    needs:
+      - release-validation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: mkdir -p output/ci-logs output/menubar
+      - name: Build menubar package artifacts
+        run: pnpm --filter @nexus/menubar-app package:electron:ci 2>&1 | tee output/ci-logs/menubar-package.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: menubar-package-artifacts
+          path: |
+            output/ci-logs/menubar-package.log
+            output/menubar/
+          if-no-files-found: ignore

@@ -1,0 +1,28 @@
+appId: com.nexus.menubar
+productName: Nexus Menubar
+artifactName: nexus-menubar-${os}-${arch}-${version}.${ext}
+directories:
+  output: ../../output/menubar
+  buildResources: assets
+files:
+  - dist/**
+  - package.json
+asar: true
+publish: null
+npmRebuild: false
+win:
+  signAndEditExecutable: false
+  target:
+    - target: zip
+      arch:
+        - x64
+linux:
+  target:
+    - target: zip
+      arch:
+        - x64
+mac:
+  target:
+    - target: zip
+      arch:
+        - x64
