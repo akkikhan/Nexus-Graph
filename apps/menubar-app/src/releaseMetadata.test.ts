@@ -1,0 +1,110 @@
+import { describe, expect, it } from "vitest";
+import {
+    buildArtifactUrl,
+    createUpdateManifest,
+    normalizeReleaseChannel,
+    parseArtifactName,
+    resolveRolloutPercentage,
+} from "./releaseMetadata.js";
+
+describe("releaseMetadata", () => {
+    it("normalizes release channels with aliases", () => {
+        expect(normalizeReleaseChannel(undefined)).toBe("stable");
+        expect(normalizeReleaseChannel("BETA")).toBe("beta");
+        expect(normalizeReleaseChannel("prod")).toBe("stable");
+        expect(normalizeReleaseChannel("canary")).toBe("nightly");
+    });
+
+    it("rejects unsupported release channels", () => {
+        expect(() => normalizeReleaseChannel("qa")).toThrow("Unsupported release channel");
+    });
+
+    it("resolves rollout percentage with channel defaults", () => {
+        expect(resolveRolloutPercentage(undefined, "stable")).toBe(100);
+        expect(resolveRolloutPercentage(undefined, "beta")).toBe(40);
+        expect(resolveRolloutPercentage(undefined, "nightly")).toBe(10);
+        expect(resolveRolloutPercentage("25", "stable")).toBe(25);
+    });
+
+    it("rejects invalid rollout values", () => {
+        expect(() => resolveRolloutPercentage("0", "stable")).toThrow("Invalid rollout percentage");
+        expect(() => resolveRolloutPercentage("abc", "stable")).toThrow("Invalid rollout percentage");
+        expect(() => resolveRolloutPercentage(101, "stable")).toThrow("Invalid rollout percentage");
+    });
+
+    it("parses electron artifact names with prerelease version tags", () => {
+        expect(parseArtifactName("invalid-file-name.zip")).toBeNull();
+        expect(parseArtifactName("nexus-menubar-win-x64-0.1.0-beta.1.zip")).toEqual({
+            platform: "win",
+            arch: "x64",
+            version: "0.1.0-beta.1",
+            extension: "zip",
+        });
+    });
+
+    it("builds channel-aware artifact urls", () => {
+        expect(buildArtifactUrl("https://downloads.example.com/menubar", "stable", "app.zip")).toBe(
+            "https://downloads.example.com/menubar/stable/app.zip"
+        );
+        expect(
+            buildArtifactUrl("https://cdn.example.com/{channel}", "beta", "app.zip")
+        ).toBe("https://cdn.example.com/beta/app.zip");
+    });
+
+    it("creates deterministic manifest payloads", () => {
+        const manifest = createUpdateManifest({
+            channel: "stable",
+            rolloutPercentage: 100,
+            latestVersion: "0.1.0",
+            generatedAt: "2026-03-05T00:00:00.000Z",
+            artifacts: [
+                {
+                    fileName: "nexus-menubar-linux-x64-0.1.0.zip",
+                    version: "0.1.0",
+                    platform: "linux",
+                    arch: "x64",
+                    sizeBytes: 123,
+                    sha256: "abc",
+                    url: "https://downloads.example.com/menubar/stable/nexus-menubar-linux-x64-0.1.0.zip",
+                },
+                {
+                    fileName: "nexus-menubar-win-x64-0.1.0.zip",
+                    version: "0.1.0",
+                    platform: "win",
+                    arch: "x64",
+                    sizeBytes: 456,
+                    sha256: "def",
+                    url: "https://downloads.example.com/menubar/stable/nexus-menubar-win-x64-0.1.0.zip",
+                },
+            ],
+        });
+
+        expect(manifest).toEqual({
+            schemaVersion: 1,
+            generatedAt: "2026-03-05T00:00:00.000Z",
+            channel: "stable",
+            rolloutPercentage: 100,
+            latestVersion: "0.1.0",
+            artifacts: [
+                {
+                    fileName: "nexus-menubar-linux-x64-0.1.0.zip",
+                    version: "0.1.0",
+                    platform: "linux",
+                    arch: "x64",
+                    sizeBytes: 123,
+                    sha256: "abc",
+                    url: "https://downloads.example.com/menubar/stable/nexus-menubar-linux-x64-0.1.0.zip",
+                },
+                {
+                    fileName: "nexus-menubar-win-x64-0.1.0.zip",
+                    version: "0.1.0",
+                    platform: "win",
+                    arch: "x64",
+                    sizeBytes: 456,
+                    sha256: "def",
+                    url: "https://downloads.example.com/menubar/stable/nexus-menubar-win-x64-0.1.0.zip",
+                },
+            ],
+        });
+    });
+});

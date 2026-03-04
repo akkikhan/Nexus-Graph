@@ -38,6 +38,23 @@ pnpm --filter @nexus/menubar-app package:electron:ci
 Artifacts are written to `output/menubar/`.
 CI workflow `Validation` uploads these artifacts from the `menubar-package` job.
 
+Generate auto-update metadata manifest (SHA256 + size + channel rollout):
+
+```bash
+pnpm menubar:metadata
+```
+
+Release pipeline command (package + metadata generation):
+
+```bash
+pnpm menubar:release:ci
+```
+
+Metadata output:
+
+- `output/menubar/updates/latest-<channel>.json`
+- `output/menubar/updates/latest.json` (stable channel alias)
+
 ## Electron Environment
 
 - `NEXUS_API_BASE_URL` (default `http://localhost:3001`)
@@ -45,6 +62,10 @@ CI workflow `Validation` uploads these artifacts from the `menubar-package` job.
 - `NEXUS_INBOX_LIMIT` (default `20`)
 - `NEXUS_TRAY_REFRESH_MS` (default `60000`)
 - `NEXUS_TRAY_ICON` (optional absolute icon path)
+- `NEXUS_MENUBAR_RELEASE_CHANNEL` (`stable`, `beta`, `nightly`; default `stable`)
+- `NEXUS_MENUBAR_ROLLOUT_PERCENT` (default per channel: stable=`100`, beta=`40`, nightly=`10`)
+- `NEXUS_MENUBAR_UPDATE_BASE_URL` (default `https://downloads.nexus.dev/menubar`)
+- `NEXUS_MENUBAR_RELEASE_VERSION` (optional override; defaults to `apps/menubar-app/package.json` version)
 
 ## Example Integration Sketch
 

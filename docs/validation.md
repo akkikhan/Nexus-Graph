@@ -9,6 +9,8 @@ Validation includes API smoke contracts, browser smoke checks, and release orche
 - `pnpm smoke:web`
 - `pnpm validate:release`
 - `pnpm validate:release:ci`
+- `pnpm menubar:metadata`
+- `pnpm menubar:release:ci`
 
 Compatibility aliases:
 
@@ -179,14 +181,14 @@ Jobs:
 - `api-smoke`
 - `web-smoke`
 - `release-validation` (depends on both)
-- `menubar-package` (depends on `release-validation`, builds Electron distribution artifacts)
+- `menubar-package` (depends on `release-validation`, builds Electron distribution artifacts and generates release-channel auto-update metadata)
 
 Failure artifacts uploaded:
 
 - `output/ci-logs/`
 - `output/playwright/`
 - `output/playwright-report/`
-- `output/menubar/` (Electron package artifacts)
+- `output/menubar/` (Electron package artifacts + `updates/latest-*.json` metadata manifests)
 
 ## Environment Variables
 

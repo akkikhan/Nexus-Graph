@@ -27,6 +27,8 @@
         "validate:web-smoke": "node scripts/validation/web-e2e-smoke.mjs",
         "validate:release": "node scripts/validation/run-release-validation.mjs",
         "validate:release:ci": "pnpm validate:artifacts && node scripts/validation/run-release-validation.mjs",
+        "menubar:metadata": "pnpm --filter @nexus/menubar-app build && node scripts/release/generate-menubar-update-metadata.mjs",
+        "menubar:release:ci": "pnpm --filter @nexus/menubar-app package:electron:ci && node scripts/release/generate-menubar-update-metadata.mjs",
         "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
         "clean": "turbo clean && rm -rf node_modules"
     },

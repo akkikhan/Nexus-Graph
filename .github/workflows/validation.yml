@@ -105,8 +105,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: mkdir -p output/ci-logs output/menubar
-      - name: Build menubar package artifacts
-        run: pnpm --filter @nexus/menubar-app package:electron:ci 2>&1 | tee output/ci-logs/menubar-package.log
+      - name: Build menubar package artifacts + update metadata
+        run: pnpm menubar:release:ci 2>&1 | tee output/ci-logs/menubar-package.log
+        env:
+          NEXUS_MENUBAR_RELEASE_CHANNEL: stable
+          NEXUS_MENUBAR_ROLLOUT_PERCENT: "100"
+          NEXUS_MENUBAR_UPDATE_BASE_URL: https://downloads.nexus.dev/menubar
       - uses: actions/upload-artifact@v4
         if: always()
         with:

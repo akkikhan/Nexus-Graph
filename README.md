@@ -56,6 +56,9 @@ pnpm --filter @nexus/menubar-app dev:electron
 
 # Build menu bar distribution artifacts
 pnpm --filter @nexus/menubar-app package:electron:ci
+
+# Build menu bar artifacts + release metadata manifest
+pnpm menubar:release:ci
 ```
 
 ## 🖥️ CLI Usage

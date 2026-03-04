@@ -20,4 +20,16 @@ export {
     toElectronTemplate,
     type TrayTemplateItem,
 } from "./electronTrayMenu.js";
+export {
+    RELEASE_CHANNELS,
+    buildArtifactUrl,
+    createUpdateManifest,
+    normalizeReleaseChannel,
+    parseArtifactName,
+    resolveRolloutPercentage,
+    type MenubarUpdateArtifact,
+    type MenubarUpdateManifest,
+    type ParsedArtifactName,
+    type ReleaseChannel,
+} from "./releaseMetadata.js";
 export type { PullRequest, PullRequestStatus, PullRequestActionId } from "./types.js";
