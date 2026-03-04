@@ -142,6 +142,12 @@ const metricsSchema = z.object({
     repoId: z.string().optional(),
 });
 
+const alertsSchema = z.object({
+    repoId: z.string().optional(),
+    minSuccessRatePct: z.coerce.number().min(1).max(100).optional(),
+    maxRetryQueueAgeSeconds: z.coerce.number().int().min(30).max(86_400).optional(),
+});
+
 function details(error: unknown): string {
     return integrationsRepository.errorMessage(error);
 }
@@ -592,6 +598,22 @@ integrationsRouter.get("/metrics", zValidator("query", metricsSchema), async (c)
         return c.json(
             {
                 error: "Database unavailable for integration metrics",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/alerts", zValidator("query", alertsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const alertStatus = await integrationsRepository.alertStatus(query);
+        return c.json(alertStatus);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration alerts",
                 details: details(error),
             },
             503

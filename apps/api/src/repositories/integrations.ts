@@ -20,6 +20,8 @@ type IssueLinkStatus = "linked" | "sync_pending" | "sync_failed";
 type NotificationDeliveryStatus = "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
 type IntegrationWebhookStatus = "received" | "processed" | "failed" | "dead_letter";
 type IssueLinkSyncStatus = "pending" | "synced" | "failed" | "dead_letter";
+type IntegrationAlertSeverity = "warning" | "critical";
+type IntegrationAlertStatus = "healthy" | "warning" | "critical";
 
 const PROVIDERS: IntegrationProvider[] = ["slack", "linear", "jira"];
 const ISSUE_LINK_PROVIDERS = new Set<IntegrationProvider>(["linear", "jira"]);
@@ -31,6 +33,16 @@ const RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS = Number(process.env.NEXUS_ISSUE_LINK_MAX
 const ISSUE_LINK_MAX_SYNC_ATTEMPTS = Number.isFinite(RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS) && RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS > 0
     ? Math.floor(RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS)
     : 3;
+const RAW_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT = Number(process.env.NEXUS_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT ?? 95);
+const DEFAULT_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT =
+    Number.isFinite(RAW_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT) && RAW_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT >= 1
+        ? Math.min(Math.max(Math.round(RAW_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT), 1), 100)
+        : 95;
+const RAW_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS = Number(process.env.NEXUS_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS ?? 300);
+const DEFAULT_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS =
+    Number.isFinite(RAW_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS) && RAW_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS >= 30
+        ? Math.min(Math.max(Math.round(RAW_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS), 30), 86_400)
+        : 300;
 
 const SECRET_FIELD_PATTERN = /(?:token|secret|password|api[_-]?key|authorization|auth[_-]?header)/i;
 const SECRET_PATTERNS: RegExp[] = [
@@ -180,6 +192,19 @@ function normalizeIssueLinkSyncEvent(row: any) {
 
 function computeBackoffMs(attemptNumber: number): number {
     return Math.min(60_000, 2_000 * Math.max(attemptNumber, 1));
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+    if (!Number.isFinite(value)) return min;
+    return Math.min(Math.max(Math.round(value), min), max);
+}
+
+function retryAgeSeconds(now: Date, dueAt?: string): number | null {
+    if (!dueAt) return null;
+    const parsed = Date.parse(dueAt);
+    if (!Number.isFinite(parsed)) return null;
+    const ageMs = now.getTime() - parsed;
+    return Math.max(Math.round(ageMs / 1000), 0);
 }
 
 function errorMessage(error: unknown): string {
@@ -1152,6 +1177,118 @@ export const integrationsRepository = {
             },
             successRatePct: denominator > 0 ? Math.round((delivered / denominator) * 100) : 100,
             generatedAt: new Date().toISOString(),
+        };
+    },
+
+    async alertStatus(input: {
+        repoId?: string;
+        minSuccessRatePct?: number;
+        maxRetryQueueAgeSeconds?: number;
+    } = {}) {
+        const minSuccessRatePct = clampInteger(
+            Number(input.minSuccessRatePct ?? DEFAULT_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT),
+            1,
+            100
+        );
+        const maxRetryQueueAgeSeconds = clampInteger(
+            Number(input.maxRetryQueueAgeSeconds ?? DEFAULT_INTEGRATION_ALERT_MAX_RETRY_AGE_SECONDS),
+            30,
+            86_400
+        );
+
+        const metrics = await this.metrics(input.repoId);
+        const now = new Date();
+        const alerts: Array<{
+            code: string;
+            severity: IntegrationAlertSeverity;
+            message: string;
+            value: number;
+            threshold: number;
+        }> = [];
+
+        if (metrics.totals.deadLetter > 0) {
+            alerts.push({
+                code: "notification_dead_letter",
+                severity: "critical",
+                message: "Notification deliveries are in dead-letter state.",
+                value: metrics.totals.deadLetter,
+                threshold: 0,
+            });
+        }
+        if (metrics.totals.webhooksDeadLetter > 0) {
+            alerts.push({
+                code: "webhook_dead_letter",
+                severity: "critical",
+                message: "Webhook events are in dead-letter state.",
+                value: metrics.totals.webhooksDeadLetter,
+                threshold: 0,
+            });
+        }
+        if (metrics.totals.issueSyncDeadLetter > 0) {
+            alerts.push({
+                code: "issue_sync_dead_letter",
+                severity: "critical",
+                message: "Issue-link sync is in dead-letter state.",
+                value: metrics.totals.issueSyncDeadLetter,
+                threshold: 0,
+            });
+        }
+        if (metrics.successRatePct < minSuccessRatePct) {
+            alerts.push({
+                code: "delivery_success_rate_low",
+                severity: "warning",
+                message: "Delivery success rate is below threshold.",
+                value: metrics.successRatePct,
+                threshold: minSuccessRatePct,
+            });
+        }
+
+        const oldestNotificationRetryAgeSeconds = retryAgeSeconds(now, metrics.retryQueue.oldestNotificationDueAt);
+        if (
+            oldestNotificationRetryAgeSeconds !== null &&
+            metrics.retryQueue.notificationQueued > 0 &&
+            oldestNotificationRetryAgeSeconds > maxRetryQueueAgeSeconds
+        ) {
+            alerts.push({
+                code: "notification_retry_stale",
+                severity: "warning",
+                message: "Oldest pending notification retry is stale.",
+                value: oldestNotificationRetryAgeSeconds,
+                threshold: maxRetryQueueAgeSeconds,
+            });
+        }
+
+        const oldestWebhookRetryAgeSeconds = retryAgeSeconds(now, metrics.retryQueue.oldestWebhookDueAt);
+        if (
+            oldestWebhookRetryAgeSeconds !== null &&
+            metrics.retryQueue.webhookQueued > 0 &&
+            oldestWebhookRetryAgeSeconds > maxRetryQueueAgeSeconds
+        ) {
+            alerts.push({
+                code: "webhook_retry_stale",
+                severity: "warning",
+                message: "Oldest pending webhook retry is stale.",
+                value: oldestWebhookRetryAgeSeconds,
+                threshold: maxRetryQueueAgeSeconds,
+            });
+        }
+
+        let status: IntegrationAlertStatus = "healthy";
+        if (alerts.some((alert) => alert.severity === "critical")) status = "critical";
+        else if (alerts.length > 0) status = "warning";
+
+        return {
+            status,
+            alerts,
+            thresholds: {
+                minSuccessRatePct,
+                maxRetryQueueAgeSeconds,
+            },
+            queueAges: {
+                oldestNotificationRetryAgeSeconds,
+                oldestWebhookRetryAgeSeconds,
+            },
+            generatedAt: now.toISOString(),
         };
     },
 };

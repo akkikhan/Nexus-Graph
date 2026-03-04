@@ -1108,6 +1108,26 @@ async function run() {
                 typeof integrationsMetrics.payload?.totals?.issueSyncAttempts === "number",
                 "integration metrics must include totals.issueSyncAttempts"
             );
+
+            const integrationsAlerts = await request(`/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}`);
+            printResult("GET /api/v1/integrations/alerts", integrationsAlerts);
+            assert(integrationsAlerts.response.status === 200, "integration alerts must return 200");
+            assert(
+                typeof integrationsAlerts.payload?.status === "string",
+                "integration alerts must include top-level status"
+            );
+            assert(
+                Array.isArray(integrationsAlerts.payload?.alerts),
+                "integration alerts must include alerts[]"
+            );
+            assert(
+                typeof integrationsAlerts.payload?.thresholds?.minSuccessRatePct === "number",
+                "integration alerts must include thresholds.minSuccessRatePct"
+            );
+            assert(
+                typeof integrationsAlerts.payload?.thresholds?.maxRetryQueueAgeSeconds === "number",
+                "integration alerts must include thresholds.maxRetryQueueAgeSeconds"
+            );
         }
 
         if (firstRepoId && stacks.response.status === 200) {

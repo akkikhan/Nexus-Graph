@@ -72,6 +72,7 @@ Checks:
 - `POST /api/v1/integrations/webhooks/retry`
 - `POST /api/v1/integrations/slack/actions` (callback ingestion + processing)
 - `GET /api/v1/integrations/metrics`
+- `GET /api/v1/integrations/alerts`
 - `GET /api/v1/stacks`
 - `POST /api/v1/stacks` (ephemeral smoke stack create)
 - `POST /api/v1/stacks/:id/branches` (base + child branch)
