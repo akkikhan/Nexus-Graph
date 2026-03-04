@@ -44,6 +44,11 @@ Checks:
 - `GET /api/v1/prs/:id/ai-review-jobs/:jobId` (queued/completed state checks)
 - `POST /api/v1/prs/:id/ai-review-jobs/:jobId/start`
 - `POST /api/v1/prs/:id/ai-review-jobs/:jobId/complete` (findings persistence)
+- `POST /api/v1/chat/sessions`
+- `GET /api/v1/chat/sessions`
+- `POST /api/v1/chat/sessions/:id/messages` (validation + persistence + provenance)
+- `GET /api/v1/chat/sessions/:id`
+- `GET /api/v1/chat/sessions/:id/messages`
 - `GET /api/v1/stacks`
 - `POST /api/v1/stacks` (ephemeral smoke stack create)
 - `POST /api/v1/stacks/:id/branches` (base + child branch)

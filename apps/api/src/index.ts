@@ -20,6 +20,7 @@ import { insightsRouter } from "./routes/insights.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { activityRouter } from "./routes/activity.js";
 import { queueRouter } from "./routes/queue.js";
+import { chatRouter } from "./routes/chat.js";
 
 // Import realtime
 import { initRealtimeServer, getRealtimeServer } from "./realtime/websocket.js";
@@ -95,6 +96,7 @@ v1.route("/insights", insightsRouter);
 v1.route("/webhooks", webhookRouter);
 v1.route("/activity", activityRouter);
 v1.route("/queue", queueRouter);
+v1.route("/chat", chatRouter);
 
 // Mount v1 API
 app.route("/api/v1", v1);

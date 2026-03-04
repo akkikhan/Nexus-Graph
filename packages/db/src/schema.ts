@@ -30,6 +30,8 @@ export const reviewStatusEnum = pgEnum("review_status", ["approved", "changes_re
 export const riskLevelEnum = pgEnum("risk_level", ["low", "medium", "high", "critical"]);
 export const queueStatusEnum = pgEnum("queue_status", ["pending", "running", "passed", "failed", "merged"]);
 export const aiReviewJobStatusEnum = pgEnum("ai_review_job_status", ["queued", "running", "completed", "failed"]);
+export const chatSessionStatusEnum = pgEnum("chat_session_status", ["active", "archived"]);
+export const chatMessageRoleEnum = pgEnum("chat_message_role", ["user", "assistant", "system", "tool"]);
 
 // ============================================================================
 // USERS & ORGANIZATIONS
@@ -287,6 +289,48 @@ export const aiReviewJobs = pgTable("ai_review_jobs", {
 }));
 
 // ============================================================================
+// CHAT SESSIONS & MESSAGES
+// ============================================================================
+
+export const chatSessions = pgTable("chat_sessions", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "set null" }),
+    prId: uuid("pr_id").references(() => pullRequests.id, { onDelete: "set null" }),
+    stackId: uuid("stack_id").references(() => stacks.id, { onDelete: "set null" }),
+    title: text("title").notNull().default("New chat"),
+    status: chatSessionStatusEnum("status").default("active").notNull(),
+    context: jsonb("context").default({}),
+    lastMessageAt: timestamp("last_message_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    userUpdatedIdx: index("chat_sessions_user_updated_idx").on(table.userId, table.updatedAt),
+    prUpdatedIdx: index("chat_sessions_pr_updated_idx").on(table.prId, table.updatedAt),
+    stackUpdatedIdx: index("chat_sessions_stack_updated_idx").on(table.stackId, table.updatedAt),
+    repoUpdatedIdx: index("chat_sessions_repo_updated_idx").on(table.repoId, table.updatedAt),
+}));
+
+export const chatMessages = pgTable("chat_messages", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+    role: chatMessageRoleEnum("role").notNull(),
+    content: text("content").notNull(),
+    provider: text("provider"),
+    model: text("model"),
+    citations: jsonb("citations").default([]),
+    toolActions: jsonb("tool_actions").default([]),
+    provenance: jsonb("provenance").default({}),
+    promptTokens: integer("prompt_tokens"),
+    completionTokens: integer("completion_tokens"),
+    totalTokens: integer("total_tokens"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    sessionCreatedIdx: index("chat_messages_session_created_idx").on(table.sessionId, table.createdAt),
+    roleIdx: index("chat_messages_role_idx").on(table.role),
+}));
+
+// ============================================================================
 // AI CONFIGURATION
 // ============================================================================
 
@@ -367,6 +411,7 @@ export const usersRelations = relations(users, ({ many }) => ({
     reviews: many(reviews),
     comments: many(comments),
     aiReviewJobsRequested: many(aiReviewJobs),
+    chatSessions: many(chatSessions),
 }));
 
 export const organizationsRelations = relations(organizations, ({ many }) => ({
@@ -396,6 +441,7 @@ export const repositoriesRelations = relations(repositories, ({ one, many }) => 
     branches: many(branches),
     pullRequests: many(pullRequests),
     mergeQueue: many(mergeQueue),
+    chatSessions: many(chatSessions),
 }));
 
 export const stacksRelations = relations(stacks, ({ one, many }) => ({
@@ -408,6 +454,7 @@ export const stacksRelations = relations(stacks, ({ one, many }) => ({
         references: [users.id],
     }),
     branches: many(branches),
+    chatSessions: many(chatSessions),
 }));
 
 export const branchesRelations = relations(branches, ({ one, many }) => ({
@@ -443,6 +490,7 @@ export const pullRequestsRelations = relations(pullRequests, ({ one, many }) => 
     reviews: many(reviews),
     comments: many(comments),
     aiReviewJobs: many(aiReviewJobs),
+    chatSessions: many(chatSessions),
 }));
 
 export const reviewsRelations = relations(reviews, ({ one, many }) => ({
@@ -480,5 +528,32 @@ export const aiReviewJobsRelations = relations(aiReviewJobs, ({ one }) => ({
     requestedBy: one(users, {
         fields: [aiReviewJobs.requestedByUserId],
         references: [users.id],
+    }),
+}));
+
+export const chatSessionsRelations = relations(chatSessions, ({ one, many }) => ({
+    user: one(users, {
+        fields: [chatSessions.userId],
+        references: [users.id],
+    }),
+    repository: one(repositories, {
+        fields: [chatSessions.repoId],
+        references: [repositories.id],
+    }),
+    pullRequest: one(pullRequests, {
+        fields: [chatSessions.prId],
+        references: [pullRequests.id],
+    }),
+    stack: one(stacks, {
+        fields: [chatSessions.stackId],
+        references: [stacks.id],
+    }),
+    messages: many(chatMessages),
+}));
+
+export const chatMessagesRelations = relations(chatMessages, ({ one }) => ({
+    session: one(chatSessions, {
+        fields: [chatMessages.sessionId],
+        references: [chatSessions.id],
     }),
 }));

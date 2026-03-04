@@ -15,6 +15,13 @@
       "when": 1772630878115,
       "tag": "0001_sparkling_nicolaos",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772632064853,
+      "tag": "0002_silly_power_man",
+      "breakpoints": true
     }
   ]
 }

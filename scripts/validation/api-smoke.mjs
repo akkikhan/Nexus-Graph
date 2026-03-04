@@ -292,6 +292,147 @@ async function run() {
                 (review) => review.isAI === true && Array.isArray(review.comments) && review.comments.length > 0
             );
             assert(Boolean(persistedAiReview), "AI review completion must persist at least one AI review with comments");
+
+            const createChatSession = await request("/api/v1/chat/sessions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    prId: createdPrId,
+                    context: {
+                        source: "api-smoke",
+                        scope: "pr-review",
+                    },
+                }),
+            });
+            printResult("POST /api/v1/chat/sessions", createChatSession);
+            assert(createChatSession.response.status === 201, "chat session create must return 201");
+            const chatSessionId = createChatSession.payload?.session?.id;
+            assert(chatSessionId, "chat session create must return session.id");
+
+            const listChatSessions = await request(`/api/v1/chat/sessions?prId=${encodeURIComponent(createdPrId)}&limit=5`);
+            printResult("GET /api/v1/chat/sessions", listChatSessions);
+            assert(listChatSessions.response.status === 200, "chat sessions list must return 200");
+            assert(Array.isArray(listChatSessions.payload?.sessions), "chat sessions list must include sessions[]");
+            assert(
+                listChatSessions.payload.sessions.some((session) => session.id === chatSessionId),
+                "chat sessions list must include created session"
+            );
+
+            const invalidAssistantMessage = await request(`/api/v1/chat/sessions/${chatSessionId}/messages`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    role: "assistant",
+                    content: "This should fail because provenance is missing.",
+                }),
+            });
+            printResult(`POST /api/v1/chat/sessions/${chatSessionId}/messages (invalid)`, invalidAssistantMessage);
+            assert(invalidAssistantMessage.response.status === 400, "assistant message without provenance must return 400");
+
+            const rawSecret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+            const createUserMessage = await request(`/api/v1/chat/sessions/${chatSessionId}/messages`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    role: "user",
+                    content: `Please review this token handling path: ${rawSecret}`,
+                }),
+            });
+            printResult(`POST /api/v1/chat/sessions/${chatSessionId}/messages (user)`, createUserMessage);
+            assert(createUserMessage.response.status === 201, "chat user message create must return 201");
+            assert(createUserMessage.payload?.message?.role === "user", "chat user message must persist user role");
+
+            const createAssistantMessage = await request(`/api/v1/chat/sessions/${chatSessionId}/messages`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    role: "assistant",
+                    content: "Found one issue and one follow-up recommendation.",
+                    provider: "smoke-provider",
+                    model: "smoke-model",
+                    provenance: {
+                        source: "smoke-ai",
+                        model: "smoke-model",
+                        provider: "smoke-provider",
+                        citations: [
+                            {
+                                type: "file",
+                                file: "src/auth/middleware.ts",
+                                line: 15,
+                                snippet: "if (!token) return unauthorized();",
+                            },
+                        ],
+                        toolActions: [
+                            {
+                                name: "diff-analyzer",
+                                status: "completed",
+                                output: { filesScanned: 2 },
+                            },
+                        ],
+                    },
+                    citations: [
+                        {
+                            type: "doc",
+                            title: "Auth Guideline",
+                            url: "https://example.com/auth-guideline",
+                        },
+                    ],
+                    toolActions: [
+                        {
+                            name: "risk-scorer",
+                            status: "completed",
+                            output: { risk: "high" },
+                        },
+                    ],
+                    promptTokens: 120,
+                    completionTokens: 45,
+                    totalTokens: 165,
+                }),
+            });
+            printResult(`POST /api/v1/chat/sessions/${chatSessionId}/messages (assistant)`, createAssistantMessage);
+            assert(createAssistantMessage.response.status === 201, "chat assistant message create must return 201");
+            assert(
+                createAssistantMessage.payload?.message?.role === "assistant",
+                "chat assistant message must persist assistant role"
+            );
+            assert(
+                createAssistantMessage.payload?.message?.provenance?.model === "smoke-model",
+                "chat assistant message must persist provenance model"
+            );
+
+            const chatSessionDetail = await request(`/api/v1/chat/sessions/${chatSessionId}`);
+            printResult(`GET /api/v1/chat/sessions/${chatSessionId}`, chatSessionDetail);
+            assert(chatSessionDetail.response.status === 200, "chat session detail must return 200");
+            assert(chatSessionDetail.payload?.session?.prId === createdPrId, "chat session must retain PR context");
+            assert(
+                Number(chatSessionDetail.payload?.session?.messageCount) >= 2,
+                "chat session detail must include persisted message count"
+            );
+
+            const chatMessages = await request(`/api/v1/chat/sessions/${chatSessionId}/messages?limit=10`);
+            printResult(`GET /api/v1/chat/sessions/${chatSessionId}/messages`, chatMessages);
+            assert(chatMessages.response.status === 200, "chat messages list must return 200");
+            assert(Array.isArray(chatMessages.payload?.messages), "chat messages list must include messages[]");
+            assert(chatMessages.payload.messages.length >= 2, "chat messages list must include persisted messages");
+
+            const persistedUserMessage = chatMessages.payload.messages.find((msg) => msg.role === "user");
+            assert(persistedUserMessage, "chat messages list must include user message");
+            assert(
+                persistedUserMessage.content.includes("[REDACTED_SECRET]"),
+                "chat persistence must redact secrets from stored content"
+            );
+            assert(
+                !persistedUserMessage.content.includes(rawSecret),
+                "chat persistence must not store raw secret tokens"
+            );
+
+            const persistedAssistantMessage = chatMessages.payload.messages.find((msg) => msg.role === "assistant");
+            assert(persistedAssistantMessage, "chat messages list must include assistant message");
+            assert(
+                persistedAssistantMessage.provenance?.provider === "smoke-provider",
+                "chat assistant message must preserve provenance provider"
+            );
         }
 
         if (firstRepoId && stacks.response.status === 200) {
