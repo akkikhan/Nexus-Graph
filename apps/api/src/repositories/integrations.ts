@@ -251,6 +251,27 @@ function normalizeWebhookActionAudit(row: any) {
     };
 }
 
+function normalizeNotificationActionAudit(row: any) {
+    const metadata =
+        row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+    const metadataOutcome = String(metadata.outcome || "").toLowerCase();
+    const outcome: WebhookActionAuditOutcome = metadataOutcome === "error" ? "error" : "success";
+    return {
+        id: row.id,
+        action: row.action,
+        entityType: row.entityType,
+        entityId: row.entityId || undefined,
+        repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
+        deliveryId: typeof metadata.deliveryId === "string" ? metadata.deliveryId : undefined,
+        outcome,
+        summary: typeof metadata.summary === "string" ? metadata.summary : "",
+        metadata,
+        createdAt: toIso(row.createdAt),
+    };
+}
+
 function computeBackoffMs(attemptNumber: number): number {
     return Math.min(60_000, 2_000 * Math.max(attemptNumber, 1));
 }
@@ -1080,6 +1101,72 @@ export const integrationsRepository = {
         return rows.map(normalizeDelivery);
     },
 
+    async listNotificationActionAudits(filters: {
+        repoId?: string;
+        limit?: number;
+    }) {
+        const conditions = [
+            eq(auditLog.entityType, "integration_notification"),
+            sql`${auditLog.action} LIKE 'integration.notification.%'`,
+        ];
+        if (filters.repoId) {
+            const repo = await findRepository(filters.repoId);
+            if (!repo) return [];
+            conditions.push(eq(auditLog.orgId, repo.orgId));
+            conditions.push(sql`${auditLog.metadata} ->> 'repoId' = ${filters.repoId}`);
+        }
+
+        const rows = await db
+            .select()
+            .from(auditLog)
+            .where(and(...conditions))
+            .orderBy(desc(auditLog.createdAt))
+            .limit(Math.min(Math.max(filters.limit ?? 20, 1), 100));
+
+        return rows.map(normalizeNotificationActionAudit);
+    },
+
+    async recordNotificationActionAudit(input: {
+        action: string;
+        repoId?: string;
+        deliveryId?: string;
+        outcome: WebhookActionAuditOutcome;
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) {
+        if (!input.repoId) return { reason: "repo_id_required" as const };
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const action = (input.action || "").trim();
+        const summary = (input.summary || "").trim();
+        if (!action || !summary) return { reason: "invalid_audit_payload" as const };
+
+        const [inserted] = await db
+            .insert(auditLog)
+            .values({
+                orgId: repo.orgId,
+                action,
+                entityType: "integration_notification",
+                entityId: input.deliveryId || null,
+                metadata: sanitizeUnknown({
+                    outcome: input.outcome,
+                    summary,
+                    repoId: input.repoId,
+                    deliveryId: input.deliveryId,
+                    ...(input.metadata || {}),
+                }),
+                createdAt: new Date(),
+            })
+            .returning();
+
+        if (!inserted) return { reason: "insert_failed" as const };
+        return {
+            reason: "ok" as const,
+            event: normalizeNotificationActionAudit(inserted),
+        };
+    },
+
     async getNotification(deliveryId: string) {
         const delivery = await findDelivery(deliveryId);
         if (!delivery) return null;
@@ -1199,27 +1286,35 @@ export const integrationsRepository = {
         };
     },
 
-    async retryDueNotifications(limit = 20) {
+    async retryDueNotifications(limit = 20, repoId?: string) {
         const now = new Date();
+        const conditions = [
+            inArray(notificationDeliveries.status, DELIVERY_RETRYABLE_STATUSES),
+            lte(notificationDeliveries.nextAttemptAt, now),
+        ];
+        if (repoId) conditions.push(eq(notificationDeliveries.repoId, repoId));
         const due = await db
             .select()
             .from(notificationDeliveries)
-            .where(
-                and(
-                    inArray(notificationDeliveries.status, DELIVERY_RETRYABLE_STATUSES),
-                    lte(notificationDeliveries.nextAttemptAt, now)
-                )
-            )
+            .where(and(...conditions))
             .orderBy(asc(notificationDeliveries.nextAttemptAt))
             .limit(Math.min(Math.max(limit, 1), 100));
 
-        const outcomes: Array<{ id: string; reason: string; status?: NotificationDeliveryStatus }> = [];
+        const outcomes: Array<{
+            id: string;
+            reason: string;
+            status?: NotificationDeliveryStatus;
+            repoId?: string;
+            correlationId?: string;
+        }> = [];
         for (const row of due) {
             const result = await this.deliverNotification(row.id);
             outcomes.push({
                 id: row.id,
                 reason: result.reason,
                 status: (result as any).delivery?.status,
+                repoId: row.repoId || undefined,
+                correlationId: row.correlationId || undefined,
             });
         }
 

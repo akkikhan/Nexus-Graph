@@ -963,6 +963,7 @@ async function run() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     limit: 10,
+                    repoId: firstRepoId,
                 }),
             });
             printResult("POST /api/v1/integrations/notifications/retry", retryNotifications);
@@ -978,6 +979,26 @@ async function run() {
                     notificationDetail.payload?.delivery?.status === "retrying" ||
                     notificationDetail.payload?.delivery?.status === "dead_letter",
                 "notification detail must include valid delivery status"
+            );
+
+            const notificationActionAudits = await request(
+                `/api/v1/integrations/notification-action-audits?repoId=${encodeURIComponent(firstRepoId)}&limit=10`
+            );
+            printResult("GET /api/v1/integrations/notification-action-audits", notificationActionAudits);
+            assert(notificationActionAudits.response.status === 200, "notification action-audit list must return 200");
+            assert(
+                Array.isArray(notificationActionAudits.payload?.events),
+                "notification action-audit list must include events[]"
+            );
+            assert(
+                notificationActionAudits.payload.events.some(
+                    (event) => event.action === "integration.notification.manual_fail"
+                ),
+                "notification action-audit list should include manual failure audit entry"
+            );
+            assert(
+                notificationActionAudits.payload.events.some((event) => event.action === "integration.notification.retry_due"),
+                "notification action-audit list should include retry audit entry"
             );
 
             const webhookExternalId = `slack-webhook-${Date.now()}`;

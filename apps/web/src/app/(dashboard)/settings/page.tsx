@@ -20,16 +20,22 @@ import {
     fetchIntegrationAlerts,
     fetchIntegrationConnections,
     fetchIntegrationMetrics,
+    fetchIntegrationNotificationActionAudits,
+    fetchIntegrationNotifications,
     fetchIntegrationWebhookActionAudits,
     fetchIntegrationWebhookEvents,
+    deliverIntegrationNotification,
     exportIntegrationWebhookAuthEvents,
     fetchIntegrationWebhookAuthEvents,
     processIntegrationWebhookEvent,
+    retryDueIntegrationNotifications,
     retryDueIntegrationWebhooks,
     fetchSystemHealth,
     IntegrationAlertStatus,
     IntegrationConnection,
     IntegrationMetrics,
+    IntegrationNotificationActionAuditEvent,
+    IntegrationNotificationDelivery,
     IntegrationWebhookActionAuditEvent,
     IntegrationWebhookEvent,
     IntegrationWebhookAuthEvent,
@@ -244,6 +250,8 @@ type AuthProviderFilter = "all" | "slack" | "linear" | "jira";
 type AuthOutcomeFilter = "all" | "rejected" | "config_error";
 type WebhookStatusFilter = "all" | "received" | "processed" | "failed" | "dead_letter";
 type WebhookActionMode = "process" | "fail";
+type NotificationStatusFilter = "all" | "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
+type NotificationActionMode = "deliver" | "fail";
 
 const WEBHOOK_DIAGNOSTICS_PAGE_SIZE = 12;
 const WEBHOOK_RECOVERY_PAGE_SIZE = 8;
@@ -256,8 +264,19 @@ function formatWebhookStatus(status: IntegrationWebhookEvent["status"]): string 
     return status.split("_").join(" ");
 }
 
+function formatNotificationStatus(status: IntegrationNotificationDelivery["status"]): string {
+    return status.split("_").join(" ");
+}
+
 function formatWebhookAuditAction(action: string): string {
     const normalized = action.startsWith("integration.webhook.") ? action.slice("integration.webhook.".length) : action;
+    return normalized.split("_").join(" ");
+}
+
+function formatNotificationAuditAction(action: string): string {
+    const normalized = action.startsWith("integration.notification.")
+        ? action.slice("integration.notification.".length)
+        : action;
     return normalized.split("_").join(" ");
 }
 
@@ -292,13 +311,21 @@ export default function SettingsPage() {
     const [authRepoId, setAuthRepoId] = useState("");
     const [authPage, setAuthPage] = useState(0);
     const [webhookStatusFilter, setWebhookStatusFilter] = useState<WebhookStatusFilter>("all");
+    const [notificationStatusFilter, setNotificationStatusFilter] = useState<NotificationStatusFilter>("all");
     const [retryingDueWebhooks, setRetryingDueWebhooks] = useState(false);
+    const [retryingDueNotifications, setRetryingDueNotifications] = useState(false);
     const [processingWebhookAction, setProcessingWebhookAction] = useState<{
         id: string;
         mode: WebhookActionMode;
     } | null>(null);
+    const [processingNotificationAction, setProcessingNotificationAction] = useState<{
+        id: string;
+        mode: NotificationActionMode;
+    } | null>(null);
     const [webhookActionMessage, setWebhookActionMessage] = useState("");
     const [webhookActionError, setWebhookActionError] = useState("");
+    const [notificationActionMessage, setNotificationActionMessage] = useState("");
+    const [notificationActionError, setNotificationActionError] = useState("");
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
     const [exportError, setExportError] = useState("");
 
@@ -416,6 +443,43 @@ export default function SettingsPage() {
             fetchIntegrationWebhookActionAudits({
                 repoId: integrationRepoId,
                 limit: 8,
+        }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: notificationDeliveriesData,
+        isLoading: notificationDeliveriesLoading,
+        isFetching: notificationDeliveriesFetching,
+        error: notificationDeliveriesError,
+        refetch: refetchNotificationDeliveries,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "integration-notification-deliveries",
+            integrationRepoId,
+            notificationStatusFilter,
+        ],
+        queryFn: () =>
+            fetchIntegrationNotifications({
+                repoId: integrationRepoId,
+                status: notificationStatusFilter === "all" ? undefined : notificationStatusFilter,
+                limit: 8,
+                offset: 0,
+            }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: notificationActionAuditsData,
+        isLoading: notificationActionAuditsLoading,
+        isFetching: notificationActionAuditsFetching,
+        error: notificationActionAuditsError,
+        refetch: refetchNotificationActionAudits,
+    } = useQuery({
+        queryKey: ["settings", "integration-notification-action-audits", integrationRepoId],
+        queryFn: () =>
+            fetchIntegrationNotificationActionAudits({
+                repoId: integrationRepoId,
+                limit: 8,
             }),
         refetchInterval: 30_000,
     });
@@ -438,19 +502,25 @@ export default function SettingsPage() {
     const integrationConnections = integrationConnectionsData?.connections || [];
     const webhookEvents = webhookEventsData?.events || [];
     const webhookActionAudits = webhookActionAuditsData?.events || [];
+    const notificationDeliveries = notificationDeliveriesData?.deliveries || [];
+    const notificationActionAudits = notificationActionAuditsData?.events || [];
     const hasNextAuthPage = authEvents.length === WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
     const integrationLoading =
         integrationConnectionsLoading ||
         integrationMetricsLoading ||
         integrationAlertsLoading ||
         webhookEventsLoading ||
-        webhookActionAuditsLoading;
+        webhookActionAuditsLoading ||
+        notificationDeliveriesLoading ||
+        notificationActionAuditsLoading;
     const integrationFetching =
         integrationConnectionsFetching ||
         integrationMetricsFetching ||
         integrationAlertsFetching ||
         webhookEventsFetching ||
-        webhookActionAuditsFetching;
+        webhookActionAuditsFetching ||
+        notificationDeliveriesFetching ||
+        notificationActionAuditsFetching;
     const integrationStatusByProvider = useMemo(() => {
         return {
             slack: connectionStatusForProvider(integrationConnections, "slack"),
@@ -518,8 +588,11 @@ export default function SettingsPage() {
         setAuthRepoId("");
         setAuthPage(0);
         setWebhookStatusFilter("all");
+        setNotificationStatusFilter("all");
         setWebhookActionMessage("");
         setWebhookActionError("");
+        setNotificationActionMessage("");
+        setNotificationActionError("");
     };
 
     const downloadBlob = (filename: string, blob: Blob) => {
@@ -598,6 +671,61 @@ export default function SettingsPage() {
             setWebhookActionError(message);
         } finally {
             setProcessingWebhookAction(null);
+        }
+    };
+
+    const onRetryDueNotifications = async () => {
+        setNotificationActionMessage("");
+        setNotificationActionError("");
+        setRetryingDueNotifications(true);
+        try {
+            const result = await retryDueIntegrationNotifications(20, integrationRepoId);
+            const message = `Retried ${result.processed} due notification(s).`;
+            setNotificationActionMessage(message);
+            await Promise.all([
+                refetchNotificationDeliveries(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchNotificationActionAudits(),
+            ]);
+        } catch (error) {
+            const message = getErrorMessage(error, "Failed to retry due notifications.");
+            setNotificationActionError(message);
+        } finally {
+            setRetryingDueNotifications(false);
+        }
+    };
+
+    const onProcessNotification = async (delivery: IntegrationNotificationDelivery, mode: NotificationActionMode) => {
+        setNotificationActionMessage("");
+        setNotificationActionError("");
+        setProcessingNotificationAction({
+            id: delivery.id,
+            mode,
+        });
+        try {
+            const result = await deliverIntegrationNotification(
+                delivery.id,
+                mode === "fail"
+                    ? {
+                          simulateFailure: true,
+                          errorMessage: "Manual failure drill from settings delivery queue",
+                      }
+                    : {}
+            );
+            const message = `Notification ${result.delivery.correlationId} is now ${formatNotificationStatus(result.delivery.status)}.`;
+            setNotificationActionMessage(message);
+            await Promise.all([
+                refetchNotificationDeliveries(),
+                refetchIntegrationMetrics(),
+                refetchIntegrationAlerts(),
+                refetchNotificationActionAudits(),
+            ]);
+        } catch (error) {
+            const message = getErrorMessage(error, "Failed to process notification delivery.");
+            setNotificationActionError(message);
+        } finally {
+            setProcessingNotificationAction(null);
         }
     };
 
@@ -1022,6 +1150,171 @@ export default function SettingsPage() {
                                         ))}
                                     </div>
                                 ) : null}
+
+                                <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-white">Notification Delivery Queue</h4>
+                                            <p className="text-xs text-zinc-500">
+                                                Trigger delivery retries and failure drills for pending provider deliveries.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={onRetryDueNotifications}
+                                            disabled={retryingDueNotifications}
+                                            className="px-3 py-1.5 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                        >
+                                            {retryingDueNotifications ? "Retrying..." : "Retry Due"}
+                                        </button>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 text-xs">
+                                        <label className="text-zinc-500">Status</label>
+                                        <select
+                                            value={notificationStatusFilter}
+                                            onChange={(e) => setNotificationStatusFilter(e.target.value as NotificationStatusFilter)}
+                                            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                                        >
+                                            <option value="all">All</option>
+                                            <option value="pending">Pending</option>
+                                            <option value="retrying">Retrying</option>
+                                            <option value="failed">Failed</option>
+                                            <option value="delivered">Delivered</option>
+                                            <option value="dead_letter">Dead Letter</option>
+                                        </select>
+                                    </div>
+
+                                    {notificationDeliveriesLoading ? (
+                                        <div className="text-sm text-zinc-400">Loading notification deliveries...</div>
+                                    ) : notificationDeliveriesError ? (
+                                        <div className="rounded bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
+                                            Failed to load notification deliveries:{" "}
+                                            {getErrorMessage(notificationDeliveriesError, "Unavailable")}
+                                        </div>
+                                    ) : notificationDeliveries.length === 0 ? (
+                                        <div className="text-sm text-zinc-500">No notification deliveries for selected filters.</div>
+                                    ) : (
+                                        <div className="rounded border border-zinc-800 overflow-x-auto">
+                                            <div className="min-w-[920px]">
+                                                <div className="grid grid-cols-[120px_140px_1fr_110px_120px_190px] gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500 bg-zinc-950/60">
+                                                    <span>Status</span>
+                                                    <span>Channel</span>
+                                                    <span>Event</span>
+                                                    <span>Attempts</span>
+                                                    <span>Created</span>
+                                                    <span>Action</span>
+                                                </div>
+                                                <div className="divide-y divide-zinc-800">
+                                                    {notificationDeliveries.map((delivery) => {
+                                                        const actionable =
+                                                            delivery.status === "pending" ||
+                                                            delivery.status === "retrying" ||
+                                                            delivery.status === "failed";
+                                                        return (
+                                                            <div
+                                                                key={delivery.id}
+                                                                className="grid grid-cols-[120px_140px_1fr_110px_120px_190px] gap-2 px-3 py-2 text-sm text-zinc-200 items-center"
+                                                            >
+                                                                <span
+                                                                    className={
+                                                                        delivery.status === "failed" ||
+                                                                        delivery.status === "dead_letter"
+                                                                            ? "text-red-300"
+                                                                            : delivery.status === "delivered"
+                                                                              ? "text-green-300"
+                                                                              : "text-yellow-300"
+                                                                    }
+                                                                >
+                                                                    {formatNotificationStatus(delivery.status)}
+                                                                </span>
+                                                                <span className="truncate">{delivery.channel}</span>
+                                                                <div className="min-w-0">
+                                                                    <div className="truncate">{delivery.eventType}</div>
+                                                                    <div className="text-xs text-zinc-500 truncate">
+                                                                        {delivery.correlationId}
+                                                                    </div>
+                                                                </div>
+                                                                <span>
+                                                                    {delivery.attempts}/{delivery.maxAttempts}
+                                                                </span>
+                                                                <span className="text-xs text-zinc-400">
+                                                                    {formatAuthTimestamp(delivery.createdAt)}
+                                                                </span>
+                                                                <div className="flex items-center gap-2">
+                                                                    <button
+                                                                        onClick={() => onProcessNotification(delivery, "deliver")}
+                                                                        disabled={
+                                                                            !actionable ||
+                                                                            processingNotificationAction?.id === delivery.id
+                                                                        }
+                                                                        className="px-2 py-1 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                                                    >
+                                                                        {processingNotificationAction?.id === delivery.id &&
+                                                                        processingNotificationAction.mode === "deliver"
+                                                                            ? "Delivering..."
+                                                                            : "Deliver"}
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => onProcessNotification(delivery, "fail")}
+                                                                        disabled={
+                                                                            !actionable ||
+                                                                            processingNotificationAction?.id === delivery.id
+                                                                        }
+                                                                        className="px-2 py-1 rounded border border-red-800/60 text-xs text-red-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-red-900/40 transition-colors"
+                                                                    >
+                                                                        {processingNotificationAction?.id === delivery.id &&
+                                                                        processingNotificationAction.mode === "fail"
+                                                                            ? "Failing..."
+                                                                            : "Fail"}
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {notificationActionMessage ? (
+                                        <div className="text-xs text-green-300 bg-green-500/10 border border-green-500/20 rounded px-3 py-2">
+                                            {notificationActionMessage}
+                                        </div>
+                                    ) : null}
+                                    {notificationActionError ? (
+                                        <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                                            {notificationActionError}
+                                        </div>
+                                    ) : null}
+                                    {notificationActionAuditsLoading ? (
+                                        <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 text-xs text-zinc-500">
+                                            Loading persisted action audit...
+                                        </div>
+                                    ) : notificationActionAuditsError ? (
+                                        <div className="rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                                            Failed to load action audit:{" "}
+                                            {getErrorMessage(notificationActionAuditsError, "Unavailable")}
+                                        </div>
+                                    ) : notificationActionAudits.length > 0 ? (
+                                        <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-2 space-y-1">
+                                            <div className="text-[11px] uppercase tracking-wide text-zinc-500">Recent Actions</div>
+                                            {notificationActionAudits.map((entry: IntegrationNotificationActionAuditEvent) => (
+                                                <div
+                                                    key={entry.id}
+                                                    className={`text-xs ${
+                                                        entry.outcome === "success" ? "text-zinc-300" : "text-red-300"
+                                                    }`}
+                                                >
+                                                    {formatAuthTimestamp(entry.createdAt)} - {entry.summary}
+                                                    <span className="text-zinc-500">
+                                                        {" "}
+                                                        ({formatNotificationAuditAction(entry.action)})
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                </div>
                             </div>
                         </>
                     )}

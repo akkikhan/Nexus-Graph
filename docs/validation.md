@@ -66,6 +66,7 @@ Checks:
 - `POST /api/v1/integrations/notifications/:id/deliver` (delivery attempt + retry/dead-letter transitions)
 - `POST /api/v1/integrations/notifications/retry`
 - `GET /api/v1/integrations/notifications/:id`
+- `GET /api/v1/integrations/notification-action-audits` (durable operator action audit feed for notification deliver/retry controls)
 - `POST /api/v1/integrations/webhooks/provider/:provider` (durable webhook ingestion with idempotency)
 - `GET /api/v1/integrations/webhooks`
 - `GET /api/v1/integrations/webhook-action-audits` (durable operator action audit feed for webhook process/retry controls)
@@ -128,6 +129,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Settings diagnostics panel load (webhook auth events + filter path)
 - Settings integrations operations snapshot (connections + metrics + alerts)
 - Settings webhook recovery actions (list/process/fail/retry controls + persisted action audit feed)
+- Settings notification delivery actions (list/deliver/fail/retry controls + persisted action audit feed)
 - Settings diagnostics export controls (JSON/CSV) render and trigger server-side export requests
 
 Prerequisite:

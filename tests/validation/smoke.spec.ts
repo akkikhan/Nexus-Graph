@@ -504,6 +504,74 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         });
     };
 
+    const notificationDeliveries = [
+        {
+            id: "nd-1",
+            connectionId: "conn-slack-1",
+            repoId: "repo-1",
+            channel: "C123",
+            eventType: "pr.review.requested",
+            payload: {},
+            status: "pending",
+            attempts: 0,
+            maxAttempts: 3,
+            nextAttemptAt: nowIso,
+            correlationId: "notif-corr-1",
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+        {
+            id: "nd-2",
+            connectionId: "conn-slack-1",
+            repoId: "repo-1",
+            channel: "C123",
+            eventType: "ai.finding.critical",
+            payload: {},
+            status: "retrying",
+            attempts: 1,
+            maxAttempts: 3,
+            nextAttemptAt: nowIso,
+            correlationId: "notif-corr-2",
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+    ];
+    const notificationActionAudits: Array<{
+        id: string;
+        action: string;
+        entityType: string;
+        entityId?: string;
+        repoId?: string;
+        deliveryId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata: Record<string, unknown>;
+        createdAt: string;
+    }> = [];
+
+    const appendNotificationActionAudit = (entry: {
+        action: string;
+        entityId?: string;
+        repoId?: string;
+        deliveryId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) => {
+        notificationActionAudits.unshift({
+            id: `notif-audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            action: entry.action,
+            entityType: "integration_notification",
+            entityId: entry.entityId,
+            repoId: entry.repoId,
+            deliveryId: entry.deliveryId,
+            outcome: entry.outcome,
+            summary: entry.summary,
+            metadata: entry.metadata || {},
+            createdAt: new Date().toISOString(),
+        });
+    };
+
     await page.route("**/api/v1/integrations/webhook-action-audits**", async (route) => {
         const url = new URL(route.request().url());
         const repoId = url.searchParams.get("repoId");
@@ -519,6 +587,151 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                 limit: Math.max(limit, 1),
             })
         );
+    });
+    await page.route("**/api/v1/integrations/notification-action-audits**", async (route) => {
+        const url = new URL(route.request().url());
+        const repoId = url.searchParams.get("repoId");
+        const limit = Number(url.searchParams.get("limit") || 20);
+        const filtered = notificationActionAudits.filter((event) => {
+            if (repoId && event.repoId !== repoId) return false;
+            return true;
+        });
+        await route.fulfill(
+            jsonResponse(200, {
+                events: filtered.slice(0, Math.max(limit, 1)),
+                total: filtered.length,
+                limit: Math.max(limit, 1),
+            })
+        );
+    });
+    await page.route("**/api/v1/integrations/notifications**", async (route) => {
+        const url = new URL(route.request().url());
+        const method = route.request().method().toUpperCase();
+        const path = url.pathname;
+
+        if (path.endsWith("/notifications/retry") && method === "POST") {
+            let processed = 0;
+            const outcomes = notificationDeliveries.map((delivery) => {
+                if (delivery.status === "pending" || delivery.status === "retrying" || delivery.status === "failed") {
+                    processed += 1;
+                    delivery.status = "delivered";
+                    delivery.attempts += 1;
+                    delivery.updatedAt = new Date().toISOString();
+                    appendNotificationActionAudit({
+                        action: "integration.notification.retry_due",
+                        entityId: delivery.id,
+                        repoId: delivery.repoId,
+                        deliveryId: delivery.id,
+                        outcome: "success",
+                        summary: `Retried notification ${delivery.correlationId} -> ${delivery.status}.`,
+                        metadata: {
+                            reason: "delivered",
+                            status: delivery.status,
+                        },
+                    });
+                    return {
+                        id: delivery.id,
+                        reason: "delivered",
+                        status: delivery.status,
+                        repoId: delivery.repoId,
+                        correlationId: delivery.correlationId,
+                    };
+                }
+                return {
+                    id: delivery.id,
+                    reason: "skipped",
+                    status: delivery.status,
+                    repoId: delivery.repoId,
+                    correlationId: delivery.correlationId,
+                };
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    processed,
+                    outcomes,
+                })
+            );
+            return;
+        }
+
+        const deliverMatch = path.match(/\/notifications\/([^/]+)\/deliver$/);
+        if (deliverMatch && method === "POST") {
+            const deliveryId = deliverMatch[1];
+            const delivery = notificationDeliveries.find((item) => item.id === deliveryId);
+            if (!delivery) {
+                await route.fulfill(jsonResponse(404, { error: "Notification delivery not found" }));
+                return;
+            }
+            const payload = route.request().postDataJSON() as { simulateFailure?: boolean } | null;
+            const simulateFailure = payload?.simulateFailure === true;
+            if (simulateFailure) {
+                delivery.attempts += 1;
+                delivery.status = delivery.attempts >= delivery.maxAttempts ? "dead_letter" : "failed";
+                delivery.updatedAt = new Date().toISOString();
+                appendNotificationActionAudit({
+                    action: "integration.notification.manual_fail",
+                    entityId: delivery.id,
+                    repoId: delivery.repoId,
+                    deliveryId: delivery.id,
+                    outcome: "error",
+                    summary: `Notification ${delivery.correlationId} is now ${delivery.status}.`,
+                    metadata: {
+                        mode: "fail",
+                    },
+                });
+                await route.fulfill(
+                    jsonResponse(200, {
+                        success: true,
+                        reason: "failed",
+                        delivery,
+                    })
+                );
+                return;
+            }
+            delivery.status = "delivered";
+            delivery.attempts += 1;
+            delivery.deliveredAt = new Date().toISOString();
+            delivery.updatedAt = new Date().toISOString();
+            appendNotificationActionAudit({
+                action: "integration.notification.manual_deliver",
+                entityId: delivery.id,
+                repoId: delivery.repoId,
+                deliveryId: delivery.id,
+                outcome: "success",
+                summary: `Notification ${delivery.correlationId} is now ${delivery.status}.`,
+                metadata: {
+                    mode: "deliver",
+                },
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "delivered",
+                    delivery,
+                })
+            );
+            return;
+        }
+
+        if (path.endsWith("/notifications") && method === "GET") {
+            const status = url.searchParams.get("status");
+            const deliveries = notificationDeliveries.filter((delivery) => {
+                if (status && delivery.status !== status) return false;
+                return true;
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    deliveries,
+                    total: deliveries.length,
+                    limit: 8,
+                    offset: 0,
+                })
+            );
+            return;
+        }
+
+        await route.fulfill(jsonResponse(404, { error: "Unhandled notifications route in smoke test" }));
     });
 
     await page.route("**/api/v1/integrations/webhooks**", async (route) => {
@@ -735,17 +948,25 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/Integration Diagnostics/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Integrations Operations/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Webhook Recovery Queue/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Notification Delivery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Connected \(1\)/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/push.failed/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/pr.review.requested/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /^Fail$/i }).first().click();
     await expect(page.getByText("Webhook wh-ext-1 is now failed.", { exact: true })).toBeVisible({ timeout: 20000 });
-    await page.getByRole("button", { name: /Retry Due/i }).click();
+    await page.getByRole("button", { name: /Retry Due/i }).first().click();
     await expect(page.getByText("Retried 2 due webhook event(s).", { exact: true })).toBeVisible({ timeout: 20000 });
-    await expect(page.getByText(/Recent Actions/i)).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /^Fail$/i }).nth(2).click();
+    await expect(page.getByText("Notification notif-corr-1 is now failed.", { exact: true })).toBeVisible({
+        timeout: 20000,
+    });
+    await page.getByRole("button", { name: /Retry Due/i }).nth(1).click();
+    await expect(page.getByText("Retried 2 due notification(s).", { exact: true })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Recent Actions/i).first()).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Export JSON/i }).click();
     await page.getByRole("button", { name: /Export CSV/i }).click();
 

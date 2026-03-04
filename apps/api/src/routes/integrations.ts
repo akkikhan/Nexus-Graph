@@ -99,6 +99,12 @@ const deliverNotificationSchema = z.object({
 
 const retryNotificationsSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(20),
+    repoId: z.string().optional(),
+});
+
+const listNotificationActionAuditsSchema = z.object({
+    repoId: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 const listWebhookEventsSchema = z.object({
@@ -271,6 +277,21 @@ async function recordWebhookActionAudit(input: {
         await integrationsRepository.recordWebhookActionAudit(input);
     } catch {
         // Best effort: webhook action must not fail due to audit insert issues.
+    }
+}
+
+async function recordNotificationActionAudit(input: {
+    action: string;
+    repoId?: string;
+    deliveryId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata?: Record<string, unknown>;
+}) {
+    try {
+        await integrationsRepository.recordNotificationActionAudit(input);
+    } catch {
+        // Best effort: notification operation should not fail due to audit insert issues.
     }
 }
 
@@ -818,6 +839,30 @@ integrationsRouter.get("/notifications", zValidator("query", listNotificationsSc
     }
 });
 
+integrationsRouter.get(
+    "/notification-action-audits",
+    zValidator("query", listNotificationActionAuditsSchema),
+    async (c) => {
+        const query = c.req.valid("query");
+        try {
+            const events = await integrationsRepository.listNotificationActionAudits(query);
+            return c.json({
+                events,
+                total: events.length,
+                limit: query.limit,
+            });
+        } catch (error) {
+            return c.json(
+                {
+                    error: "Database unavailable for integration notification action-audit listing",
+                    details: details(error),
+                },
+                503
+            );
+        }
+    }
+);
+
 integrationsRouter.post("/notifications", zValidator("json", enqueueNotificationSchema), async (c) => {
     const body = c.req.valid("json");
     try {
@@ -876,6 +921,21 @@ integrationsRouter.post("/notifications/:id/deliver", zValidator("json", deliver
             );
         }
         if (result.reason === "update_failed") return c.json({ error: "Failed to persist notification delivery update" }, 500);
+        await recordNotificationActionAudit({
+            action: body.simulateFailure ? "integration.notification.manual_fail" : "integration.notification.manual_deliver",
+            repoId: result.delivery.repoId,
+            deliveryId: result.delivery.id,
+            outcome:
+                result.delivery.status === "failed" || result.delivery.status === "dead_letter" ? "error" : "success",
+            summary: `Notification ${result.delivery.correlationId} is now ${result.delivery.status}.`,
+            metadata: {
+                mode: body.simulateFailure ? "fail" : "deliver",
+                eventType: result.delivery.eventType,
+                channel: result.delivery.channel,
+                attempts: result.delivery.attempts,
+                maxAttempts: result.delivery.maxAttempts,
+            },
+        });
         return c.json({
             success: true,
             reason: result.reason,
@@ -896,7 +956,24 @@ integrationsRouter.post("/notifications/:id/deliver", zValidator("json", deliver
 integrationsRouter.post("/notifications/retry", zValidator("json", retryNotificationsSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const result = await integrationsRepository.retryDueNotifications(body.limit);
+        const result = await integrationsRepository.retryDueNotifications(body.limit, body.repoId);
+        for (const outcome of result.outcomes) {
+            if (!outcome.repoId) continue;
+            await recordNotificationActionAudit({
+                action: "integration.notification.retry_due",
+                repoId: outcome.repoId,
+                deliveryId: outcome.id,
+                outcome:
+                    outcome.status === "failed" || outcome.status === "dead_letter" || outcome.reason === "update_failed"
+                        ? "error"
+                        : "success",
+                summary: `Retried notification ${outcome.correlationId || outcome.id} -> ${outcome.status || outcome.reason}.`,
+                metadata: {
+                    reason: outcome.reason,
+                    status: outcome.status,
+                },
+            });
+        }
         return c.json({
             success: true,
             ...result,

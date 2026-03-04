@@ -623,6 +623,138 @@ export async function fetchIntegrationAlerts(options: {
     return parseResponse<IntegrationAlertStatus>(res, "Failed to fetch integration alert status");
 }
 
+export interface IntegrationNotificationDelivery {
+    id: string;
+    connectionId: string;
+    repoId: string;
+    prId?: string;
+    channel: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+    status: "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
+    attempts: number;
+    maxAttempts: number;
+    nextAttemptAt?: string;
+    lastAttemptAt?: string;
+    deliveredAt?: string;
+    errorMessage?: string;
+    correlationId: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface IntegrationNotificationDeliveriesResponse {
+    deliveries: IntegrationNotificationDelivery[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export interface IntegrationNotificationActionAuditEvent {
+    id: string;
+    action: string;
+    entityType: string;
+    entityId?: string;
+    repoId?: string;
+    deliveryId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationNotificationActionAuditsResponse {
+    events: IntegrationNotificationActionAuditEvent[];
+    total: number;
+    limit: number;
+}
+
+export async function fetchIntegrationNotifications(options: {
+    repoId?: string;
+    connectionId?: string;
+    status?: "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
+    limit?: number;
+    offset?: number;
+} = {}): Promise<IntegrationNotificationDeliveriesResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.connectionId) params.set("connectionId", options.connectionId);
+    if (options.status) params.set("status", options.status);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/notifications${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationNotificationDeliveriesResponse>(res, "Failed to fetch integration notifications");
+}
+
+export async function deliverIntegrationNotification(
+    id: string,
+    input: {
+        simulateFailure?: boolean;
+        responseCode?: number;
+        latencyMs?: number;
+        errorMessage?: string;
+    } = {}
+): Promise<{
+    success: boolean;
+    reason: string;
+    delivery: IntegrationNotificationDelivery;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/notifications/${id}/deliver`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{ success: boolean; reason: string; delivery: IntegrationNotificationDelivery }>(
+        res,
+        "Failed to process integration notification delivery"
+    );
+}
+
+export async function retryDueIntegrationNotifications(limit = 20, repoId?: string): Promise<{
+    success: boolean;
+    processed: number;
+    outcomes: Array<{
+        id: string;
+        reason: string;
+        status?: "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
+        repoId?: string;
+        correlationId?: string;
+    }>;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/notifications/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit, repoId }),
+    });
+    return parseResponse<{
+        success: boolean;
+        processed: number;
+        outcomes: Array<{
+            id: string;
+            reason: string;
+            status?: "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
+            repoId?: string;
+            correlationId?: string;
+        }>;
+    }>(res, "Failed to retry due integration notifications");
+}
+
+export async function fetchIntegrationNotificationActionAudits(options: {
+    repoId?: string;
+    limit?: number;
+} = {}): Promise<IntegrationNotificationActionAuditsResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/notification-action-audits${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationNotificationActionAuditsResponse>(
+        res,
+        "Failed to fetch notification action audits"
+    );
+}
+
 export interface IntegrationWebhookEvent {
     id: string;
     provider: "slack" | "linear" | "jira";
