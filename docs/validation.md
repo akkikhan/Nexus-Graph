@@ -37,6 +37,10 @@ Checks:
 - `GET /health`
 - `POST /api/v1/stacks/sync-local` (setup)
 - `GET /api/v1/prs?limit=5`
+- `POST /api/v1/prs` (ephemeral smoke PR create)
+- `PATCH /api/v1/prs/:id`
+- `GET /api/v1/prs/:id`
+- `POST /api/v1/prs/:id/request-review`
 - `GET /api/v1/stacks`
 - `POST /api/v1/stacks` (ephemeral smoke stack create)
 - `POST /api/v1/stacks/:id/branches` (base + child branch)

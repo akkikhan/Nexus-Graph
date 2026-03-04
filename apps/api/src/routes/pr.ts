@@ -22,6 +22,7 @@ const listPRsSchema = z.object({
 
 const createPRSchema = z.object({
     repositoryId: z.string(),
+    userId: z.string().optional(),
     title: z.string().min(1),
     description: z.string().optional(),
     headBranch: z.string(),
@@ -37,6 +38,7 @@ const updatePRSchema = z.object({
     baseBranch: z.string().optional(),
     draft: z.boolean().optional(),
     reviewers: z.array(z.string()).optional(),
+    status: z.enum(["draft", "open", "approved", "changes_requested", "merged", "closed"]).optional(),
 });
 
 function mapStatus(
@@ -165,22 +167,49 @@ prRouter.get("/:id", async (c) => {
 prRouter.post("/", zValidator("json", createPRSchema), async (c) => {
     const body = c.req.valid("json");
 
-    // In production:
-    // 1. Create PR in database
-    // 2. Push to GitHub/GitLab
-    // 3. Trigger AI review if requested
-    // 4. Calculate initial risk score
+    try {
+        const created = await prRepository.create({
+            repositoryId: body.repositoryId,
+            authorId: body.userId,
+            title: body.title,
+            description: body.description,
+            headBranch: body.headBranch,
+            baseBranch: body.baseBranch,
+            draft: body.draft,
+            stackId: body.stackId,
+            requestAIReview: body.requestAIReview,
+        });
+        if (!created) {
+            return c.json(
+                {
+                    error: "Repository or author not found for pull request creation",
+                },
+                404
+            );
+        }
 
-    const newPR = {
-        id: `pr-${Date.now()}`,
-        number: Math.floor(Math.random() * 1000),
-        ...body,
-        status: body.draft ? "draft" : "open",
-        riskScore: 0, // Will be calculated
-        createdAt: new Date().toISOString(),
-    };
+        let reviewJobId: string | undefined;
+        if (body.requestAIReview) {
+            const queued = await prRepository.requestAIReview(created.id);
+            reviewJobId = queued?.jobId;
+        }
 
-    return c.json({ pr: newPR }, 201);
+        return c.json(
+            {
+                pr: mapPR(created),
+                ...(reviewJobId ? { reviewJobId } : {}),
+            },
+            201
+        );
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for pull request creation",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 /**
@@ -191,7 +220,18 @@ prRouter.patch("/:id", zValidator("json", updatePRSchema), async (c) => {
     const updates = c.req.valid("json");
 
     try {
-        const pr = await prRepository.update(id, updates);
+        const mappedUpdates: any = {};
+        if (typeof updates.title === "string") mappedUpdates.title = updates.title;
+        if (typeof updates.description === "string") mappedUpdates.description = updates.description;
+        if (typeof updates.status === "string") mappedUpdates.status = updates.status;
+        if (typeof updates.draft === "boolean") {
+            mappedUpdates.isDraft = updates.draft;
+            if (!updates.status) {
+                mappedUpdates.status = updates.draft ? "draft" : "open";
+            }
+        }
+
+        const pr = await prRepository.update(id, mappedUpdates);
         if (!pr) return c.json({ error: "Pull request not found" }, 404);
         return c.json({ pr: mapPR(pr) });
     } catch (error) {
@@ -235,14 +275,23 @@ prRouter.post("/:id/merge", async (c) => {
 prRouter.post("/:id/request-review", async (c) => {
     const id = c.req.param("id");
 
-    // Trigger AI review job
-    // In production, this would queue a BullMQ job
-
-    return c.json({
-        success: true,
-        message: "AI review queued",
-        jobId: `job-${Date.now()}`,
-    });
+    try {
+        const queued = await prRepository.requestAIReview(id);
+        if (!queued) return c.json({ error: "Pull request not found" }, 404);
+        return c.json({
+            success: true,
+            message: queued.message,
+            jobId: queued.jobId,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for pull request review request",
+                details: errorMessage(error),
+            },
+            503
+        );
+    }
 });
 
 export { prRouter };

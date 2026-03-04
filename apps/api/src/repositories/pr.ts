@@ -3,21 +3,19 @@
  */
 
 import { eq, desc, and, sql } from "drizzle-orm";
-import { db, pullRequests, reviews, comments, users, repositories } from "../db/index.js";
+import { db, pullRequests, reviews, comments, users, repositories, branches } from "../db/index.js";
 
 export interface CreatePRInput {
-    repoId: string;
+    repositoryId: string;
+    authorId?: string;
     branchId?: string;
-    authorId: string;
-    number: number;
-    externalId: string;
     title: string;
     description?: string;
-    url: string;
-    isDraft?: boolean;
-    linesAdded?: number;
-    linesRemoved?: number;
-    filesChanged?: number;
+    headBranch: string;
+    baseBranch: string;
+    draft?: boolean;
+    stackId?: string;
+    requestAIReview?: boolean;
 }
 
 export interface UpdatePRInput {
@@ -32,31 +30,124 @@ export interface UpdatePRInput {
     estimatedReviewMinutes?: number;
 }
 
+function errorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return "Unknown database error";
+}
+
+function inferRiskLevel(score: number): "low" | "medium" | "high" | "critical" {
+    if (score >= 85) return "critical";
+    if (score >= 65) return "high";
+    if (score >= 35) return "medium";
+    return "low";
+}
+
+function inferRiskScore(title: string, description?: string): number {
+    const text = `${title} ${description || ""}`.toLowerCase();
+    let score = 28;
+    if (text.includes("auth") || text.includes("payment") || text.includes("security")) score += 42;
+    if (text.includes("db") || text.includes("migration") || text.includes("schema")) score += 24;
+    if (text.includes("refactor")) score += 14;
+    if (text.includes("fix")) score += 8;
+    return Math.max(5, Math.min(95, score));
+}
+
+async function resolveRepositoryId(repositoryRef: string): Promise<string | null> {
+    const repository = await db.query.repositories.findFirst({
+        where: sql`${repositories.id} = ${repositoryRef}
+        OR ${repositories.externalId} = ${repositoryRef}
+        OR ${repositories.name} = ${repositoryRef}
+        OR ${repositories.fullName} = ${repositoryRef}`,
+        columns: { id: true },
+    });
+    return repository?.id || null;
+}
+
+async function resolveAuthorId(authorId?: string): Promise<string | null> {
+    if (authorId) {
+        const author = await db.query.users.findFirst({
+            where: sql`${users.id} = ${authorId}
+            OR ${users.email} = ${authorId}
+            OR ${users.name} = ${authorId}`,
+            columns: { id: true },
+        });
+        if (author?.id) return author.id;
+    }
+
+    const fallback = await db.query.users.findFirst({
+        columns: { id: true },
+        orderBy: [desc(users.createdAt)],
+    });
+    return fallback?.id || null;
+}
+
+async function nextPRNumber(repoId: string): Promise<number> {
+    const [row] = await db
+        .select({
+            maxNumber: sql<number>`coalesce(max(${pullRequests.number}), 0)`,
+        })
+        .from(pullRequests)
+        .where(eq(pullRequests.repoId, repoId));
+    return Number(row?.maxNumber || 0) + 1;
+}
+
 export const prRepository = {
+    errorMessage,
+
     /**
      * Create a new pull request
      */
     async create(input: CreatePRInput) {
+        const repoId = await resolveRepositoryId(input.repositoryId);
+        const authorId = await resolveAuthorId(input.authorId);
+        if (!repoId || !authorId) return null;
+
+        let branchId: string | null = input.branchId || null;
+        if (!branchId) {
+            const branch = await db.query.branches.findFirst({
+                where: and(
+                    eq(branches.repoId, repoId),
+                    eq(branches.name, input.headBranch),
+                    input.stackId ? eq(branches.stackId, input.stackId) : sql`true`
+                ),
+                columns: { id: true },
+                orderBy: [desc(branches.updatedAt)],
+            });
+            branchId = branch?.id || null;
+        }
+
+        const number = await nextPRNumber(repoId);
+        const riskScore = inferRiskScore(input.title, input.description);
+        const riskLevel = inferRiskLevel(riskScore);
+        const isDraft = input.draft === true;
+
         const [pr] = await db
             .insert(pullRequests)
             .values({
-                repoId: input.repoId,
-                branchId: input.branchId,
-                authorId: input.authorId,
-                number: input.number,
-                externalId: input.externalId,
+                repoId,
+                branchId,
+                authorId,
+                number,
+                externalId: `nexus_${repoId}_${number}`,
                 title: input.title,
                 description: input.description,
-                url: input.url,
-                isDraft: input.isDraft ?? false,
-                status: input.isDraft ? "draft" : "open",
-                linesAdded: input.linesAdded ?? 0,
-                linesRemoved: input.linesRemoved ?? 0,
-                filesChanged: input.filesChanged ?? 0,
+                url: `https://example.com/pr/${number}`,
+                isDraft,
+                status: isDraft ? "draft" : "open",
+                linesAdded: 0,
+                linesRemoved: 0,
+                filesChanged: 0,
+                commitsCount: 1,
+                riskScore,
+                riskLevel,
+                aiSummary: input.requestAIReview
+                    ? "AI review requested and queued."
+                    : "Initial PR created. AI review not yet requested.",
             })
             .returning();
 
-        return pr;
+        if (!pr) return null;
+        return this.findById(pr.id);
     },
 
     /**
@@ -138,16 +229,36 @@ export const prRepository = {
      * Update a PR
      */
     async update(id: string, input: UpdatePRInput) {
+        const updatePayload: any = {
+            updatedAt: new Date(),
+        };
+        if (typeof input.title === "string") updatePayload.title = input.title;
+        if (typeof input.description === "string") updatePayload.description = input.description;
+        if (typeof input.status === "string") updatePayload.status = input.status;
+        if (typeof input.isDraft === "boolean") updatePayload.isDraft = input.isDraft;
+        if (typeof input.aiSummary === "string") updatePayload.aiSummary = input.aiSummary;
+        if (typeof input.riskScore === "number") updatePayload.riskScore = input.riskScore;
+        if (typeof input.riskLevel === "string") updatePayload.riskLevel = input.riskLevel;
+        if (Array.isArray(input.riskFactors)) updatePayload.riskFactors = input.riskFactors;
+        if (typeof input.estimatedReviewMinutes === "number") {
+            updatePayload.estimatedReviewMinutes = input.estimatedReviewMinutes;
+        }
+
+        const [existing] = await db
+            .select({ id: pullRequests.id })
+            .from(pullRequests)
+            .where(eq(pullRequests.id, id))
+            .limit(1);
+        if (!existing) return null;
+
         const [updated] = await db
             .update(pullRequests)
-            .set({
-                ...input,
-                updatedAt: new Date(),
-            })
+            .set(updatePayload)
             .where(eq(pullRequests.id, id))
             .returning();
 
-        return updated;
+        if (!updated) return null;
+        return this.findById(updated.id);
     },
 
     /**
@@ -210,5 +321,47 @@ export const prRepository = {
         return this.update(id, {
             status: "merged",
         });
+    },
+
+    async requestAIReview(id: string) {
+        const [pr] = await db
+            .select({
+                id: pullRequests.id,
+                title: pullRequests.title,
+                aiSummary: pullRequests.aiSummary,
+            })
+            .from(pullRequests)
+            .where(eq(pullRequests.id, id))
+            .limit(1);
+        if (!pr) return null;
+
+        const [queuedReview] = await db
+            .insert(reviews)
+            .values({
+                prId: id,
+                status: "commented",
+                body: "AI review requested and queued for processing.",
+                isAi: true,
+                aiModel: "nexus-ai-queued",
+            })
+            .returning({
+                id: reviews.id,
+            });
+
+        await db
+            .update(pullRequests)
+            .set({
+                aiSummary:
+                    pr.aiSummary ||
+                    `AI review requested for "${pr.title}"`,
+                updatedAt: new Date(),
+            })
+            .where(eq(pullRequests.id, id));
+
+        return {
+            prId: id,
+            jobId: queuedReview?.id || `ai-review-${Date.now()}`,
+            message: "AI review queued",
+        };
     },
 };

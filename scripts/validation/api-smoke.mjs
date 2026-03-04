@@ -165,6 +165,61 @@ async function run() {
             assertErrorPayload("stacks", stacks.payload);
         }
 
+        if (firstRepoId) {
+            const createPR = await request("/api/v1/prs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repositoryId: firstRepoId,
+                    title: `Smoke PR ${Date.now()}`,
+                    description: "PR write-path smoke coverage",
+                    headBranch: `smoke/pr-${Date.now()}`,
+                    baseBranch: "main",
+                    draft: true,
+                    requestAIReview: false,
+                }),
+            });
+            printResult("POST /api/v1/prs", createPR);
+            assert(createPR.response.status === 201, "create PR must return 201");
+            assert(createPR.payload?.pr?.id, "create PR must return pr.id");
+            const createdPrId = createPR.payload.pr.id;
+
+            const patchPR = await request(`/api/v1/prs/${createdPrId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    title: "Smoke PR Updated Title",
+                    draft: false,
+                }),
+            });
+            printResult(`PATCH /api/v1/prs/${createdPrId}`, patchPR);
+            assert(patchPR.response.status === 200, "update PR must return 200");
+            assert(
+                patchPR.payload?.pr?.title === "Smoke PR Updated Title",
+                "update PR must persist title"
+            );
+            assert(
+                patchPR.payload?.pr?.status === "open",
+                "update PR must map draft=false to open"
+            );
+
+            const getCreatedPR = await request(`/api/v1/prs/${createdPrId}`);
+            printResult(`GET /api/v1/prs/${createdPrId}`, getCreatedPR);
+            assert(getCreatedPR.response.status === 200, "created PR detail must return 200");
+            assert(
+                getCreatedPR.payload?.pr?.title === "Smoke PR Updated Title",
+                "created PR detail must reflect updated title"
+            );
+
+            const requestReview = await request(`/api/v1/prs/${createdPrId}/request-review`, {
+                method: "POST",
+            });
+            printResult(`POST /api/v1/prs/${createdPrId}/request-review`, requestReview);
+            assert(requestReview.response.status === 200, "request-review must return 200");
+            assert(requestReview.payload?.success === true, "request-review must return success=true");
+            assert(requestReview.payload?.jobId, "request-review must return jobId");
+        }
+
         if (firstRepoId && stacks.response.status === 200) {
             const smokeStackName = `smoke-stack-${Date.now()}`;
             const createStack = await request("/api/v1/stacks", {
