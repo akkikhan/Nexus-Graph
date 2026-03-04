@@ -434,6 +434,41 @@ async function run() {
                 "chat assistant message must preserve provenance provider"
             );
 
+            const createAgentRunDisallowedProvider = await request("/api/v1/agents/runs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    userId: "20000000-0000-4000-8000-000000000001",
+                    repoId: firstRepoId,
+                    prId: createdPrId,
+                    provider: "untrusted-provider",
+                    prompt: "Attempt run with provider blocked by policy.",
+                }),
+            });
+            printResult("POST /api/v1/agents/runs (provider policy rejection)", createAgentRunDisallowedProvider);
+            assert(
+                createAgentRunDisallowedProvider.response.status === 400,
+                "agent run create with disallowed provider must return 400"
+            );
+
+            const createAgentRunInvalidBudget = await request("/api/v1/agents/runs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    userId: "20000000-0000-4000-8000-000000000001",
+                    repoId: firstRepoId,
+                    prId: createdPrId,
+                    provider: "anthropic",
+                    budgetCents: 999999,
+                    prompt: "Attempt run with budget over guardrail max.",
+                }),
+            });
+            printResult("POST /api/v1/agents/runs (budget policy rejection)", createAgentRunInvalidBudget);
+            assert(
+                createAgentRunInvalidBudget.response.status === 400,
+                "agent run create with invalid budget must return 400"
+            );
+
             const createAgentRun = await request("/api/v1/agents/runs", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -441,6 +476,9 @@ async function run() {
                     userId: "20000000-0000-4000-8000-000000000001",
                     repoId: firstRepoId,
                     prId: createdPrId,
+                    provider: "anthropic",
+                    model: "claude-sonnet-smoke",
+                    budgetCents: 20,
                     prompt: `Refactor auth middleware and open PR. token=${rawSecret}`,
                     plan: {
                         steps: [
@@ -456,6 +494,8 @@ async function run() {
             const agentRunId = createAgentRun.payload?.run?.id;
             assert(agentRunId, "agent run create must return run.id");
             assert(createAgentRun.payload?.run?.status === "planned", "agent run should start in planned state");
+            assert(createAgentRun.payload?.run?.provider === "anthropic", "agent run must persist provider");
+            assert(createAgentRun.payload?.run?.budgetCents === 20, "agent run must persist budget");
             assert(
                 createAgentRun.payload?.run?.prompt?.includes("[REDACTED_SECRET]"),
                 "agent run prompt must redact secrets"
@@ -528,6 +568,7 @@ async function run() {
                 body: JSON.stringify({
                     status: "awaiting_approval",
                     awaitingApprovalReason: "Needs human checkpoint before file mutations.",
+                    approvalCheckpoint: "checkpoint-smoke-1",
                     actor: "smoke-runner",
                 }),
             });
@@ -536,6 +577,81 @@ async function run() {
             assert(
                 awaitingApproval.payload?.run?.status === "awaiting_approval",
                 "agent run should transition to awaiting_approval"
+            );
+
+            const createAuditWhileAwaitingApproval = await request(`/api/v1/agents/runs/${agentRunId}/audit`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    type: "command",
+                    actor: "smoke-runner",
+                    command: "git status",
+                    message: "Attempt mutation while approval is pending.",
+                    details: {
+                        costCents: 1,
+                    },
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${agentRunId}/audit (awaiting approval blocked)`, createAuditWhileAwaitingApproval);
+            assert(
+                createAuditWhileAwaitingApproval.response.status === 409,
+                "mutation audit event must be blocked when run is awaiting approval"
+            );
+
+            const transitionApprovalToRunningWithoutCheckpoint = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "running",
+                    actor: "human-approver",
+                    message: "Approval attempted without checkpoint.",
+                }),
+            });
+            printResult(
+                `POST /api/v1/agents/runs/${agentRunId}/transition (awaiting_approval->running missing checkpoint)`,
+                transitionApprovalToRunningWithoutCheckpoint
+            );
+            assert(
+                transitionApprovalToRunningWithoutCheckpoint.response.status === 400,
+                "awaiting_approval->running without checkpoint must return 400"
+            );
+
+            const transitionApprovalToRunningWrongCheckpoint = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "running",
+                    approvalCheckpoint: "wrong-checkpoint",
+                    actor: "human-approver",
+                    message: "Approval attempted with wrong checkpoint.",
+                }),
+            });
+            printResult(
+                `POST /api/v1/agents/runs/${agentRunId}/transition (awaiting_approval->running wrong checkpoint)`,
+                transitionApprovalToRunningWrongCheckpoint
+            );
+            assert(
+                transitionApprovalToRunningWrongCheckpoint.response.status === 409,
+                "awaiting_approval->running with wrong checkpoint must return 409"
+            );
+
+            const transitionApprovalToRunning = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    status: "running",
+                    approvalCheckpoint: "checkpoint-smoke-1",
+                    actor: "human-approver",
+                    message: "Approval granted. Continue execution.",
+                }),
+            });
+            printResult(
+                `POST /api/v1/agents/runs/${agentRunId}/transition (awaiting_approval->running)`,
+                transitionApprovalToRunning
+            );
+            assert(
+                transitionApprovalToRunning.response.status === 200,
+                "awaiting_approval->running transition must return 200"
             );
 
             const createAgentAuditEvent = await request(`/api/v1/agents/runs/${agentRunId}/audit`, {
@@ -549,6 +665,7 @@ async function run() {
                     details: {
                         exitCode: 0,
                         phase: "planning",
+                        costCents: 15,
                     },
                 }),
             });
@@ -559,32 +676,33 @@ async function run() {
                 "agent audit command must redact secrets"
             );
 
+            const createAgentAuditEventBudgetExceeded = await request(`/api/v1/agents/runs/${agentRunId}/audit`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    type: "command",
+                    actor: "smoke-runner",
+                    command: "git push",
+                    message: "Attempt command over budget.",
+                    details: {
+                        costCents: 10,
+                    },
+                }),
+            });
+            printResult(`POST /api/v1/agents/runs/${agentRunId}/audit (budget exceeded)`, createAgentAuditEventBudgetExceeded);
+            assert(
+                createAgentAuditEventBudgetExceeded.response.status === 409,
+                "agent audit append must reject events that exceed run budget"
+            );
+
             const auditEvents = await request(`/api/v1/agents/runs/${agentRunId}/audit?limit=20`);
             printResult(`GET /api/v1/agents/runs/${agentRunId}/audit`, auditEvents);
             assert(auditEvents.response.status === 200, "agent audit listing must return 200");
             assert(Array.isArray(auditEvents.payload?.events), "agent audit listing must include events[]");
-            assert(auditEvents.payload.events.length >= 3, "agent audit listing should include lifecycle + command events");
+            assert(auditEvents.payload.events.length >= 4, "agent audit listing should include lifecycle + command events");
             assert(
                 auditEvents.payload.events.some((event) => event.type === "status_transition"),
                 "agent audit listing must include status transition events"
-            );
-
-            const transitionApprovalToRunning = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    status: "running",
-                    actor: "human-approver",
-                    message: "Approval granted. Continue execution.",
-                }),
-            });
-            printResult(
-                `POST /api/v1/agents/runs/${agentRunId}/transition (awaiting_approval->running)`,
-                transitionApprovalToRunning
-            );
-            assert(
-                transitionApprovalToRunning.response.status === 200,
-                "awaiting_approval->running transition must return 200"
             );
 
             const transitionToCompleted = await request(`/api/v1/agents/runs/${agentRunId}/transition`, {
@@ -624,6 +742,7 @@ async function run() {
                 body: JSON.stringify({
                     userId: "20000000-0000-4000-8000-000000000001",
                     repoId: firstRepoId,
+                    provider: "anthropic",
                     prompt: "Attempt risky refactor and capture failure path.",
                 }),
             });

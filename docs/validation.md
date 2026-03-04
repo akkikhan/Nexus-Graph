@@ -52,8 +52,8 @@ Checks:
 - `POST /api/v1/agents/runs`
 - `GET /api/v1/agents/runs`
 - `GET /api/v1/agents/runs/:id`
-- `POST /api/v1/agents/runs/:id/transition` (lifecycle transition checks + invalid transition guardrails)
-- `POST /api/v1/agents/runs/:id/audit` (audit append with redaction)
+- `POST /api/v1/agents/runs/:id/transition` (lifecycle transition checks + approval checkpoint guardrails)
+- `POST /api/v1/agents/runs/:id/audit` (audit append with redaction + budget guardrails)
 - `GET /api/v1/agents/runs/:id/audit`
 - `GET /api/v1/stacks`
 - `POST /api/v1/stacks` (ephemeral smoke stack create)

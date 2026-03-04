@@ -17,6 +17,7 @@ const listRunsSchema = z.object({
     repoId: z.string().optional(),
     prId: z.string().optional(),
     stackId: z.string().optional(),
+    provider: z.string().optional(),
     status: agentRunStatusSchema.optional(),
     limit: z.coerce.number().min(1).max(100).default(20),
     offset: z.coerce.number().min(0).default(0),
@@ -27,10 +28,14 @@ const createRunSchema = z.object({
     repoId: z.string().optional(),
     prId: z.string().optional(),
     stackId: z.string().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
     prompt: z.string().min(1),
     plan: z.record(z.string(), z.unknown()).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    budgetCents: z.coerce.number().int().min(1).max(100000).optional(),
     requiresApproval: z.boolean().optional(),
+    approvalCheckpoint: z.string().optional(),
 });
 
 const transitionRunSchema = z.object({
@@ -38,6 +43,7 @@ const transitionRunSchema = z.object({
     message: z.string().optional(),
     actor: z.string().optional(),
     awaitingApprovalReason: z.string().optional(),
+    approvalCheckpoint: z.string().optional(),
     errorMessage: z.string().optional(),
     details: z.record(z.string(), z.unknown()).optional(),
 });
@@ -89,11 +95,33 @@ agentRouter.get("/runs", zValidator("query", listRunsSchema), async (c) => {
 agentRouter.post("/runs", zValidator("json", createRunSchema), async (c) => {
     const body = c.req.valid("json");
     try {
-        const run = await agentRepository.createRun(body);
-        if (!run) {
+        const result = await agentRepository.createRun(body);
+        if (result.reason === "provider_not_allowed") {
+            return c.json(
+                {
+                    error: "Agent provider is not allowed by policy",
+                    provider: result.provider,
+                    allowedProviders: result.allowedProviders,
+                },
+                400
+            );
+        }
+        if (result.reason === "invalid_budget") {
+            return c.json(
+                {
+                    error: "Agent budget is invalid or exceeds configured limits",
+                    maxBudgetCents: result.maxBudgetCents,
+                },
+                400
+            );
+        }
+        if (result.reason === "approval_checkpoint_required") {
+            return c.json({ error: "approvalCheckpoint is required when requiresApproval=true" }, 400);
+        }
+        if (result.reason === "insert_failed") {
             return c.json({ error: "Failed to create agent run" }, 500);
         }
-        return c.json({ run }, 201);
+        return c.json({ run: result.run }, 201);
     } catch (error) {
         return c.json(
             {
@@ -136,6 +164,27 @@ agentRouter.post("/runs/:id/transition", zValidator("json", transitionRunSchema)
         if (result.reason === "run_not_found") return c.json({ error: "Agent run not found" }, 404);
         if (result.reason === "approval_reason_required") {
             return c.json({ error: "awaitingApprovalReason is required for awaiting_approval state" }, 400);
+        }
+        if (result.reason === "approval_checkpoint_required") {
+            return c.json({ error: "approvalCheckpoint is required for this transition" }, 400);
+        }
+        if (result.reason === "approval_checkpoint_mismatch") {
+            return c.json(
+                {
+                    error: "approvalCheckpoint does not match the pending approval checkpoint",
+                    run: result.run,
+                },
+                409
+            );
+        }
+        if (result.reason === "approval_required") {
+            return c.json(
+                {
+                    error: "Run requires explicit approval checkpoint before continuing",
+                    run: result.run,
+                },
+                409
+            );
         }
         if (result.reason === "invalid_transition") {
             return c.json(
@@ -202,6 +251,38 @@ agentRouter.post("/runs/:id/audit", zValidator("json", appendAuditEventSchema), 
     try {
         const result = await agentRepository.appendAuditEvent(id, body);
         if (result.reason === "run_not_found") return c.json({ error: "Agent run not found" }, 404);
+        if (result.reason === "mutation_not_running") {
+            return c.json(
+                {
+                    error: "Mutation audit events are only allowed while run is in running state",
+                    status: result.status,
+                },
+                409
+            );
+        }
+        if (result.reason === "approval_required") {
+            return c.json(
+                {
+                    error: "Run requires explicit approval checkpoint before mutation events",
+                    run: result.run,
+                },
+                409
+            );
+        }
+        if (result.reason === "invalid_budget_cost") {
+            return c.json({ error: "details.costCents must be a non-negative integer" }, 400);
+        }
+        if (result.reason === "budget_exceeded") {
+            return c.json(
+                {
+                    error: "Agent run budget exceeded",
+                    budgetCents: result.budgetCents,
+                    budgetSpentCents: result.budgetSpentCents,
+                    eventCostCents: result.eventCostCents,
+                },
+                409
+            );
+        }
         if (result.reason === "insert_failed") return c.json({ error: "Failed to persist agent audit event" }, 500);
         return c.json(
             {
@@ -222,4 +303,3 @@ agentRouter.post("/runs/:id/audit", zValidator("json", appendAuditEventSchema), 
 });
 
 export { agentRouter };
-

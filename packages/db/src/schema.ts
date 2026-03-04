@@ -349,11 +349,17 @@ export const agentRuns = pgTable("agent_runs", {
     repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "set null" }),
     prId: uuid("pr_id").references(() => pullRequests.id, { onDelete: "set null" }),
     stackId: uuid("stack_id").references(() => stacks.id, { onDelete: "set null" }),
+    provider: text("provider").default("anthropic").notNull(),
+    model: text("model"),
     prompt: text("prompt").notNull(),
     plan: jsonb("plan").default({}),
     status: agentRunStatusEnum("status").default("planned").notNull(),
+    budgetCents: integer("budget_cents").default(500).notNull(),
+    budgetSpentCents: integer("budget_spent_cents").default(0).notNull(),
     requiresApproval: boolean("requires_approval").default(false).notNull(),
+    approvalCheckpoint: text("approval_checkpoint"),
     awaitingApprovalReason: text("awaiting_approval_reason"),
+    lastApprovedAt: timestamp("last_approved_at"),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
     errorMessage: text("error_message"),
@@ -364,6 +370,8 @@ export const agentRuns = pgTable("agent_runs", {
     statusCreatedIdx: index("agent_runs_status_created_idx").on(table.status, table.createdAt),
     userStatusIdx: index("agent_runs_user_status_idx").on(table.userId, table.status),
     repoStatusIdx: index("agent_runs_repo_status_idx").on(table.repoId, table.status),
+    providerStatusIdx: index("agent_runs_provider_status_idx").on(table.provider, table.status),
+    budgetIdx: index("agent_runs_budget_idx").on(table.budgetCents, table.budgetSpentCents),
 }));
 
 export const agentRunAuditEvents = pgTable("agent_run_audit_events", {
