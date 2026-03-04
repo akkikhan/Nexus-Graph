@@ -317,6 +317,124 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         );
     });
 
+    await page.route("**/api/v1/integrations/connections**", async (route) => {
+        await route.fulfill(
+            jsonResponse(200, {
+                connections: [
+                    {
+                        id: "conn-slack-1",
+                        repoId: "repo-1",
+                        provider: "slack",
+                        status: "active",
+                        displayName: "Slack Main",
+                        config: { defaultChannel: "C123" },
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString(),
+                    },
+                    {
+                        id: "conn-jira-1",
+                        repoId: "repo-1",
+                        provider: "jira",
+                        status: "error",
+                        displayName: "Jira Prod",
+                        config: {},
+                        lastError: "token revoked",
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString(),
+                    },
+                ],
+                total: 2,
+                limit: 50,
+                offset: 0,
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/metrics**", async (route) => {
+        await route.fulfill(
+            jsonResponse(200, {
+                totals: {
+                    connections: 2,
+                    issueLinks: 3,
+                    deliveries: 5,
+                    webhookEvents: 7,
+                    webhookAuthFailures: 2,
+                    webhookAuthConfigErrors: 1,
+                    issueSyncAttempts: 4,
+                    pending: 1,
+                    retrying: 1,
+                    delivered: 3,
+                    failed: 1,
+                    deadLetter: 1,
+                    webhooksReceived: 1,
+                    webhooksProcessed: 5,
+                    webhooksFailed: 1,
+                    webhooksDeadLetter: 0,
+                    issueSyncPending: 1,
+                    issueSyncSynced: 2,
+                    issueSyncFailed: 1,
+                    issueSyncDeadLetter: 0,
+                },
+                providers: {
+                    slack: 1,
+                    jira: 1,
+                },
+                webhookAuth: {
+                    failuresByProvider: {
+                        slack: 2,
+                    },
+                    failuresByReason: {
+                        missing_signature_headers: 1,
+                        timestamp_out_of_window: 1,
+                    },
+                    failureRatePct: 20,
+                },
+                retryQueue: {
+                    notificationQueued: 1,
+                    webhookQueued: 1,
+                },
+                successRatePct: 75,
+                generatedAt: new Date().toISOString(),
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/alerts**", async (route) => {
+        await route.fulfill(
+            jsonResponse(200, {
+                status: "warning",
+                alerts: [
+                    {
+                        code: "webhook_auth_failures_high",
+                        severity: "warning",
+                        message: "Webhook auth failure count is above threshold.",
+                        value: 2,
+                        threshold: 1,
+                    },
+                ],
+                thresholds: {
+                    minSuccessRatePct: 95,
+                    maxRetryQueueAgeSeconds: 300,
+                    webhookAuthWindowMinutes: 60,
+                    maxWebhookAuthFailures: 1,
+                    maxWebhookAuthFailureRatePct: 5,
+                },
+                queueAges: {
+                    oldestNotificationRetryAgeSeconds: 100,
+                    oldestWebhookRetryAgeSeconds: 90,
+                },
+                webhookAuthWindow: {
+                    startAt: new Date().toISOString(),
+                    failures: 2,
+                    ingested: 10,
+                    failureRatePct: 20,
+                    configErrors: 1,
+                },
+                generatedAt: new Date().toISOString(),
+            })
+        );
+    });
+
     await page.route("**/api/v1/integrations/webhook-auth-events**", async (route) => {
         const url = new URL(route.request().url());
         const isExport = url.pathname.endsWith("/webhook-auth-events/export");
@@ -397,6 +515,9 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await page.goto("/settings", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: /^Settings$/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Integration Diagnostics/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Integrations Operations/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Connected \(1\)/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });

@@ -17,9 +17,15 @@ import {
 } from "lucide-react";
 import {
     IntegrationWebhookAuthEventListOptions,
+    fetchIntegrationAlerts,
+    fetchIntegrationConnections,
+    fetchIntegrationMetrics,
     exportIntegrationWebhookAuthEvents,
     fetchIntegrationWebhookAuthEvents,
     fetchSystemHealth,
+    IntegrationAlertStatus,
+    IntegrationConnection,
+    IntegrationMetrics,
     IntegrationWebhookAuthEvent,
 } from "../../../lib/api";
 
@@ -243,6 +249,21 @@ function formatAuthTimestamp(value: string): string {
     return date.toLocaleString();
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message.trim()) return error.message;
+    return fallback;
+}
+
+function connectionStatusForProvider(
+    connections: IntegrationConnection[],
+    provider: "slack" | "linear" | "jira"
+): "connected" | "disconnected" | "coming_soon" {
+    const providerConnections = connections.filter((connection) => connection.provider === provider);
+    if (providerConnections.length === 0) return "disconnected";
+    if (providerConnections.some((connection) => connection.status === "active")) return "connected";
+    return "disconnected";
+}
+
 export default function SettingsPage() {
     const [values, setValues] = useState(initialValues);
     const [saveMessage, setSaveMessage] = useState<string>("");
@@ -294,6 +315,45 @@ export default function SettingsPage() {
             }),
         refetchInterval: 30_000,
     });
+    const integrationRepoId = authRepoId.trim() || undefined;
+    const {
+        data: integrationConnectionsData,
+        isLoading: integrationConnectionsLoading,
+        isFetching: integrationConnectionsFetching,
+        error: integrationConnectionsError,
+        refetch: refetchIntegrationConnections,
+    } = useQuery({
+        queryKey: ["settings", "integration-connections", integrationRepoId],
+        queryFn: () =>
+            fetchIntegrationConnections({
+                repoId: integrationRepoId,
+                limit: 50,
+                offset: 0,
+            }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: integrationMetricsData,
+        isLoading: integrationMetricsLoading,
+        isFetching: integrationMetricsFetching,
+        error: integrationMetricsError,
+        refetch: refetchIntegrationMetrics,
+    } = useQuery({
+        queryKey: ["settings", "integration-metrics", integrationRepoId],
+        queryFn: () => fetchIntegrationMetrics(integrationRepoId),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: integrationAlertsData,
+        isLoading: integrationAlertsLoading,
+        isFetching: integrationAlertsFetching,
+        error: integrationAlertsError,
+        refetch: refetchIntegrationAlerts,
+    } = useQuery({
+        queryKey: ["settings", "integration-alerts", integrationRepoId],
+        queryFn: () => fetchIntegrationAlerts({ repoId: integrationRepoId }),
+        refetchInterval: 30_000,
+    });
 
     const healthSummary = useMemo(() => {
         if (!health) {
@@ -310,7 +370,28 @@ export default function SettingsPage() {
     }, [health, healthLoading]);
 
     const authEvents = authEventsData?.events || [];
+    const integrationConnections = integrationConnectionsData?.connections || [];
     const hasNextAuthPage = authEvents.length === WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
+    const integrationLoading =
+        integrationConnectionsLoading || integrationMetricsLoading || integrationAlertsLoading;
+    const integrationFetching =
+        integrationConnectionsFetching || integrationMetricsFetching || integrationAlertsFetching;
+    const integrationStatusByProvider = useMemo(() => {
+        return {
+            slack: connectionStatusForProvider(integrationConnections, "slack"),
+            linear: connectionStatusForProvider(integrationConnections, "linear"),
+            jira: connectionStatusForProvider(integrationConnections, "jira"),
+        };
+    }, [integrationConnections]);
+    const integrationSnapshot = useMemo((): {
+        metrics: IntegrationMetrics | null;
+        alerts: IntegrationAlertStatus | null;
+    } => {
+        return {
+            metrics: integrationMetricsData || null,
+            alerts: integrationAlertsData || null,
+        };
+    }, [integrationMetricsData, integrationAlertsData]);
     const authEventsSummary = useMemo(() => {
         const missingSignature = authEvents.filter((event) => event.reason === "missing_signature_headers").length;
         const staleTimestamp = authEvents.filter((event) => event.reason === "timestamp_out_of_window").length;
@@ -449,10 +530,17 @@ export default function SettingsPage() {
                         </p>
                     </div>
                     <button
-                        onClick={() => refetchAuthEvents()}
+                        onClick={() => {
+                            void Promise.all([
+                                refetchAuthEvents(),
+                                refetchIntegrationConnections(),
+                                refetchIntegrationMetrics(),
+                                refetchIntegrationAlerts(),
+                            ]);
+                        }}
                         className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-zinc-700 text-zinc-200 hover:bg-zinc-800/70 transition-colors text-sm"
                     >
-                        <RefreshCw className={`w-4 h-4 ${authEventsFetching ? "animate-spin" : ""}`} />
+                        <RefreshCw className={`w-4 h-4 ${authEventsFetching || integrationFetching ? "animate-spin" : ""}`} />
                         Refresh
                     </button>
                 </div>
@@ -550,6 +638,109 @@ export default function SettingsPage() {
                     >
                         Clear Filters
                     </button>
+                </div>
+
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                        <div>
+                            <h3 className="text-sm font-semibold text-white">Integrations Operations</h3>
+                            <p className="text-xs text-zinc-500">
+                                Connection health, delivery/webhook metrics, and alert state
+                                {integrationRepoId ? ` for repo ${integrationRepoId}.` : "."}
+                            </p>
+                        </div>
+                        <span
+                            className={`text-xs font-medium ${
+                                integrationSnapshot.alerts?.status === "critical"
+                                    ? "text-red-400"
+                                    : integrationSnapshot.alerts?.status === "warning"
+                                      ? "text-yellow-400"
+                                      : "text-green-400"
+                            }`}
+                        >
+                            {integrationSnapshot.alerts?.status || "unknown"}
+                        </span>
+                    </div>
+
+                    {integrationLoading ? (
+                        <div className="text-sm text-zinc-400">Loading integration operations snapshot...</div>
+                    ) : integrationConnectionsError || integrationMetricsError || integrationAlertsError ? (
+                        <div className="rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
+                            {[
+                                integrationConnectionsError
+                                    ? getErrorMessage(integrationConnectionsError, "Connections unavailable")
+                                    : null,
+                                integrationMetricsError
+                                    ? getErrorMessage(integrationMetricsError, "Metrics unavailable")
+                                    : null,
+                                integrationAlertsError
+                                    ? getErrorMessage(integrationAlertsError, "Alerts unavailable")
+                                    : null,
+                            ]
+                                .filter(Boolean)
+                                .join(" | ")}
+                        </div>
+                    ) : (
+                        <>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                                <div className="rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2">
+                                    <div className="text-zinc-500 text-xs">Success Rate</div>
+                                    <div className="font-semibold text-zinc-100">
+                                        {integrationSnapshot.metrics?.successRatePct ?? 0}%
+                                    </div>
+                                </div>
+                                <div className="rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2">
+                                    <div className="text-zinc-500 text-xs">Delivery Dead Letters</div>
+                                    <div className="font-semibold text-zinc-100">
+                                        {integrationSnapshot.metrics?.totals.deadLetter ?? 0}
+                                    </div>
+                                </div>
+                                <div className="rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2">
+                                    <div className="text-zinc-500 text-xs">Webhook Auth Failures</div>
+                                    <div className="font-semibold text-zinc-100">
+                                        {integrationSnapshot.metrics?.totals.webhookAuthFailures ?? 0}
+                                    </div>
+                                </div>
+                                <div className="rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2">
+                                    <div className="text-zinc-500 text-xs">Retry Queue</div>
+                                    <div className="font-semibold text-zinc-100">
+                                        {(integrationSnapshot.metrics?.retryQueue.notificationQueued ?? 0) +
+                                            (integrationSnapshot.metrics?.retryQueue.webhookQueued ?? 0)}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                                {(["slack", "linear", "jira"] as const).map((provider) => {
+                                    const providerStatus = integrationStatusByProvider[provider];
+                                    const providerCount = integrationConnections.filter(
+                                        (connection) => connection.provider === provider
+                                    ).length;
+                                    return (
+                                        <div
+                                            key={provider}
+                                            className="rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2 flex items-center justify-between"
+                                        >
+                                            <div className="capitalize text-zinc-300">{provider}</div>
+                                            <div className={`text-xs ${statusClass(providerStatus)}`}>
+                                                {statusLabel(providerStatus)} ({providerCount})
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            <div className="text-xs text-zinc-400">
+                                {integrationSnapshot.alerts?.alerts.length
+                                    ? `${integrationSnapshot.alerts.alerts.length} active alert(s): ${integrationSnapshot.alerts.alerts
+                                          .slice(0, 2)
+                                          .map((alert) => alert.code)
+                                          .join(", ")}`
+                                    : "No active integration alerts."}
+                                {integrationFetching ? " Refreshing..." : ""}
+                            </div>
+                        </>
+                    )}
                 </div>
 
                 <div className="flex items-center justify-between gap-3">

@@ -478,3 +478,147 @@ export async function exportIntegrationWebhookAuthEvents(
     const filename = parseContentDispositionFilename(res.headers.get("content-disposition"), fallback);
     return { blob, filename };
 }
+
+export interface IntegrationConnection {
+    id: string;
+    repoId: string;
+    provider: "slack" | "linear" | "jira";
+    status: "active" | "disabled" | "error";
+    displayName: string;
+    config: Record<string, unknown>;
+    tokenRef?: string;
+    lastValidatedAt?: string;
+    lastError?: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface IntegrationConnectionsResponse {
+    connections: IntegrationConnection[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export async function fetchIntegrationConnections(options: {
+    repoId?: string;
+    provider?: "slack" | "linear" | "jira";
+    status?: "active" | "disabled" | "error";
+    limit?: number;
+    offset?: number;
+} = {}): Promise<IntegrationConnectionsResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.provider) params.set("provider", options.provider);
+    if (options.status) params.set("status", options.status);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/connections${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationConnectionsResponse>(res, "Failed to fetch integration connections");
+}
+
+export interface IntegrationMetrics {
+    totals: {
+        connections: number;
+        issueLinks: number;
+        deliveries: number;
+        webhookEvents: number;
+        webhookAuthFailures: number;
+        webhookAuthConfigErrors: number;
+        issueSyncAttempts: number;
+        pending: number;
+        retrying: number;
+        delivered: number;
+        failed: number;
+        deadLetter: number;
+        webhooksReceived: number;
+        webhooksProcessed: number;
+        webhooksFailed: number;
+        webhooksDeadLetter: number;
+        issueSyncPending: number;
+        issueSyncSynced: number;
+        issueSyncFailed: number;
+        issueSyncDeadLetter: number;
+    };
+    providers: Record<string, number>;
+    webhookAuth: {
+        failuresByProvider: Record<string, number>;
+        failuresByReason: Record<string, number>;
+        failureRatePct: number;
+    };
+    retryQueue: {
+        notificationQueued: number;
+        webhookQueued: number;
+        oldestNotificationDueAt?: string;
+        oldestWebhookDueAt?: string;
+    };
+    successRatePct: number;
+    generatedAt: string;
+}
+
+export async function fetchIntegrationMetrics(repoId?: string): Promise<IntegrationMetrics> {
+    const params = new URLSearchParams();
+    if (repoId) params.set("repoId", repoId);
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/metrics${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationMetrics>(res, "Failed to fetch integration metrics");
+}
+
+export interface IntegrationAlertStatus {
+    status: "healthy" | "warning" | "critical";
+    alerts: Array<{
+        code: string;
+        severity: "warning" | "critical";
+        message: string;
+        value: number;
+        threshold: number;
+    }>;
+    thresholds: {
+        minSuccessRatePct: number;
+        maxRetryQueueAgeSeconds: number;
+        webhookAuthWindowMinutes: number;
+        maxWebhookAuthFailures: number;
+        maxWebhookAuthFailureRatePct: number;
+    };
+    queueAges: {
+        oldestNotificationRetryAgeSeconds: number | null;
+        oldestWebhookRetryAgeSeconds: number | null;
+    };
+    webhookAuthWindow: {
+        startAt: string;
+        failures: number;
+        ingested: number;
+        failureRatePct: number;
+        configErrors: number;
+    };
+    generatedAt: string;
+}
+
+export async function fetchIntegrationAlerts(options: {
+    repoId?: string;
+    minSuccessRatePct?: number;
+    maxRetryQueueAgeSeconds?: number;
+    webhookAuthWindowMinutes?: number;
+    maxWebhookAuthFailures?: number;
+    maxWebhookAuthFailureRatePct?: number;
+} = {}): Promise<IntegrationAlertStatus> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (typeof options.minSuccessRatePct === "number") params.set("minSuccessRatePct", String(options.minSuccessRatePct));
+    if (typeof options.maxRetryQueueAgeSeconds === "number") {
+        params.set("maxRetryQueueAgeSeconds", String(options.maxRetryQueueAgeSeconds));
+    }
+    if (typeof options.webhookAuthWindowMinutes === "number") {
+        params.set("webhookAuthWindowMinutes", String(options.webhookAuthWindowMinutes));
+    }
+    if (typeof options.maxWebhookAuthFailures === "number") {
+        params.set("maxWebhookAuthFailures", String(options.maxWebhookAuthFailures));
+    }
+    if (typeof options.maxWebhookAuthFailureRatePct === "number") {
+        params.set("maxWebhookAuthFailureRatePct", String(options.maxWebhookAuthFailureRatePct));
+    }
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/alerts${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationAlertStatus>(res, "Failed to fetch integration alert status");
+}
