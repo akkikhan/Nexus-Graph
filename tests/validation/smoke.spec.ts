@@ -435,6 +435,111 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         );
     });
 
+    const nowIso = new Date().toISOString();
+    const webhookEvents = [
+        {
+            id: "wh-1",
+            provider: "slack",
+            repoId: "repo-1",
+            eventType: "push.failed",
+            externalEventId: "wh-ext-1",
+            payload: {},
+            status: "failed",
+            attempts: 1,
+            maxAttempts: 3,
+            nextAttemptAt: nowIso,
+            correlationId: "corr-wh-1",
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+        {
+            id: "wh-2",
+            provider: "slack",
+            repoId: "repo-1",
+            eventType: "message.channels",
+            externalEventId: "wh-ext-2",
+            payload: {},
+            status: "received",
+            attempts: 0,
+            maxAttempts: 3,
+            nextAttemptAt: nowIso,
+            correlationId: "corr-wh-2",
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        },
+    ];
+
+    await page.route("**/api/v1/integrations/webhooks**", async (route) => {
+        const url = new URL(route.request().url());
+        const method = route.request().method().toUpperCase();
+        const path = url.pathname;
+
+        if (path.endsWith("/webhooks/retry") && method === "POST") {
+            let processed = 0;
+            const outcomes = webhookEvents.map((event) => {
+                if (event.status === "received" || event.status === "failed") {
+                    processed += 1;
+                    event.status = "processed";
+                    event.attempts += 1;
+                    event.updatedAt = new Date().toISOString();
+                    return { id: event.id, reason: "processed", status: event.status };
+                }
+                return { id: event.id, reason: "skipped", status: event.status };
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    processed,
+                    outcomes,
+                })
+            );
+            return;
+        }
+
+        const processMatch = path.match(/\/webhooks\/([^/]+)\/process$/);
+        if (processMatch && method === "POST") {
+            const webhookId = processMatch[1];
+            const event = webhookEvents.find((item) => item.id === webhookId);
+            if (!event) {
+                await route.fulfill(jsonResponse(404, { error: "Webhook event not found" }));
+                return;
+            }
+            event.status = "processed";
+            event.attempts += 1;
+            event.processedAt = new Date().toISOString();
+            event.updatedAt = new Date().toISOString();
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "processed",
+                    event,
+                })
+            );
+            return;
+        }
+
+        if (path.endsWith("/webhooks") && method === "GET") {
+            const provider = url.searchParams.get("provider");
+            const status = url.searchParams.get("status");
+            const events = webhookEvents.filter((event) => {
+                if (provider && event.provider !== provider) return false;
+                if (status && event.status !== status) return false;
+                return true;
+            });
+            await route.fulfill(
+                jsonResponse(200, {
+                    events,
+                    total: events.length,
+                    limit: 8,
+                    offset: 0,
+                })
+            );
+            return;
+        }
+
+        await route.fulfill(jsonResponse(404, { error: "Unhandled webhook route in smoke test" }));
+    });
+
     await page.route("**/api/v1/integrations/webhook-auth-events**", async (route) => {
         const url = new URL(route.request().url());
         const isExport = url.pathname.endsWith("/webhook-auth-events/export");
@@ -516,11 +621,17 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByRole("heading", { name: /^Settings$/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Integration Diagnostics/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Integrations Operations/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Webhook Recovery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Connected \(1\)/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/push.failed/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /^Process$/i }).first().click();
+    await expect(page.getByText(/is now processed/i)).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /Retry Due/i }).click();
+    await expect(page.getByText(/Retried/i)).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Export JSON/i }).click();
     await page.getByRole("button", { name: /Export CSV/i }).click();
 

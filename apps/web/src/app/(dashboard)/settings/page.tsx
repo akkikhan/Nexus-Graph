@@ -20,12 +20,16 @@ import {
     fetchIntegrationAlerts,
     fetchIntegrationConnections,
     fetchIntegrationMetrics,
+    fetchIntegrationWebhookEvents,
     exportIntegrationWebhookAuthEvents,
     fetchIntegrationWebhookAuthEvents,
+    processIntegrationWebhookEvent,
+    retryDueIntegrationWebhooks,
     fetchSystemHealth,
     IntegrationAlertStatus,
     IntegrationConnection,
     IntegrationMetrics,
+    IntegrationWebhookEvent,
     IntegrationWebhookAuthEvent,
 } from "../../../lib/api";
 
@@ -236,11 +240,17 @@ function statusClass(status: "connected" | "disconnected" | "coming_soon"): stri
 
 type AuthProviderFilter = "all" | "slack" | "linear" | "jira";
 type AuthOutcomeFilter = "all" | "rejected" | "config_error";
+type WebhookStatusFilter = "all" | "received" | "processed" | "failed" | "dead_letter";
 
 const WEBHOOK_DIAGNOSTICS_PAGE_SIZE = 12;
+const WEBHOOK_RECOVERY_PAGE_SIZE = 8;
 
 function formatAuthReason(reason: string): string {
     return reason.split("_").join(" ");
+}
+
+function formatWebhookStatus(status: IntegrationWebhookEvent["status"]): string {
+    return status.split("_").join(" ");
 }
 
 function formatAuthTimestamp(value: string): string {
@@ -273,6 +283,11 @@ export default function SettingsPage() {
     const [authSinceMinutes, setAuthSinceMinutes] = useState<number>(60);
     const [authRepoId, setAuthRepoId] = useState("");
     const [authPage, setAuthPage] = useState(0);
+    const [webhookStatusFilter, setWebhookStatusFilter] = useState<WebhookStatusFilter>("all");
+    const [retryingDueWebhooks, setRetryingDueWebhooks] = useState(false);
+    const [processingWebhookId, setProcessingWebhookId] = useState<string | null>(null);
+    const [webhookActionMessage, setWebhookActionMessage] = useState("");
+    const [webhookActionError, setWebhookActionError] = useState("");
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
     const [exportError, setExportError] = useState("");
 
@@ -354,6 +369,30 @@ export default function SettingsPage() {
         queryFn: () => fetchIntegrationAlerts({ repoId: integrationRepoId }),
         refetchInterval: 30_000,
     });
+    const {
+        data: webhookEventsData,
+        isLoading: webhookEventsLoading,
+        isFetching: webhookEventsFetching,
+        error: webhookEventsError,
+        refetch: refetchWebhookEvents,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "integration-webhooks",
+            integrationRepoId,
+            authProvider,
+            webhookStatusFilter,
+        ],
+        queryFn: () =>
+            fetchIntegrationWebhookEvents({
+                repoId: integrationRepoId,
+                provider: authProvider === "all" ? undefined : authProvider,
+                status: webhookStatusFilter === "all" ? undefined : webhookStatusFilter,
+                limit: WEBHOOK_RECOVERY_PAGE_SIZE,
+                offset: 0,
+            }),
+        refetchInterval: 30_000,
+    });
 
     const healthSummary = useMemo(() => {
         if (!health) {
@@ -371,11 +410,12 @@ export default function SettingsPage() {
 
     const authEvents = authEventsData?.events || [];
     const integrationConnections = integrationConnectionsData?.connections || [];
+    const webhookEvents = webhookEventsData?.events || [];
     const hasNextAuthPage = authEvents.length === WEBHOOK_DIAGNOSTICS_PAGE_SIZE;
     const integrationLoading =
-        integrationConnectionsLoading || integrationMetricsLoading || integrationAlertsLoading;
+        integrationConnectionsLoading || integrationMetricsLoading || integrationAlertsLoading || webhookEventsLoading;
     const integrationFetching =
-        integrationConnectionsFetching || integrationMetricsFetching || integrationAlertsFetching;
+        integrationConnectionsFetching || integrationMetricsFetching || integrationAlertsFetching || webhookEventsFetching;
     const integrationStatusByProvider = useMemo(() => {
         return {
             slack: connectionStatusForProvider(integrationConnections, "slack"),
@@ -442,6 +482,9 @@ export default function SettingsPage() {
         setAuthSinceMinutes(60);
         setAuthRepoId("");
         setAuthPage(0);
+        setWebhookStatusFilter("all");
+        setWebhookActionMessage("");
+        setWebhookActionError("");
     };
 
     const downloadBlob = (filename: string, blob: Blob) => {
@@ -465,6 +508,38 @@ export default function SettingsPage() {
             setExportError((error as Error).message || "Failed to export diagnostics.");
         } finally {
             setExportingFormat(null);
+        }
+    };
+
+    const onRetryDueWebhooks = async () => {
+        setWebhookActionMessage("");
+        setWebhookActionError("");
+        setRetryingDueWebhooks(true);
+        try {
+            const result = await retryDueIntegrationWebhooks(20);
+            setWebhookActionMessage(`Retried ${result.processed} due webhook event(s).`);
+            await Promise.all([refetchWebhookEvents(), refetchIntegrationMetrics(), refetchIntegrationAlerts()]);
+        } catch (error) {
+            setWebhookActionError(getErrorMessage(error, "Failed to retry due webhooks."));
+        } finally {
+            setRetryingDueWebhooks(false);
+        }
+    };
+
+    const onProcessWebhook = async (eventId: string) => {
+        setWebhookActionMessage("");
+        setWebhookActionError("");
+        setProcessingWebhookId(eventId);
+        try {
+            const result = await processIntegrationWebhookEvent(eventId, {});
+            setWebhookActionMessage(
+                `Webhook ${result.event.externalEventId} is now ${formatWebhookStatus(result.event.status)}.`
+            );
+            await Promise.all([refetchWebhookEvents(), refetchIntegrationMetrics(), refetchIntegrationAlerts()]);
+        } catch (error) {
+            setWebhookActionError(getErrorMessage(error, "Failed to process webhook event."));
+        } finally {
+            setProcessingWebhookId(null);
         }
     };
 
@@ -536,6 +611,7 @@ export default function SettingsPage() {
                                 refetchIntegrationConnections(),
                                 refetchIntegrationMetrics(),
                                 refetchIntegrationAlerts(),
+                                refetchWebhookEvents(),
                             ]);
                         }}
                         className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-zinc-700 text-zinc-200 hover:bg-zinc-800/70 transition-colors text-sm"
@@ -738,6 +814,117 @@ export default function SettingsPage() {
                                           .join(", ")}`
                                     : "No active integration alerts."}
                                 {integrationFetching ? " Refreshing..." : ""}
+                            </div>
+
+                            <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-white">Webhook Recovery Queue</h4>
+                                        <p className="text-xs text-zinc-500">
+                                            Process failed/received webhook events and trigger due retries.
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={onRetryDueWebhooks}
+                                        disabled={retryingDueWebhooks}
+                                        className="px-3 py-1.5 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                    >
+                                        {retryingDueWebhooks ? "Retrying..." : "Retry Due"}
+                                    </button>
+                                </div>
+
+                                <div className="flex items-center gap-2 text-xs">
+                                    <label className="text-zinc-500">Status</label>
+                                    <select
+                                        value={webhookStatusFilter}
+                                        onChange={(e) => setWebhookStatusFilter(e.target.value as WebhookStatusFilter)}
+                                        className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-nexus-500"
+                                    >
+                                        <option value="all">All</option>
+                                        <option value="received">Received</option>
+                                        <option value="failed">Failed</option>
+                                        <option value="processed">Processed</option>
+                                        <option value="dead_letter">Dead Letter</option>
+                                    </select>
+                                </div>
+
+                                {webhookEventsLoading ? (
+                                    <div className="text-sm text-zinc-400">Loading webhook recovery events...</div>
+                                ) : webhookEventsError ? (
+                                    <div className="rounded bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
+                                        Failed to load webhook events: {getErrorMessage(webhookEventsError, "Unavailable")}
+                                    </div>
+                                ) : webhookEvents.length === 0 ? (
+                                    <div className="text-sm text-zinc-500">No webhook events for selected filters.</div>
+                                ) : (
+                                    <div className="rounded border border-zinc-800 overflow-x-auto">
+                                        <div className="min-w-[860px]">
+                                            <div className="grid grid-cols-[90px_140px_1fr_110px_120px_120px] gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500 bg-zinc-950/60">
+                                                <span>Provider</span>
+                                                <span>Status</span>
+                                                <span>Event</span>
+                                                <span>Attempts</span>
+                                                <span>Created</span>
+                                                <span>Action</span>
+                                            </div>
+                                            <div className="divide-y divide-zinc-800">
+                                                {webhookEvents.map((event) => {
+                                                    const actionable =
+                                                        event.status === "received" || event.status === "failed";
+                                                    return (
+                                                        <div
+                                                            key={event.id}
+                                                            className="grid grid-cols-[90px_140px_1fr_110px_120px_120px] gap-2 px-3 py-2 text-sm text-zinc-200 items-center"
+                                                        >
+                                                            <span className="capitalize">{event.provider}</span>
+                                                            <span
+                                                                className={
+                                                                    event.status === "failed" || event.status === "dead_letter"
+                                                                        ? "text-red-300"
+                                                                        : event.status === "processed"
+                                                                          ? "text-green-300"
+                                                                          : "text-yellow-300"
+                                                                }
+                                                            >
+                                                                {formatWebhookStatus(event.status)}
+                                                            </span>
+                                                            <div className="min-w-0">
+                                                                <div className="truncate">{event.eventType}</div>
+                                                                <div className="text-xs text-zinc-500 truncate">
+                                                                    {event.externalEventId}
+                                                                </div>
+                                                            </div>
+                                                            <span>
+                                                                {event.attempts}/{event.maxAttempts}
+                                                            </span>
+                                                            <span className="text-xs text-zinc-400">
+                                                                {formatAuthTimestamp(event.createdAt)}
+                                                            </span>
+                                                            <button
+                                                                onClick={() => onProcessWebhook(event.id)}
+                                                                disabled={!actionable || processingWebhookId === event.id}
+                                                                className="px-2 py-1 rounded border border-zinc-700 text-xs text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                                            >
+                                                                {processingWebhookId === event.id ? "Processing..." : "Process"}
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {webhookActionMessage ? (
+                                    <div className="text-xs text-green-300 bg-green-500/10 border border-green-500/20 rounded px-3 py-2">
+                                        {webhookActionMessage}
+                                    </div>
+                                ) : null}
+                                {webhookActionError ? (
+                                    <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                                        {webhookActionError}
+                                    </div>
+                                ) : null}
                             </div>
                         </>
                     )}

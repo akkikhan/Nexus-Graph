@@ -622,3 +622,96 @@ export async function fetchIntegrationAlerts(options: {
     const res = await fetch(`${API_BASE_URL}/integrations/alerts${query ? `?${query}` : ""}`);
     return parseResponse<IntegrationAlertStatus>(res, "Failed to fetch integration alert status");
 }
+
+export interface IntegrationWebhookEvent {
+    id: string;
+    provider: "slack" | "linear" | "jira";
+    repoId?: string;
+    eventType: string;
+    externalEventId: string;
+    payload: Record<string, unknown>;
+    status: "received" | "processed" | "failed" | "dead_letter";
+    attempts: number;
+    maxAttempts: number;
+    nextAttemptAt?: string;
+    lastAttemptAt?: string;
+    processedAt?: string;
+    errorMessage?: string;
+    correlationId: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface IntegrationWebhookEventsResponse {
+    events: IntegrationWebhookEvent[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export async function fetchIntegrationWebhookEvents(options: {
+    provider?: "slack" | "linear" | "jira";
+    repoId?: string;
+    status?: "received" | "processed" | "failed" | "dead_letter";
+    limit?: number;
+    offset?: number;
+} = {}): Promise<IntegrationWebhookEventsResponse> {
+    const params = new URLSearchParams();
+    if (options.provider) params.set("provider", options.provider);
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.status) params.set("status", options.status);
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/webhooks${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationWebhookEventsResponse>(res, "Failed to fetch integration webhooks");
+}
+
+export async function processIntegrationWebhookEvent(
+    id: string,
+    input: {
+        simulateFailure?: boolean;
+        responseCode?: number;
+        latencyMs?: number;
+        errorMessage?: string;
+    } = {}
+): Promise<{
+    success: boolean;
+    reason: string;
+    event: IntegrationWebhookEvent;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/webhooks/${id}/process`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{ success: boolean; reason: string; event: IntegrationWebhookEvent }>(
+        res,
+        "Failed to process integration webhook event"
+    );
+}
+
+export async function retryDueIntegrationWebhooks(limit = 20): Promise<{
+    success: boolean;
+    processed: number;
+    outcomes: Array<{
+        id: string;
+        reason: string;
+        status?: "received" | "processed" | "failed" | "dead_letter";
+    }>;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/webhooks/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit }),
+    });
+    return parseResponse<{
+        success: boolean;
+        processed: number;
+        outcomes: Array<{
+            id: string;
+            reason: string;
+            status?: "received" | "processed" | "failed" | "dead_letter";
+        }>;
+    }>(res, "Failed to retry due integration webhooks");
+}
