@@ -127,7 +127,7 @@ Degraded-mode behavior:
 - Degraded `503` is accepted when payload includes an `error` field.
 - Set `ALLOW_DEGRADED=false` to require strict `200` responses.
 - Integrations webhook ingestion now includes abuse checks for missing signature and stale timestamps (`401` paths validated in smoke).
-- Integrations metrics/alerts now include webhook auth failure telemetry (provider/reason/rate) and threshold-based alert assertions.
+- Integrations metrics/alerts now include webhook auth failure telemetry (provider/reason/rate), sample-gated noisy-alert suppression controls (`minDeliverySamples`, `minWebhookAuthSamples`), and threshold-based alert assertions.
 
 ## Web Smoke Coverage
 

@@ -208,6 +208,8 @@ const alertsSchema = z.object({
     webhookAuthWindowMinutes: z.coerce.number().int().min(5).max(1_440).optional(),
     maxWebhookAuthFailures: z.coerce.number().int().min(0).max(100_000).optional(),
     maxWebhookAuthFailureRatePct: z.coerce.number().min(0).max(100).optional(),
+    minDeliverySamples: z.coerce.number().int().min(0).max(100_000).optional(),
+    minWebhookAuthSamples: z.coerce.number().int().min(0).max(100_000).optional(),
 });
 
 function details(error: unknown): string {

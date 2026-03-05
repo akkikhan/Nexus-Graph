@@ -1435,7 +1435,7 @@ async function run() {
             );
 
             const integrationsAlerts = await request(
-                `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60`
+                `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60&minWebhookAuthSamples=1`
             );
             printResult("GET /api/v1/integrations/alerts", integrationsAlerts);
             assert(integrationsAlerts.response.status === 200, "integration alerts must return 200");
@@ -1460,9 +1460,44 @@ async function run() {
                 "integration alerts must include thresholds.maxWebhookAuthFailures"
             );
             assert(
+                typeof integrationsAlerts.payload?.thresholds?.minWebhookAuthSamples === "number",
+                "integration alerts must include thresholds.minWebhookAuthSamples"
+            );
+            assert(
+                Array.isArray(integrationsAlerts.payload?.suppression?.suppressedCodes),
+                "integration alerts must include suppression.suppressedCodes"
+            );
+            assert(
                 Array.isArray(integrationsAlerts.payload?.alerts) &&
                     integrationsAlerts.payload.alerts.some((alert) => alert.code === "webhook_auth_failures_high"),
                 "integration alerts must surface webhook auth failure alert when threshold is zero"
+            );
+
+            const integrationsAlertsSuppressed = await request(
+                `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60&minWebhookAuthSamples=100000`
+            );
+            printResult("GET /api/v1/integrations/alerts (suppressed)", integrationsAlertsSuppressed);
+            assert(integrationsAlertsSuppressed.response.status === 200, "suppressed integration alerts must return 200");
+            assert(
+                integrationsAlertsSuppressed.payload?.thresholds?.minWebhookAuthSamples === 100000,
+                "suppressed integration alerts must echo minWebhookAuthSamples threshold override"
+            );
+            assert(
+                Array.isArray(integrationsAlertsSuppressed.payload?.alerts) &&
+                    !integrationsAlertsSuppressed.payload.alerts.some(
+                        (alert) =>
+                            alert.code === "webhook_auth_failures_high" ||
+                            alert.code === "webhook_auth_failure_rate_high"
+                    ),
+                "suppressed integration alerts must hide webhook auth volume/rate warnings under sample gate"
+            );
+            assert(
+                Array.isArray(integrationsAlertsSuppressed.payload?.suppression?.suppressedCodes) &&
+                    integrationsAlertsSuppressed.payload.suppression.suppressedCodes.some(
+                        (code) =>
+                            code === "webhook_auth_failures_high" || code === "webhook_auth_failure_rate_high"
+                    ),
+                "suppressed integration alerts must report suppressed webhook auth warning codes"
             );
 
             const activityAfterIntegrations = await request("/api/v1/activity?limit=50&type=integration_event");

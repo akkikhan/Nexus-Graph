@@ -63,6 +63,16 @@ const DEFAULT_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT =
     Number.isFinite(RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT) && RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT >= 0
         ? Math.min(Math.max(Math.round(RAW_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT), 0), 100)
         : 5;
+const RAW_INTEGRATION_ALERT_MIN_DELIVERY_SAMPLES = Number(process.env.NEXUS_INTEGRATION_ALERT_MIN_DELIVERY_SAMPLES ?? 20);
+const DEFAULT_INTEGRATION_ALERT_MIN_DELIVERY_SAMPLES =
+    Number.isFinite(RAW_INTEGRATION_ALERT_MIN_DELIVERY_SAMPLES) && RAW_INTEGRATION_ALERT_MIN_DELIVERY_SAMPLES >= 0
+        ? Math.min(Math.max(Math.round(RAW_INTEGRATION_ALERT_MIN_DELIVERY_SAMPLES), 0), 100_000)
+        : 20;
+const RAW_WEBHOOK_AUTH_ALERT_MIN_SAMPLES = Number(process.env.NEXUS_WEBHOOK_AUTH_ALERT_MIN_SAMPLES ?? 20);
+const DEFAULT_WEBHOOK_AUTH_ALERT_MIN_SAMPLES =
+    Number.isFinite(RAW_WEBHOOK_AUTH_ALERT_MIN_SAMPLES) && RAW_WEBHOOK_AUTH_ALERT_MIN_SAMPLES >= 0
+        ? Math.min(Math.max(Math.round(RAW_WEBHOOK_AUTH_ALERT_MIN_SAMPLES), 0), 100_000)
+        : 20;
 
 const SECRET_FIELD_PATTERN = /(?:token|secret|password|api[_-]?key|authorization|auth[_-]?header)/i;
 const SECRET_PATTERNS: RegExp[] = [
@@ -1836,6 +1846,8 @@ export const integrationsRepository = {
         webhookAuthWindowMinutes?: number;
         maxWebhookAuthFailures?: number;
         maxWebhookAuthFailureRatePct?: number;
+        minDeliverySamples?: number;
+        minWebhookAuthSamples?: number;
     } = {}) {
         const minSuccessRatePct = clampInteger(
             Number(input.minSuccessRatePct ?? DEFAULT_INTEGRATION_ALERT_MIN_SUCCESS_RATE_PCT),
@@ -1861,6 +1873,16 @@ export const integrationsRepository = {
             Number(input.maxWebhookAuthFailureRatePct ?? DEFAULT_WEBHOOK_AUTH_ALERT_MAX_FAILURE_RATE_PCT),
             0,
             100
+        );
+        const minDeliverySamples = clampInteger(
+            Number(input.minDeliverySamples ?? DEFAULT_INTEGRATION_ALERT_MIN_DELIVERY_SAMPLES),
+            0,
+            100_000
+        );
+        const minWebhookAuthSamples = clampInteger(
+            Number(input.minWebhookAuthSamples ?? DEFAULT_WEBHOOK_AUTH_ALERT_MIN_SAMPLES),
+            0,
+            100_000
         );
 
         const metrics = await this.metrics(input.repoId);
@@ -1897,6 +1919,9 @@ export const integrationsRepository = {
                 ? Math.round((webhookAuthRecentFailures / webhookAuthRecentDenominator) * 100)
                 : 0;
         const webhookAuthRecentConfigErrors = Number(webhookAuthRecentConfigErrorRow?.value || 0);
+        const deliverySampleCount = metrics.totals.delivered + metrics.totals.failed + metrics.totals.deadLetter;
+        const webhookAuthSampleCount = webhookAuthRecentDenominator;
+        const suppressedCodes: string[] = [];
         const alerts: Array<{
             code: string;
             severity: IntegrationAlertSeverity;
@@ -1933,31 +1958,43 @@ export const integrationsRepository = {
             });
         }
         if (metrics.successRatePct < minSuccessRatePct) {
-            alerts.push({
-                code: "delivery_success_rate_low",
-                severity: "warning",
-                message: "Delivery success rate is below threshold.",
-                value: metrics.successRatePct,
-                threshold: minSuccessRatePct,
-            });
+            if (deliverySampleCount >= minDeliverySamples) {
+                alerts.push({
+                    code: "delivery_success_rate_low",
+                    severity: "warning",
+                    message: "Delivery success rate is below threshold.",
+                    value: metrics.successRatePct,
+                    threshold: minSuccessRatePct,
+                });
+            } else {
+                suppressedCodes.push("delivery_success_rate_low");
+            }
         }
         if (webhookAuthRecentFailures > maxWebhookAuthFailures) {
-            alerts.push({
-                code: "webhook_auth_failures_high",
-                severity: "warning",
-                message: "Webhook auth failure count is above threshold.",
-                value: webhookAuthRecentFailures,
-                threshold: maxWebhookAuthFailures,
-            });
+            if (webhookAuthSampleCount >= minWebhookAuthSamples) {
+                alerts.push({
+                    code: "webhook_auth_failures_high",
+                    severity: "warning",
+                    message: "Webhook auth failure count is above threshold.",
+                    value: webhookAuthRecentFailures,
+                    threshold: maxWebhookAuthFailures,
+                });
+            } else {
+                suppressedCodes.push("webhook_auth_failures_high");
+            }
         }
         if (webhookAuthRecentFailureRatePct > maxWebhookAuthFailureRatePct) {
-            alerts.push({
-                code: "webhook_auth_failure_rate_high",
-                severity: "warning",
-                message: "Webhook auth failure rate is above threshold.",
-                value: webhookAuthRecentFailureRatePct,
-                threshold: maxWebhookAuthFailureRatePct,
-            });
+            if (webhookAuthSampleCount >= minWebhookAuthSamples) {
+                alerts.push({
+                    code: "webhook_auth_failure_rate_high",
+                    severity: "warning",
+                    message: "Webhook auth failure rate is above threshold.",
+                    value: webhookAuthRecentFailureRatePct,
+                    threshold: maxWebhookAuthFailureRatePct,
+                });
+            } else {
+                suppressedCodes.push("webhook_auth_failure_rate_high");
+            }
         }
         if (webhookAuthRecentConfigErrors > 0) {
             alerts.push({
@@ -2012,10 +2049,17 @@ export const integrationsRepository = {
                 webhookAuthWindowMinutes,
                 maxWebhookAuthFailures,
                 maxWebhookAuthFailureRatePct,
+                minDeliverySamples,
+                minWebhookAuthSamples,
             },
             queueAges: {
                 oldestNotificationRetryAgeSeconds,
                 oldestWebhookRetryAgeSeconds,
+            },
+            suppression: {
+                deliverySampleCount,
+                webhookAuthSampleCount,
+                suppressedCodes,
             },
             webhookAuthWindow: {
                 startAt: webhookAuthWindowStart.toISOString(),

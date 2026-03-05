@@ -815,10 +815,17 @@ export interface IntegrationAlertStatus {
         webhookAuthWindowMinutes: number;
         maxWebhookAuthFailures: number;
         maxWebhookAuthFailureRatePct: number;
+        minDeliverySamples: number;
+        minWebhookAuthSamples: number;
     };
     queueAges: {
         oldestNotificationRetryAgeSeconds: number | null;
         oldestWebhookRetryAgeSeconds: number | null;
+    };
+    suppression: {
+        deliverySampleCount: number;
+        webhookAuthSampleCount: number;
+        suppressedCodes: string[];
     };
     webhookAuthWindow: {
         startAt: string;
@@ -837,6 +844,8 @@ export async function fetchIntegrationAlerts(options: {
     webhookAuthWindowMinutes?: number;
     maxWebhookAuthFailures?: number;
     maxWebhookAuthFailureRatePct?: number;
+    minDeliverySamples?: number;
+    minWebhookAuthSamples?: number;
 } = {}): Promise<IntegrationAlertStatus> {
     const params = new URLSearchParams();
     if (options.repoId) params.set("repoId", options.repoId);
@@ -852,6 +861,12 @@ export async function fetchIntegrationAlerts(options: {
     }
     if (typeof options.maxWebhookAuthFailureRatePct === "number") {
         params.set("maxWebhookAuthFailureRatePct", String(options.maxWebhookAuthFailureRatePct));
+    }
+    if (typeof options.minDeliverySamples === "number") {
+        params.set("minDeliverySamples", String(options.minDeliverySamples));
+    }
+    if (typeof options.minWebhookAuthSamples === "number") {
+        params.set("minWebhookAuthSamples", String(options.minWebhookAuthSamples));
     }
     const query = params.toString();
     const res = await fetch(`${API_BASE_URL}/integrations/alerts${query ? `?${query}` : ""}`);

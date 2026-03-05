@@ -682,10 +682,17 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                     webhookAuthWindowMinutes: 60,
                     maxWebhookAuthFailures: 1,
                     maxWebhookAuthFailureRatePct: 5,
+                    minDeliverySamples: 20,
+                    minWebhookAuthSamples: 20,
                 },
                 queueAges: {
                     oldestNotificationRetryAgeSeconds: 100,
                     oldestWebhookRetryAgeSeconds: 90,
+                },
+                suppression: {
+                    deliverySampleCount: 12,
+                    webhookAuthSampleCount: 12,
+                    suppressedCodes: [],
                 },
                 webhookAuthWindow: {
                     startAt: new Date().toISOString(),
