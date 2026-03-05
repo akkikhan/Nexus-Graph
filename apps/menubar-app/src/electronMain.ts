@@ -31,6 +31,8 @@ const updateManifestUrl = resolveManifestUrl(
 );
 const updateCheckIntervalMs = Number(process.env.NEXUS_MENUBAR_UPDATE_CHECK_MS || 3600000);
 const updateSnoozeHours = Number(process.env.NEXUS_MENUBAR_UPDATE_SNOOZE_HOURS || 24);
+const updateSignaturePublicKey = process.env.NEXUS_MENUBAR_UPDATE_PUBLIC_KEY || "";
+const requireUpdateSignature = parseBoolean(process.env.NEXUS_MENUBAR_UPDATE_REQUIRE_SIGNATURE || "false");
 const rolloutKey =
     process.env.NEXUS_MENUBAR_ROLLOUT_KEY ||
     `${os.hostname()}|${process.env.USERNAME || process.env.USER || "user"}`;
@@ -156,6 +158,8 @@ async function refreshUpdateStatus(manualCheck = false) {
         platform: runtimePlatform,
         arch: process.arch,
         rolloutKey,
+        signaturePublicKey: updateSignaturePublicKey,
+        requireSignature: requireUpdateSignature,
     });
 
     if (result.status === "available") {
@@ -277,4 +281,9 @@ function ensureUpdateDecisionStore(): UpdateDecisionStore {
         throw new Error("Update decision store is not initialized.");
     }
     return updateDecisionStore;
+}
+
+function parseBoolean(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes";
 }

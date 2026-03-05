@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import {
+    isSha256Digest,
     normalizeReleaseChannel,
     type MenubarUpdateManifest,
     type ReleaseChannel,
+    verifyUpdateManifestSignature,
 } from "./releaseMetadata.js";
 
 export type UpdateCheckStatus =
@@ -32,6 +34,8 @@ export interface MenubarUpdateCheckInput {
     platform: string;
     arch: string;
     rolloutKey: string;
+    signaturePublicKey?: string;
+    requireSignature?: boolean;
     fetchImpl?: typeof fetch;
 }
 
@@ -157,6 +161,7 @@ export async function checkForMenubarUpdate(
 
         const manifest = (await response.json()) as MenubarUpdateManifest;
         validateManifestShape(manifest, channel);
+        validateManifestSignature(manifest, input.signaturePublicKey, Boolean(input.requireSignature));
 
         const comparison = compareVersions(manifest.latestVersion, input.currentVersion);
         if (comparison <= 0) {
@@ -273,5 +278,46 @@ function validateManifestShape(manifest: MenubarUpdateManifest, expectedChannel:
     }
     if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0) {
         throw new Error("Manifest artifacts must be a non-empty array.");
+    }
+    for (const artifact of manifest.artifacts) {
+        if (typeof artifact.fileName !== "string" || artifact.fileName.trim().length === 0) {
+            throw new Error("Manifest artifact fileName must be a non-empty string.");
+        }
+        if (!Number.isInteger(artifact.sizeBytes) || artifact.sizeBytes <= 0) {
+            throw new Error("Manifest artifact sizeBytes must be a positive integer.");
+        }
+        if (!isSha256Digest(artifact.sha256)) {
+            throw new Error(`Manifest artifact ${artifact.fileName} has invalid sha256 digest.`);
+        }
+        if (typeof artifact.url !== "string" || !/^https?:\/\//i.test(artifact.url)) {
+            throw new Error(`Manifest artifact ${artifact.fileName} must have an absolute http(s) URL.`);
+        }
+    }
+}
+
+function validateManifestSignature(
+    manifest: MenubarUpdateManifest,
+    signaturePublicKey: string | undefined,
+    requireSignature: boolean
+): void {
+    const publicKey = signaturePublicKey?.trim() || "";
+    const manifestHasSignature = Boolean(manifest.signature);
+
+    if (requireSignature && !manifestHasSignature) {
+        throw new Error("Manifest signature is required but missing.");
+    }
+
+    if (!publicKey) {
+        if (requireSignature) {
+            throw new Error("Manifest signature is required but no public key is configured.");
+        }
+        return;
+    }
+
+    if (!manifestHasSignature) {
+        throw new Error("Manifest signature missing.");
+    }
+    if (!verifyUpdateManifestSignature(manifest, publicKey)) {
+        throw new Error("Manifest signature verification failed.");
     }
 }

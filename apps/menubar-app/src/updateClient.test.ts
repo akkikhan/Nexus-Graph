@@ -1,10 +1,14 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { createUpdateManifest, signUpdateManifest } from "./releaseMetadata.js";
 import {
     checkForMenubarUpdate,
     compareVersions,
     computeRolloutBucket,
     resolveManifestUrl,
 } from "./updateClient.js";
+
+const SHA = "a".repeat(64);
 
 function createFetchOk(payload: unknown): typeof fetch {
     return (async () =>
@@ -13,6 +17,29 @@ function createFetchOk(payload: unknown): typeof fetch {
             status: 200,
             json: async () => payload,
         }) as Response) as typeof fetch;
+}
+
+function buildManifest(overrides?: Partial<ReturnType<typeof createUpdateManifest>>) {
+    return {
+        ...createUpdateManifest({
+            channel: "stable",
+            rolloutPercentage: 100,
+            latestVersion: "0.2.0",
+            generatedAt: "2026-03-05T00:00:00.000Z",
+            artifacts: [
+                {
+                    fileName: "nexus-menubar-win-x64-0.2.0.zip",
+                    version: "0.2.0",
+                    platform: "win",
+                    arch: "x64",
+                    sizeBytes: 100,
+                    sha256: SHA,
+                    url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+                },
+            ],
+        }),
+        ...overrides,
+    };
 }
 
 describe("updateClient", () => {
@@ -51,24 +78,7 @@ describe("updateClient", () => {
             platform: "win",
             arch: "x64",
             rolloutKey: "machine-123",
-            fetchImpl: createFetchOk({
-                schemaVersion: 1,
-                generatedAt: "2026-03-05T00:00:00.000Z",
-                channel: "stable",
-                rolloutPercentage: 100,
-                latestVersion: "0.2.0",
-                artifacts: [
-                    {
-                        fileName: "nexus-menubar-win-x64-0.2.0.zip",
-                        version: "0.2.0",
-                        platform: "win",
-                        arch: "x64",
-                        sizeBytes: 100,
-                        sha256: "abc",
-                        url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
-                    },
-                ],
-            }),
+            fetchImpl: createFetchOk(buildManifest()),
         });
 
         expect(result.status).toBe("available");
@@ -84,24 +94,23 @@ describe("updateClient", () => {
             platform: "win",
             arch: "x64",
             rolloutKey: "machine-123",
-            fetchImpl: createFetchOk({
-                schemaVersion: 1,
-                generatedAt: "2026-03-05T00:00:00.000Z",
-                channel: "beta",
-                rolloutPercentage: 1,
-                latestVersion: "0.2.0",
-                artifacts: [
-                    {
-                        fileName: "nexus-menubar-win-x64-0.2.0.zip",
-                        version: "0.2.0",
-                        platform: "win",
-                        arch: "x64",
-                        sizeBytes: 100,
-                        sha256: "abc",
-                        url: "https://downloads.nexus.dev/menubar/beta/nexus-menubar-win-x64-0.2.0.zip",
-                    },
-                ],
-            }),
+            fetchImpl: createFetchOk(
+                buildManifest({
+                    channel: "beta",
+                    rolloutPercentage: 1,
+                    artifacts: [
+                        {
+                            fileName: "nexus-menubar-win-x64-0.2.0.zip",
+                            version: "0.2.0",
+                            platform: "win",
+                            arch: "x64",
+                            sizeBytes: 100,
+                            sha256: SHA,
+                            url: "https://downloads.nexus.dev/menubar/beta/nexus-menubar-win-x64-0.2.0.zip",
+                        },
+                    ],
+                })
+            ),
         });
 
         expect(result.status).toBe("rolloutDeferred");
@@ -117,24 +126,7 @@ describe("updateClient", () => {
             platform: "win",
             arch: "x64",
             rolloutKey: "machine-123",
-            fetchImpl: createFetchOk({
-                schemaVersion: 1,
-                generatedAt: "2026-03-05T00:00:00.000Z",
-                channel: "stable",
-                rolloutPercentage: 100,
-                latestVersion: "0.2.0",
-                artifacts: [
-                    {
-                        fileName: "nexus-menubar-win-x64-0.2.0.zip",
-                        version: "0.2.0",
-                        platform: "win",
-                        arch: "x64",
-                        sizeBytes: 100,
-                        sha256: "abc",
-                        url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
-                    },
-                ],
-            }),
+            fetchImpl: createFetchOk(buildManifest()),
         });
 
         expect(result.status).toBe("upToDate");
@@ -148,27 +140,97 @@ describe("updateClient", () => {
             platform: "linux",
             arch: "x64",
             rolloutKey: "machine-123",
-            fetchImpl: createFetchOk({
-                schemaVersion: 1,
-                generatedAt: "2026-03-05T00:00:00.000Z",
-                channel: "stable",
-                rolloutPercentage: 100,
-                latestVersion: "0.2.0",
-                artifacts: [
-                    {
-                        fileName: "nexus-menubar-win-x64-0.2.0.zip",
-                        version: "0.2.0",
-                        platform: "win",
-                        arch: "x64",
-                        sizeBytes: 100,
-                        sha256: "abc",
-                        url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
-                    },
-                ],
-            }),
+            fetchImpl: createFetchOk(buildManifest()),
         });
 
         expect(result.status).toBe("incompatible");
+    });
+
+    it("verifies manifest signatures when public key is configured", async () => {
+        const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+        const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+        const publicPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+        const signedManifest = signUpdateManifest(buildManifest(), privatePem, "k1");
+
+        const result = await checkForMenubarUpdate({
+            manifestUrl: "https://downloads.nexus.dev/menubar/updates/latest-stable.json",
+            currentVersion: "0.1.0",
+            channel: "stable",
+            platform: "win",
+            arch: "x64",
+            rolloutKey: "machine-123",
+            signaturePublicKey: publicPem,
+            fetchImpl: createFetchOk(signedManifest),
+        });
+
+        expect(result.status).toBe("available");
+    });
+
+    it("returns error for invalid signatures", async () => {
+        const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+        const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+        const publicPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+        const signedManifest = signUpdateManifest(buildManifest(), privatePem, "k1");
+        const tampered = { ...signedManifest, latestVersion: "0.2.1" };
+
+        const result = await checkForMenubarUpdate({
+            manifestUrl: "https://downloads.nexus.dev/menubar/updates/latest-stable.json",
+            currentVersion: "0.1.0",
+            channel: "stable",
+            platform: "win",
+            arch: "x64",
+            rolloutKey: "machine-123",
+            signaturePublicKey: publicPem,
+            fetchImpl: createFetchOk(tampered),
+        });
+
+        expect(result.status).toBe("error");
+        expect(result.message).toContain("signature verification failed");
+    });
+
+    it("returns error when signature is required but missing", async () => {
+        const result = await checkForMenubarUpdate({
+            manifestUrl: "https://downloads.nexus.dev/menubar/updates/latest-stable.json",
+            currentVersion: "0.1.0",
+            channel: "stable",
+            platform: "win",
+            arch: "x64",
+            rolloutKey: "machine-123",
+            requireSignature: true,
+            fetchImpl: createFetchOk(buildManifest()),
+        });
+
+        expect(result.status).toBe("error");
+        expect(result.message).toContain("signature is required");
+    });
+
+    it("returns error when artifact checksum is malformed", async () => {
+        const result = await checkForMenubarUpdate({
+            manifestUrl: "https://downloads.nexus.dev/menubar/updates/latest-stable.json",
+            currentVersion: "0.1.0",
+            channel: "stable",
+            platform: "win",
+            arch: "x64",
+            rolloutKey: "machine-123",
+            fetchImpl: createFetchOk(
+                buildManifest({
+                    artifacts: [
+                        {
+                            fileName: "nexus-menubar-win-x64-0.2.0.zip",
+                            version: "0.2.0",
+                            platform: "win",
+                            arch: "x64",
+                            sizeBytes: 100,
+                            sha256: "abc",
+                            url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+                        },
+                    ],
+                })
+            ),
+        });
+
+        expect(result.status).toBe("error");
+        expect(result.message).toContain("invalid sha256 digest");
     });
 
     it("returns error when manifest request fails", async () => {

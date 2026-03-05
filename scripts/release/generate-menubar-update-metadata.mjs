@@ -81,6 +81,7 @@ async function run() {
     const parseArtifactName = releaseMetadataModule.parseArtifactName;
     const buildArtifactUrl = releaseMetadataModule.buildArtifactUrl;
     const createUpdateManifest = releaseMetadataModule.createUpdateManifest;
+    const signUpdateManifest = releaseMetadataModule.signUpdateManifest;
 
     const channel = normalizeReleaseChannel(
         args.channel || process.env.NEXUS_MENUBAR_RELEASE_CHANNEL || "stable"
@@ -94,6 +95,13 @@ async function run() {
         process.env.NEXUS_MENUBAR_UPDATE_BASE_URL ||
         "https://downloads.nexus.dev/menubar"
     ).trim();
+    const signingPrivateKey =
+        (args["signing-private-key"] || process.env.NEXUS_MENUBAR_SIGNING_PRIVATE_KEY || "").trim();
+    const signingKeyId =
+        (args["signing-key-id"] || process.env.NEXUS_MENUBAR_SIGNING_KEY_ID || "default").trim();
+    const requireSignature = parseBoolean(
+        args["require-signature"] || process.env.NEXUS_MENUBAR_REQUIRE_SIGNATURE || "false"
+    );
 
     if (!baseUrl) {
         throw new Error("Update metadata requires a non-empty base URL.");
@@ -136,15 +144,25 @@ async function run() {
         latestVersion: version,
         artifacts,
     });
+    const signedManifest = signingPrivateKey
+        ? signUpdateManifest(manifest, signingPrivateKey, signingKeyId)
+        : manifest;
+
+    if (requireSignature && !signingPrivateKey) {
+        throw new Error(
+            "Update signature is required but no signing key was provided. " +
+                "Set NEXUS_MENUBAR_SIGNING_PRIVATE_KEY."
+        );
+    }
 
     await fs.mkdir(metadataOutputDir, { recursive: true });
     const channelManifestPath = path.resolve(metadataOutputDir, `latest-${channel}.json`);
-    await fs.writeFile(channelManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    await fs.writeFile(channelManifestPath, `${JSON.stringify(signedManifest, null, 2)}\n`, "utf8");
 
     let stableAliasMessage = "";
     if (channel === "stable") {
         const stableAliasPath = path.resolve(metadataOutputDir, "latest.json");
-        await fs.writeFile(stableAliasPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+        await fs.writeFile(stableAliasPath, `${JSON.stringify(signedManifest, null, 2)}\n`, "utf8");
         stableAliasMessage = ` and ${path.relative(ROOT_DIR, stableAliasPath)}`;
     }
 
@@ -158,9 +176,23 @@ async function run() {
             )})\n`
         );
     });
+    if (signedManifest.signature) {
+        process.stdout.write(
+            `[menubar:metadata] signed manifest (algorithm=${signedManifest.signature.algorithm}, keyId=${signedManifest.signature.keyId})\n`
+        );
+    } else {
+        process.stdout.write("[menubar:metadata] manifest is unsigned (development/default mode)\n");
+    }
     process.stdout.write(
         `[menubar:metadata] wrote ${path.relative(ROOT_DIR, channelManifestPath)}${stableAliasMessage}\n`
     );
+}
+
+function parseBoolean(value) {
+    const normalized = String(value || "")
+        .trim()
+        .toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 run().catch((error) => {

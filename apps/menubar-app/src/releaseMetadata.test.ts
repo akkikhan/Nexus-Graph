@@ -1,11 +1,19 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
     buildArtifactUrl,
     createUpdateManifest,
+    isSha256Digest,
     normalizeReleaseChannel,
     parseArtifactName,
     resolveRolloutPercentage,
+    serializeManifestForSigning,
+    signUpdateManifest,
+    verifyUpdateManifestSignature,
 } from "./releaseMetadata.js";
+
+const SHA_A = "a".repeat(64);
+const SHA_B = "b".repeat(64);
 
 describe("releaseMetadata", () => {
     it("normalizes release channels with aliases", () => {
@@ -46,9 +54,14 @@ describe("releaseMetadata", () => {
         expect(buildArtifactUrl("https://downloads.example.com/menubar", "stable", "app.zip")).toBe(
             "https://downloads.example.com/menubar/stable/app.zip"
         );
-        expect(
-            buildArtifactUrl("https://cdn.example.com/{channel}", "beta", "app.zip")
-        ).toBe("https://cdn.example.com/beta/app.zip");
+        expect(buildArtifactUrl("https://cdn.example.com/{channel}", "beta", "app.zip")).toBe(
+            "https://cdn.example.com/beta/app.zip"
+        );
+    });
+
+    it("validates sha256 digests", () => {
+        expect(isSha256Digest(SHA_A)).toBe(true);
+        expect(isSha256Digest("abc")).toBe(false);
     });
 
     it("creates deterministic manifest payloads", () => {
@@ -64,7 +77,7 @@ describe("releaseMetadata", () => {
                     platform: "linux",
                     arch: "x64",
                     sizeBytes: 123,
-                    sha256: "abc",
+                    sha256: SHA_A,
                     url: "https://downloads.example.com/menubar/stable/nexus-menubar-linux-x64-0.1.0.zip",
                 },
                 {
@@ -73,38 +86,52 @@ describe("releaseMetadata", () => {
                     platform: "win",
                     arch: "x64",
                     sizeBytes: 456,
-                    sha256: "def",
+                    sha256: SHA_B,
                     url: "https://downloads.example.com/menubar/stable/nexus-menubar-win-x64-0.1.0.zip",
                 },
             ],
         });
 
-        expect(manifest).toEqual({
-            schemaVersion: 1,
-            generatedAt: "2026-03-05T00:00:00.000Z",
+        expect(serializeManifestForSigning(manifest)).toBe(
+            '{"schemaVersion":1,"generatedAt":"2026-03-05T00:00:00.000Z","channel":"stable","rolloutPercentage":100,"latestVersion":"0.1.0","artifacts":[{"fileName":"nexus-menubar-linux-x64-0.1.0.zip","version":"0.1.0","platform":"linux","arch":"x64","sizeBytes":123,"sha256":"' +
+                SHA_A +
+                '","url":"https://downloads.example.com/menubar/stable/nexus-menubar-linux-x64-0.1.0.zip"},{"fileName":"nexus-menubar-win-x64-0.1.0.zip","version":"0.1.0","platform":"win","arch":"x64","sizeBytes":456,"sha256":"' +
+                SHA_B +
+                '","url":"https://downloads.example.com/menubar/stable/nexus-menubar-win-x64-0.1.0.zip"}]}'
+        );
+    });
+
+    it("signs and verifies update manifests", () => {
+        const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+        const privatePem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+        const publicPem = publicKey.export({ format: "pem", type: "spki" }).toString();
+
+        const manifest = createUpdateManifest({
             channel: "stable",
             rolloutPercentage: 100,
-            latestVersion: "0.1.0",
+            latestVersion: "0.2.0",
+            generatedAt: "2026-03-05T00:00:00.000Z",
             artifacts: [
                 {
-                    fileName: "nexus-menubar-linux-x64-0.1.0.zip",
-                    version: "0.1.0",
-                    platform: "linux",
-                    arch: "x64",
-                    sizeBytes: 123,
-                    sha256: "abc",
-                    url: "https://downloads.example.com/menubar/stable/nexus-menubar-linux-x64-0.1.0.zip",
-                },
-                {
-                    fileName: "nexus-menubar-win-x64-0.1.0.zip",
-                    version: "0.1.0",
+                    fileName: "nexus-menubar-win-x64-0.2.0.zip",
+                    version: "0.2.0",
                     platform: "win",
                     arch: "x64",
-                    sizeBytes: 456,
-                    sha256: "def",
-                    url: "https://downloads.example.com/menubar/stable/nexus-menubar-win-x64-0.1.0.zip",
+                    sizeBytes: 100,
+                    sha256: SHA_A,
+                    url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
                 },
             ],
         });
+        const signed = signUpdateManifest(manifest, privatePem, "release-signing-key");
+        expect(signed.signature?.algorithm).toBe("ed25519");
+        expect(signed.signature?.keyId).toBe("release-signing-key");
+        expect(verifyUpdateManifestSignature(signed, publicPem)).toBe(true);
+
+        const tampered = {
+            ...signed,
+            latestVersion: "0.2.1",
+        };
+        expect(verifyUpdateManifestSignature(tampered, publicPem)).toBe(false);
     });
 });

@@ -67,9 +67,14 @@ Metadata output:
 - `NEXUS_MENUBAR_UPDATE_CHECK_MS` (default `3600000`, periodic update check interval)
 - `NEXUS_MENUBAR_UPDATE_SNOOZE_HOURS` (default `24`, used by tray "Remind Me Later")
 - `NEXUS_MENUBAR_ROLLOUT_KEY` (optional deterministic rollout identity override)
+- `NEXUS_MENUBAR_UPDATE_PUBLIC_KEY` (optional Ed25519 PEM public key used to verify signed manifests)
+- `NEXUS_MENUBAR_UPDATE_REQUIRE_SIGNATURE` (`true`/`false`; when true, unsigned or unverifiable manifests are rejected)
 - `NEXUS_MENUBAR_ROLLOUT_PERCENT` (default per channel: stable=`100`, beta=`40`, nightly=`10`)
 - `NEXUS_MENUBAR_UPDATE_BASE_URL` (default `https://downloads.nexus.dev/menubar`)
 - `NEXUS_MENUBAR_RELEASE_VERSION` (optional override; defaults to `apps/menubar-app/package.json` version)
+- `NEXUS_MENUBAR_SIGNING_PRIVATE_KEY` (optional Ed25519 PEM private key for release metadata signing)
+- `NEXUS_MENUBAR_SIGNING_KEY_ID` (optional key identifier stored in manifest signature block)
+- `NEXUS_MENUBAR_REQUIRE_SIGNATURE` (`true`/`false`; fail metadata generation when signing key is missing)
 
 ## Auto-update UX
 
@@ -83,6 +88,7 @@ Tray menu now includes:
 
 Rollout gating is deterministic per machine identity (`NEXUS_MENUBAR_ROLLOUT_KEY` or hostname/user fallback).
 Local update preferences are persisted under Electron `userData` (`update-decision-state.json`).
+Manifest integrity is enforced with strict `sha256` digest format checks and optional Ed25519 signature verification.
 
 ## Example Integration Sketch
 
