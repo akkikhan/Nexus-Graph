@@ -373,6 +373,7 @@ export default function SettingsPage() {
     const [criticalSlaMinutes, setCriticalSlaMinutes] = useState(30);
     const [incidentEscalationTarget, setIncidentEscalationTarget] = useState<"slack" | "pagerduty" | "email" | "runbook">("slack");
     const [incidentEscalationMode, setIncidentEscalationMode] = useState<"breaches" | "active" | "muted">("breaches");
+    const [incidentEscalationCooldownMinutes, setIncidentEscalationCooldownMinutes] = useState(30);
     const [triageAuditActionFilter, setTriageAuditActionFilter] = useState<AlertTriageActionFilter>("all");
     const [triageAuditActorFilter, setTriageAuditActorFilter] = useState("");
     const [triageAuditAlertCodeFilter, setTriageAuditAlertCodeFilter] = useState("");
@@ -973,6 +974,7 @@ export default function SettingsPage() {
         setCriticalSlaMinutes(30);
         setIncidentEscalationTarget("slack");
         setIncidentEscalationMode("breaches");
+        setIncidentEscalationCooldownMinutes(30);
         setTriageAuditActionFilter("all");
         setTriageAuditActorFilter("");
         setTriageAuditAlertCodeFilter("");
@@ -1172,12 +1174,13 @@ export default function SettingsPage() {
                 windowMinutes: authSinceMinutes,
                 warningSlaMinutes,
                 criticalSlaMinutes,
+                cooldownMinutes: incidentEscalationCooldownMinutes,
             });
             if (result.reason === "no_alerts_to_escalate") {
                 setIncidentEscalationMessage("No incidents matched escalation criteria.");
             } else {
                 setIncidentEscalationMessage(
-                    `Escalation to ${result.target} processed ${result.processed} alert(s): ${result.succeeded} succeeded, ${result.failed} failed.`
+                    `Escalation to ${result.target} processed ${result.processed} alert(s): ${result.succeeded} succeeded, ${result.failed} failed (${result.skippedCooldown} cooldown skips).`
                 );
             }
             await Promise.all([
@@ -1974,7 +1977,7 @@ export default function SettingsPage() {
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+                                    <div className="grid grid-cols-1 md:grid-cols-5 gap-2 text-xs">
                                         <select
                                             value={incidentEscalationMode}
                                             onChange={(e) =>
@@ -2002,6 +2005,21 @@ export default function SettingsPage() {
                                             <option value="email">Target: Email</option>
                                             <option value="runbook">Target: Runbook</option>
                                         </select>
+                                        <label className="space-y-1">
+                                            <span className="text-zinc-500">Cooldown (min)</span>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                max={43200}
+                                                value={incidentEscalationCooldownMinutes}
+                                                onChange={(e) =>
+                                                    setIncidentEscalationCooldownMinutes(
+                                                        Math.max(0, Number(e.target.value) || 0)
+                                                    )
+                                                }
+                                                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                            />
+                                        </label>
                                         <button
                                             onClick={onEscalateIncidents}
                                             disabled={!triageTargetRepoId || escalatingIncidents}

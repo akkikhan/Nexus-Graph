@@ -1135,9 +1135,11 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                     reason: "no_alerts_to_escalate",
                     target,
                     mode,
+                    cooldownMinutes: 30,
                     processed: 0,
                     succeeded: 0,
                     failed: 0,
+                    skippedCooldown: 0,
                     results: [],
                 })
             );
@@ -1166,17 +1168,19 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         }
 
         await route.fulfill(
-            jsonResponse(200, {
-                success: true,
-                reason: "ok",
-                target,
-                mode,
-                processed: alertsToEscalate.length,
-                succeeded: alertsToEscalate.length,
-                failed: 0,
-                results: alertsToEscalate.map((code) => ({
-                    alertCode: code,
+                jsonResponse(200, {
                     success: true,
+                    reason: "ok",
+                    target,
+                    mode,
+                    cooldownMinutes: 30,
+                    processed: alertsToEscalate.length,
+                    succeeded: alertsToEscalate.length,
+                    failed: 0,
+                    skippedCooldown: 0,
+                    results: alertsToEscalate.map((code) => ({
+                        alertCode: code,
+                        success: true,
                     reason: "escalated",
                     event: {
                         id: `escalation-${code}`,
@@ -2082,9 +2086,9 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     });
     await expect(page.getByTestId("integration-alert-webhook_auth_failures_high")).toBeVisible({ timeout: 20000 });
     await page.getByRole("button", { name: /Escalate Incidents/i }).click();
-    await expect(page.getByText(/Escalation to slack processed 1 alert\(s\): 1 succeeded, 0 failed\./i)).toBeVisible({
-        timeout: 20000,
-    });
+    await expect(
+        page.getByText(/Escalation to slack processed 1 alert\(s\): 1 succeeded, 0 failed \(0 cooldown skips\)\./i)
+    ).toBeVisible({ timeout: 20000 });
     await expect(page.getByTestId("settings-incident-escalations")).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Escalated integration alert webhook_auth_failures_high to slack\./i)).toBeVisible({
         timeout: 20000,

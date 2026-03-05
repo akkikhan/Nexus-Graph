@@ -1619,6 +1619,7 @@ async function run() {
                     warningSlaMinutes: 0,
                     criticalSlaMinutes: 0,
                     windowMinutes: 180,
+                    cooldownMinutes: 30,
                 }),
             });
             printResult("POST /api/v1/integrations/incidents/escalate", escalateIncidents);
@@ -1627,6 +1628,46 @@ async function run() {
                 escalateIncidents.payload?.reason === "ok" || escalateIncidents.payload?.reason === "no_alerts_to_escalate",
                 "integrations incident escalate must return ok or no_alerts_to_escalate reason"
             );
+            assert(
+                typeof escalateIncidents.payload?.cooldownMinutes === "number",
+                "integrations incident escalate must include cooldownMinutes"
+            );
+
+            const escalateIncidentsCooldown = await request(`/api/v1/integrations/incidents/escalate`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    target: "slack",
+                    mode: "breaches",
+                    actor: "api-smoke",
+                    note: "Escalation cooldown validation",
+                    warningSlaMinutes: 0,
+                    criticalSlaMinutes: 0,
+                    windowMinutes: 180,
+                    cooldownMinutes: 1_440,
+                }),
+            });
+            printResult("POST /api/v1/integrations/incidents/escalate (cooldown)", escalateIncidentsCooldown);
+            assert(escalateIncidentsCooldown.response.status === 200, "integrations incident cooldown escalate must return 200");
+            assert(
+                escalateIncidentsCooldown.payload?.reason === "ok" || escalateIncidentsCooldown.payload?.reason === "no_alerts_to_escalate",
+                "integrations incident cooldown escalate must return ok or no_alerts_to_escalate reason"
+            );
+            if (escalateIncidentsCooldown.payload?.reason === "ok") {
+                assert(
+                    typeof escalateIncidentsCooldown.payload?.skippedCooldown === "number",
+                    "integrations incident cooldown escalate must include skippedCooldown"
+                );
+                assert(
+                    Array.isArray(escalateIncidentsCooldown.payload?.results),
+                    "integrations incident cooldown escalate must include results[]"
+                );
+                assert(
+                    escalateIncidentsCooldown.payload.results.some((result) => result.reason === "cooldown_active"),
+                    "integrations incident cooldown escalate must mark cooldown_active results on rapid repeat"
+                );
+            }
 
             const listEscalations = await request(
                 `/api/v1/integrations/incidents/escalations?repoId=${encodeURIComponent(firstRepoId)}&target=slack&limit=20`

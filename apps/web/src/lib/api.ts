@@ -1274,18 +1274,22 @@ export async function escalateIntegrationIncidents(input: {
     windowMinutes?: number;
     warningSlaMinutes?: number;
     criticalSlaMinutes?: number;
+    cooldownMinutes?: number;
 }): Promise<{
     success: boolean;
     reason: string;
     target: "slack" | "pagerduty" | "email" | "runbook";
     mode: "breaches" | "active" | "muted" | "custom";
+    cooldownMinutes: number;
     processed: number;
     succeeded: number;
     failed: number;
+    skippedCooldown: number;
     results: Array<{
         alertCode: string;
         success: boolean;
         reason: string;
+        cooldownUntil?: string;
         event?: IntegrationIncidentEscalationAuditEvent;
     }>;
 }> {
@@ -1299,13 +1303,16 @@ export async function escalateIntegrationIncidents(input: {
         reason: string;
         target: "slack" | "pagerduty" | "email" | "runbook";
         mode: "breaches" | "active" | "muted" | "custom";
+        cooldownMinutes: number;
         processed: number;
         succeeded: number;
         failed: number;
+        skippedCooldown: number;
         results: Array<{
             alertCode: string;
             success: boolean;
             reason: string;
+            cooldownUntil?: string;
             event?: IntegrationIncidentEscalationAuditEvent;
         }>;
     }>(res, "Failed to escalate integration incidents");

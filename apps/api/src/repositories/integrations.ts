@@ -2642,6 +2642,7 @@ export const integrationsRepository = {
         windowMinutes?: number;
         warningSlaMinutes?: number;
         criticalSlaMinutes?: number;
+        cooldownMinutes?: number;
     }) {
         const repo = await findRepository(input.repoId);
         if (!repo) return { reason: "repo_not_found" as const };
@@ -2657,6 +2658,7 @@ export const integrationsRepository = {
 
         const actor = (input.actor || "settings-ui").trim().slice(0, 120) || "settings-ui";
         const note = (input.note || "").trim().slice(0, 500);
+        const cooldownMinutes = clampInteger(Number(input.cooldownMinutes ?? 30), 0, 43_200);
 
         const candidates: Array<{
             code: string;
@@ -2727,13 +2729,56 @@ export const integrationsRepository = {
         );
         if (deduped.length === 0) return { reason: "no_alerts_to_escalate" as const };
 
+        const recentlyEscalatedAtByCode = new Map<string, string>();
+        if (cooldownMinutes > 0) {
+            const since = new Date(Date.now() - cooldownMinutes * 60_000);
+            const recentRows = await db
+                .select()
+                .from(auditLog)
+                .where(
+                    and(
+                        eq(auditLog.entityType, "integration_alert"),
+                        eq(auditLog.action, "integration.alert.escalate"),
+                        eq(auditLog.orgId, repo.orgId),
+                        sql`${auditLog.metadata} ->> 'repoId' = ${input.repoId}`,
+                        sql`${auditLog.metadata} ->> 'target' = ${target}`,
+                        gte(auditLog.createdAt, since)
+                    )
+                )
+                .orderBy(desc(auditLog.createdAt))
+                .limit(1_000);
+            for (const row of recentRows) {
+                const metadata =
+                    row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+                        ? (row.metadata as Record<string, unknown>)
+                        : {};
+                const alertCode = normalizeAlertCode(typeof metadata.alertCode === "string" ? metadata.alertCode : "");
+                if (!alertCode) continue;
+                if (!recentlyEscalatedAtByCode.has(alertCode)) {
+                    recentlyEscalatedAtByCode.set(alertCode, toIso(row.createdAt));
+                }
+            }
+        }
+
         const results: Array<{
             alertCode: string;
             success: boolean;
             reason: string;
+            cooldownUntil?: string;
             event?: IntegrationIncidentEscalationAuditEvent;
         }> = [];
         for (const candidate of deduped) {
+            const recentlyEscalatedAt = recentlyEscalatedAtByCode.get(candidate.code);
+            if (recentlyEscalatedAt) {
+                const cooldownUntilMs = Date.parse(recentlyEscalatedAt) + cooldownMinutes * 60_000;
+                results.push({
+                    alertCode: candidate.code,
+                    success: false,
+                    reason: "cooldown_active",
+                    cooldownUntil: Number.isFinite(cooldownUntilMs) ? new Date(cooldownUntilMs).toISOString() : undefined,
+                });
+                continue;
+            }
             const summary = note
                 ? `Escalated integration alert ${candidate.code} to ${target}: ${note}`
                 : `Escalated integration alert ${candidate.code} to ${target}.`;
@@ -2781,13 +2826,16 @@ export const integrationsRepository = {
         }
 
         const succeeded = results.filter((result) => result.success).length;
+        const skippedCooldown = results.filter((result) => result.reason === "cooldown_active").length;
         return {
             reason: "ok" as const,
             target,
             mode,
+            cooldownMinutes,
             processed: results.length,
             succeeded,
             failed: results.length - succeeded,
+            skippedCooldown,
             results,
         };
     },

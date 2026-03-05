@@ -256,6 +256,7 @@ const escalateIncidentSchema = z.object({
     windowMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
     warningSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
     criticalSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
+    cooldownMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
 });
 const alertCodeParamSchema = z.object({
     alertCode: z.string().min(1).max(120),
@@ -1613,6 +1614,7 @@ integrationsRouter.post("/incidents/escalate", zValidator("json", escalateIncide
             windowMinutes: body.windowMinutes,
             warningSlaMinutes: body.warningSlaMinutes,
             criticalSlaMinutes: body.criticalSlaMinutes,
+            cooldownMinutes: body.cooldownMinutes,
         });
         if (result.reason === "repo_not_found") {
             return c.json({ error: "Repository not found for incident escalation" }, 404);
@@ -1630,9 +1632,11 @@ integrationsRouter.post("/incidents/escalate", zValidator("json", escalateIncide
                 reason: result.reason,
                 target: body.target,
                 mode: body.mode,
+                cooldownMinutes: body.cooldownMinutes ?? 30,
                 processed: 0,
                 succeeded: 0,
                 failed: 0,
+                skippedCooldown: 0,
                 results: [],
             });
         }
@@ -1650,6 +1654,8 @@ integrationsRouter.post("/incidents/escalate", zValidator("json", escalateIncide
                 processed: result.processed,
                 succeeded: result.succeeded,
                 failed: result.failed,
+                skippedCooldown: result.skippedCooldown,
+                cooldownMinutes: result.cooldownMinutes,
                 alertCodes: result.results.map((entry) => entry.alertCode),
             },
         });

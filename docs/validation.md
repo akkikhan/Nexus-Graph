@@ -132,6 +132,7 @@ Degraded-mode behavior:
 - Integrations observability now includes incident timeline aggregation (`/integrations/incidents/timeline`) and triage audit history filters with actor attribution (`/integrations/alerts/triage-audits`).
 - Integrations incident response automation now includes bulk triage (`/integrations/alerts/bulk-triage`) and SLA breach summaries (`/integrations/incidents/sla-summary`) with repo/window/severity thresholds.
 - Integrations incident escalation workflow now supports durable escalation dispatch (`/integrations/incidents/escalate`) and escalation audit history (`/integrations/incidents/escalations`) with target/mode filters.
+- Integrations escalation dispatch now enforces configurable cooldown dedupe (`cooldownMinutes`) to prevent repeated spam escalations for the same alert/target.
 
 ## Web Smoke Coverage
 
