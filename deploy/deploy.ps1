@@ -34,6 +34,12 @@ function To-Lf([string]$Text) {
     return ($Text -replace "`r`n", "`n") -replace "`r", ""
 }
 
+function Invoke-RemoteScript([string]$ScriptText) {
+    $normalized = To-Lf $ScriptText
+    $payload = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($normalized))
+    ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "printf '%s' '$payload' | base64 -d | bash"
+}
+
 function Invoke-Rollback {
     Write-Host "[deploy] attempting rollback to latest backup..." -ForegroundColor Yellow
     $rollbackScript = @'
@@ -53,7 +59,7 @@ curl -fsS http://localhost:3000 >/dev/null
 echo "[rollback] restore successful"
 '@
 
-    To-Lf $rollbackScript | ssh -i $SshKey -o StrictHostKeyChecking=no "$VmUser@$VmIp" "bash -s"
+    Invoke-RemoteScript $rollbackScript
 }
 
 try {
@@ -180,7 +186,7 @@ curl -fsS http://localhost:3001/health >/dev/null
 
 # Run DB migrations (idempotent) after API is up.
 echo "[deploy] running db migrations..."
-docker exec nexus-api sh -lc 'cd /app/packages/db && /app/node_modules/.bin/drizzle-kit migrate'
+docker exec nexus-api sh -lc 'cd /app/packages/db && ./node_modules/.bin/drizzle-kit migrate'
 
 for i in $(seq 1 60); do
   if curl -fsS http://localhost:3000 >/dev/null; then
@@ -189,10 +195,9 @@ for i in $(seq 1 60); do
   sleep 2
 done
 curl -fsS http://localhost:3000 >/dev/null
-"${COMPOSE[@]}" ps
 '@
 
-    To-Lf $remoteScript | ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "bash -s"
+    Invoke-RemoteScript $remoteScript
     if ($LASTEXITCODE -ne 0) { throw "remote deployment failed with exit code $LASTEXITCODE" }
 
     Write-Host "[deploy] Deployment complete." -ForegroundColor Green
