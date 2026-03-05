@@ -99,7 +99,7 @@ async function stopService(child) {
 }
 
 async function run() {
-    await runCommand("Menu bar app tests", PNPM_BIN, ["--filter", "@nexus/menubar-app", "test"]);
+    await runCommand("Menu bar app tests", PNPM_BIN, ["--filter", "@nexus/menubar-app", "test:ci"]);
     await runCommand("VS Code extension tests", PNPM_BIN, ["--filter", "nexus-vscode-extension", "test"]);
     await runCommand("VS Code manifest validation tests", NODE_BIN, [
         "--test",
