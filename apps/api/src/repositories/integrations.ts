@@ -1384,7 +1384,8 @@ export const integrationsRepository = {
         }
 
         const attemptNumber = Number(event.attempts || 0) + 1;
-        const shouldFail = input.simulateFailure === true || Boolean((event.payload || {})["simulateFailure"]);
+        const manualFailureDrill = input.simulateFailure === true;
+        const shouldFail = manualFailureDrill || Boolean((event.payload || {})["simulateFailure"]);
         const now = new Date();
         const responseCode = Number(input.responseCode || (shouldFail ? 500 : 200));
         const latencyMs = Math.max(Number(input.latencyMs || (shouldFail ? 300 : 100)), 0);
@@ -1397,7 +1398,11 @@ export const integrationsRepository = {
         if (shouldFail) {
             const deadLetter = attemptNumber >= Number(event.maxAttempts || 3);
             patch.status = deadLetter ? "dead_letter" : "failed";
-            patch.nextAttemptAt = deadLetter ? now : new Date(now.getTime() + computeBackoffMs(attemptNumber));
+            patch.nextAttemptAt = deadLetter
+                ? now
+                : manualFailureDrill
+                  ? now
+                  : new Date(now.getTime() + computeBackoffMs(attemptNumber));
             patch.errorMessage = redactSecrets((input.errorMessage || "Webhook processing failed").trim());
             patch.payload = sanitizeUnknown({
                 ...(event.payload || {}),
@@ -1736,7 +1741,8 @@ export const integrationsRepository = {
         }
 
         const attemptNumber = Number(delivery.attempts || 0) + 1;
-        const shouldFail = input.simulateFailure === true || Boolean((delivery.payload || {})["simulateFailure"]);
+        const manualFailureDrill = input.simulateFailure === true;
+        const shouldFail = manualFailureDrill || Boolean((delivery.payload || {})["simulateFailure"]);
         const now = new Date();
         const responseCode = Number(input.responseCode || (shouldFail ? 500 : 200));
         const latencyMs = Math.max(Number(input.latencyMs || (shouldFail ? 350 : 120)), 0);
@@ -1748,7 +1754,11 @@ export const integrationsRepository = {
             if (shouldFail) {
                 const deadLetter = attemptNumber >= Number(delivery.maxAttempts || 3);
                 const nextStatus: NotificationDeliveryStatus = deadLetter ? "dead_letter" : "retrying";
-                const nextAttemptAt = deadLetter ? now : new Date(now.getTime() + computeBackoffMs(attemptNumber));
+                const nextAttemptAt = deadLetter
+                    ? now
+                    : manualFailureDrill
+                      ? now
+                      : new Date(now.getTime() + computeBackoffMs(attemptNumber));
                 const errorMessage = redactSecrets((input.errorMessage || "Provider delivery failed").trim());
 
                 const [updated] = await tx
