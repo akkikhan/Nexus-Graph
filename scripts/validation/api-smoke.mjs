@@ -1553,6 +1553,30 @@ async function run() {
                 "integration alert triage list must include muted alert state"
             );
 
+            const triageAuditsFiltered = await request(
+                `/api/v1/integrations/alerts/triage-audits?repoId=${encodeURIComponent(firstRepoId)}&action=mute&actor=api-smoke&limit=20`
+            );
+            printResult("GET /api/v1/integrations/alerts/triage-audits", triageAuditsFiltered);
+            assert(triageAuditsFiltered.response.status === 200, "integration alert triage audits must return 200");
+            assert(Array.isArray(triageAuditsFiltered.payload?.events), "integration alert triage audits must include events[]");
+            assert(
+                triageAuditsFiltered.payload.events.some(
+                    (event) => event.action === "integration.alert.mute" && event.actor === "api-smoke"
+                ),
+                "integration alert triage audits must include actor-attributed mute event"
+            );
+
+            const incidentTimeline = await request(
+                `/api/v1/integrations/incidents/timeline?repoId=${encodeURIComponent(firstRepoId)}&limit=50&sinceMinutes=180`
+            );
+            printResult("GET /api/v1/integrations/incidents/timeline", incidentTimeline);
+            assert(incidentTimeline.response.status === 200, "integrations incident timeline must return 200");
+            assert(Array.isArray(incidentTimeline.payload?.events), "integrations incident timeline must include events[]");
+            assert(
+                incidentTimeline.payload.events.some((event) => event.scope === "alert_triage" && event.actor === "api-smoke"),
+                "integrations incident timeline must include actor-attributed alert triage events"
+            );
+
             const unmuteAlert = await request(`/api/v1/integrations/alerts/webhook_auth_failures_high/unmute`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },

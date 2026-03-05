@@ -667,6 +667,38 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     const alertRunbook = "https://docs.nexus.dev/runbooks/integrations/webhook-auth-failures";
     let alertAcknowledgedAt: string | undefined;
     let alertMutedUntil: string | undefined;
+    const triageAuditEvents: Array<{
+        id: string;
+        action: string;
+        actor?: string;
+        alertCode?: string;
+        repoId?: string;
+        outcome: "success" | "error";
+        summary: string;
+        metadata: Record<string, unknown>;
+        createdAt: string;
+    }> = [];
+
+    const appendTriageAudit = (entry: {
+        action: string;
+        actor?: string;
+        alertCode?: string;
+        repoId?: string;
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) => {
+        triageAuditEvents.unshift({
+            id: `triage-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            action: entry.action,
+            actor: entry.actor,
+            alertCode: entry.alertCode,
+            repoId: entry.repoId,
+            outcome: "success",
+            summary: entry.summary,
+            metadata: entry.metadata || {},
+            createdAt: new Date().toISOString(),
+        });
+    };
 
     await page.route("**/api/v1/integrations/alerts**", async (route) => {
         const request = route.request();
@@ -676,6 +708,13 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
 
         if (method === "POST" && pathname.endsWith(`/integrations/alerts/${alertCode}/acknowledge`)) {
             alertAcknowledgedAt = new Date().toISOString();
+            appendTriageAudit({
+                action: "integration.alert.acknowledge",
+                actor: "settings-ui",
+                alertCode,
+                repoId: "repo-1",
+                summary: `Acknowledged integration alert ${alertCode}.`,
+            });
             await route.fulfill(
                 jsonResponse(200, {
                     success: true,
@@ -699,6 +738,13 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
 
         if (method === "POST" && pathname.endsWith(`/integrations/alerts/${alertCode}/mute`)) {
             alertMutedUntil = new Date(Date.now() + 120 * 60_000).toISOString();
+            appendTriageAudit({
+                action: "integration.alert.mute",
+                actor: "settings-ui",
+                alertCode,
+                repoId: "repo-1",
+                summary: `Muted integration alert ${alertCode} for 120 minutes.`,
+            });
             await route.fulfill(
                 jsonResponse(200, {
                     success: true,
@@ -726,6 +772,13 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
 
         if (method === "POST" && pathname.endsWith(`/integrations/alerts/${alertCode}/unmute`)) {
             alertMutedUntil = undefined;
+            appendTriageAudit({
+                action: "integration.alert.unmute",
+                actor: "settings-ui",
+                alertCode,
+                repoId: "repo-1",
+                summary: `Unmuted integration alert ${alertCode}.`,
+            });
             await route.fulfill(
                 jsonResponse(200, {
                     success: true,
@@ -840,6 +893,82 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                     failureRatePct: 20,
                     configErrors: 1,
                 },
+                generatedAt: new Date().toISOString(),
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/alerts/triage-audits**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const actionFilter = url.searchParams.get("action");
+        const actorFilter = (url.searchParams.get("actor") || "").trim();
+        const alertCodeFilter = (url.searchParams.get("alertCode") || "").trim();
+        const limit = Number(url.searchParams.get("limit") || "8");
+        const offset = Number(url.searchParams.get("offset") || "0");
+
+        const filtered = triageAuditEvents.filter((event) => {
+            if (actionFilter && event.action !== `integration.alert.${actionFilter}`) return false;
+            if (actorFilter && event.actor !== actorFilter) return false;
+            if (alertCodeFilter && event.alertCode !== alertCodeFilter) return false;
+            return true;
+        });
+        await route.fulfill(
+            jsonResponse(200, {
+                events: filtered.slice(offset, offset + limit),
+                total: filtered.length,
+                limit,
+                offset,
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/incidents/timeline**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const scopeFilter = url.searchParams.get("scope");
+        const severityFilter = url.searchParams.get("severity");
+        const limit = Number(url.searchParams.get("limit") || "20");
+
+        const triageIncidents = triageAuditEvents.map((event) => ({
+            id: `timeline-${event.id}`,
+            timestamp: event.createdAt,
+            severity: "warning",
+            scope: "alert_triage",
+            title: `Alert triage: ${event.action.replace("integration.alert.", "")}`,
+            summary: event.summary,
+            repoId: event.repoId,
+            actor: event.actor,
+            action: event.action,
+            alertCode: event.alertCode,
+            metadata: event.metadata || {},
+        }));
+        const staticWebhookAuthIncident = {
+            id: "timeline-webhook-auth-1",
+            timestamp: new Date(Date.now() - 30_000).toISOString(),
+            severity: "warning",
+            scope: "webhook_auth",
+            title: "Webhook auth rejected",
+            summary: "slack missing_signature_headers",
+            repoId: "repo-1",
+            provider: "slack",
+            metadata: {
+                reason: "missing_signature_headers",
+            },
+        };
+
+        const allEvents = [staticWebhookAuthIncident, ...triageIncidents];
+        const filtered = allEvents.filter((event) => {
+            if (scopeFilter && event.scope !== scopeFilter) return false;
+            if (severityFilter && event.severity !== severityFilter) return false;
+            return true;
+        });
+
+        await route.fulfill(
+            jsonResponse(200, {
+                events: filtered.slice(0, limit),
+                total: filtered.length,
+                limit,
                 generatedAt: new Date().toISOString(),
             })
         );
@@ -1599,6 +1728,8 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/Webhook Recovery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Notification Delivery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Issue-Link Sync Queue/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Incident Timeline/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Alert Triage Audit Feed/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /^Acknowledge$/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Mute 2h/i })).toBeVisible({ timeout: 20000 });
@@ -1624,6 +1755,9 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         timeout: 20000,
     });
     await expect(page.getByTestId("integration-alert-webhook_auth_failures_high")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByTestId("settings-incident-timeline")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByTestId("settings-alert-triage-audits")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Actor: settings-ui/i)).toBeVisible({ timeout: 20000 });
 
     const jiraConnectionRow = page.getByTestId("connection-row-conn-jira-1");
     await jiraConnectionRow.getByRole("button", { name: /^Validate$/i }).click();

@@ -17,12 +17,14 @@ import {
 } from "lucide-react";
 import {
     acknowledgeIntegrationAlert,
+    fetchIntegrationAlertTriageAudits,
     IntegrationWebhookAuthEventListOptions,
     fetchIntegrationConnectionActionAudits,
     fetchIntegrationAlerts,
     fetchIntegrationConnections,
     fetchIntegrationIssueLinkActionAudits,
     fetchIntegrationIssueLinks,
+    fetchIntegrationIncidentTimeline,
     fetchIntegrationMetrics,
     fetchIntegrationNotificationActionAudits,
     fetchIntegrationNotifications,
@@ -43,6 +45,8 @@ import {
     IntegrationAlertStatus,
     IntegrationConnectionActionAuditEvent,
     IntegrationConnection,
+    IntegrationAlertTriageAuditEvent,
+    IntegrationIncidentTimelineEntry,
     IntegrationIssueLink,
     IntegrationIssueLinkActionAuditEvent,
     IntegrationMetrics,
@@ -266,6 +270,7 @@ type WebhookStatusFilter = "all" | "received" | "processed" | "failed" | "dead_l
 type WebhookActionMode = "process" | "fail";
 type ConnectionActionMode = "validate" | "fail_validate" | "enable" | "disable";
 type AlertActionMode = "acknowledge" | "mute" | "unmute";
+type AlertTriageActionFilter = "all" | "acknowledge" | "mute" | "unmute";
 type NotificationStatusFilter = "all" | "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
 type NotificationActionMode = "deliver" | "fail";
 type IssueLinkStatusFilter = "all" | "linked" | "sync_pending" | "sync_failed";
@@ -312,6 +317,15 @@ function formatConnectionAuditAction(action: string): string {
     return normalized.split("_").join(" ");
 }
 
+function formatAlertTriageAction(action: string): string {
+    const normalized = action.startsWith("integration.alert.") ? action.slice("integration.alert.".length) : action;
+    return normalized.split("_").join(" ");
+}
+
+function formatIncidentScope(scope: IntegrationIncidentTimelineEntry["scope"]): string {
+    return scope.split("_").join(" ");
+}
+
 function formatAuthTimestamp(value: string): string {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
@@ -345,6 +359,13 @@ export default function SettingsPage() {
     const [webhookStatusFilter, setWebhookStatusFilter] = useState<WebhookStatusFilter>("all");
     const [notificationStatusFilter, setNotificationStatusFilter] = useState<NotificationStatusFilter>("all");
     const [issueLinkStatusFilter, setIssueLinkStatusFilter] = useState<IssueLinkStatusFilter>("all");
+    const [timelineScopeFilter, setTimelineScopeFilter] = useState<
+        "all" | "alert_triage" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync"
+    >("all");
+    const [timelineSeverityFilter, setTimelineSeverityFilter] = useState<"all" | "warning" | "critical">("all");
+    const [triageAuditActionFilter, setTriageAuditActionFilter] = useState<AlertTriageActionFilter>("all");
+    const [triageAuditActorFilter, setTriageAuditActorFilter] = useState("");
+    const [triageAuditAlertCodeFilter, setTriageAuditAlertCodeFilter] = useState("");
     const [retryingDueWebhooks, setRetryingDueWebhooks] = useState(false);
     const [retryingDueNotifications, setRetryingDueNotifications] = useState(false);
     const [retryingIssueLinkSyncs, setRetryingIssueLinkSyncs] = useState(false);
@@ -473,6 +494,60 @@ export default function SettingsPage() {
     } = useQuery({
         queryKey: ["settings", "integration-alerts", integrationRepoId],
         queryFn: () => fetchIntegrationAlerts({ repoId: integrationRepoId }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: integrationIncidentTimelineData,
+        isLoading: integrationIncidentTimelineLoading,
+        isFetching: integrationIncidentTimelineFetching,
+        error: integrationIncidentTimelineError,
+        refetch: refetchIntegrationIncidentTimeline,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "integration-incident-timeline",
+            integrationRepoId,
+            authProvider,
+            timelineScopeFilter,
+            timelineSeverityFilter,
+        ],
+        queryFn: () =>
+            fetchIntegrationIncidentTimeline({
+                repoId: integrationRepoId,
+                provider: authProvider === "all" ? undefined : authProvider,
+                scope: timelineScopeFilter === "all" ? undefined : timelineScopeFilter,
+                severity: timelineSeverityFilter === "all" ? undefined : timelineSeverityFilter,
+                sinceMinutes: authSinceMinutes,
+                limit: 20,
+            }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: triageAuditsData,
+        isLoading: triageAuditsLoading,
+        isFetching: triageAuditsFetching,
+        error: triageAuditsError,
+        refetch: refetchTriageAudits,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "integration-alert-triage-audits",
+            integrationRepoId,
+            triageAuditActionFilter,
+            triageAuditActorFilter,
+            triageAuditAlertCodeFilter,
+            authSinceMinutes,
+        ],
+        queryFn: () =>
+            fetchIntegrationAlertTriageAudits({
+                repoId: integrationRepoId,
+                action: triageAuditActionFilter === "all" ? undefined : triageAuditActionFilter,
+                actor: triageAuditActorFilter.trim() || undefined,
+                alertCode: triageAuditAlertCodeFilter.trim() || undefined,
+                sinceMinutes: authSinceMinutes,
+                limit: 8,
+                offset: 0,
+            }),
         refetchInterval: 30_000,
     });
     const {
@@ -620,6 +695,8 @@ export default function SettingsPage() {
                 refetchConnectionActionAudits(),
                 refetchIntegrationMetrics(),
                 refetchIntegrationAlerts(),
+                refetchIntegrationIncidentTimeline(),
+                refetchTriageAudits(),
                 refetchWebhookEvents(),
                 refetchWebhookActionAudits(),
                 refetchNotificationDeliveries(),
@@ -687,11 +764,13 @@ export default function SettingsPage() {
         refetchConnectionActionAudits,
         refetchIntegrationAlerts,
         refetchIntegrationConnections,
+        refetchIntegrationIncidentTimeline,
         refetchIntegrationMetrics,
         refetchIssueLinkActionAudits,
         refetchIssueLinks,
         refetchNotificationActionAudits,
         refetchNotificationDeliveries,
+        refetchTriageAudits,
         refetchWebhookActionAudits,
         refetchWebhookEvents,
     ]);
@@ -714,6 +793,8 @@ export default function SettingsPage() {
     const integrationConnections = integrationConnectionsData?.connections || [];
     const triageTargetRepoId = integrationRepoId || integrationConnections[0]?.repoId;
     const connectionActionAudits = connectionActionAuditsData?.events || [];
+    const incidentTimeline = integrationIncidentTimelineData?.events || [];
+    const triageAudits = triageAuditsData?.events || [];
     const webhookEvents = webhookEventsData?.events || [];
     const webhookActionAudits = webhookActionAuditsData?.events || [];
     const notificationDeliveries = notificationDeliveriesData?.deliveries || [];
@@ -726,6 +807,8 @@ export default function SettingsPage() {
         connectionActionAuditsLoading ||
         integrationMetricsLoading ||
         integrationAlertsLoading ||
+        integrationIncidentTimelineLoading ||
+        triageAuditsLoading ||
         webhookEventsLoading ||
         webhookActionAuditsLoading ||
         notificationDeliveriesLoading ||
@@ -737,6 +820,8 @@ export default function SettingsPage() {
         connectionActionAuditsFetching ||
         integrationMetricsFetching ||
         integrationAlertsFetching ||
+        integrationIncidentTimelineFetching ||
+        triageAuditsFetching ||
         webhookEventsFetching ||
         webhookActionAuditsFetching ||
         notificationDeliveriesFetching ||
@@ -812,6 +897,11 @@ export default function SettingsPage() {
         setWebhookStatusFilter("all");
         setNotificationStatusFilter("all");
         setIssueLinkStatusFilter("all");
+        setTimelineScopeFilter("all");
+        setTimelineSeverityFilter("all");
+        setTriageAuditActionFilter("all");
+        setTriageAuditActorFilter("");
+        setTriageAuditAlertCodeFilter("");
         setAlertActionMessage("");
         setAlertActionError("");
         setConnectionActionMessage("");
@@ -865,7 +955,7 @@ export default function SettingsPage() {
                 actor: "settings-ui",
             });
             setAlertActionMessage(`Alert ${alertCode} acknowledged.`);
-            await refetchIntegrationAlerts();
+            await Promise.all([refetchIntegrationAlerts(), refetchIntegrationIncidentTimeline(), refetchTriageAudits()]);
         } catch (error) {
             setAlertActionError(getErrorMessage(error, `Failed to acknowledge alert ${alertCode}.`));
         } finally {
@@ -892,7 +982,7 @@ export default function SettingsPage() {
                 durationMinutes: 120,
             });
             setAlertActionMessage(`Alert ${alertCode} muted until ${formatAuthTimestamp(result.mutedUntil)}.`);
-            await refetchIntegrationAlerts();
+            await Promise.all([refetchIntegrationAlerts(), refetchIntegrationIncidentTimeline(), refetchTriageAudits()]);
         } catch (error) {
             setAlertActionError(getErrorMessage(error, `Failed to mute alert ${alertCode}.`));
         } finally {
@@ -918,7 +1008,7 @@ export default function SettingsPage() {
                 reason: "Manual unmute from settings integration operations panel",
             });
             setAlertActionMessage(`Alert ${alertCode} unmuted.`);
-            await refetchIntegrationAlerts();
+            await Promise.all([refetchIntegrationAlerts(), refetchIntegrationIncidentTimeline(), refetchTriageAudits()]);
         } catch (error) {
             setAlertActionError(getErrorMessage(error, `Failed to unmute alert ${alertCode}.`));
         } finally {
@@ -1364,7 +1454,9 @@ export default function SettingsPage() {
                     ) : integrationConnectionsError ||
                       connectionActionAuditsError ||
                       integrationMetricsError ||
-                      integrationAlertsError ? (
+                      integrationAlertsError ||
+                      integrationIncidentTimelineError ||
+                      triageAuditsError ? (
                         <div className="rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
                             {[
                                 integrationConnectionsError
@@ -1378,6 +1470,12 @@ export default function SettingsPage() {
                                     : null,
                                 integrationAlertsError
                                     ? getErrorMessage(integrationAlertsError, "Alerts unavailable")
+                                    : null,
+                                integrationIncidentTimelineError
+                                    ? getErrorMessage(integrationIncidentTimelineError, "Incident timeline unavailable")
+                                    : null,
+                                triageAuditsError
+                                    ? getErrorMessage(triageAuditsError, "Alert triage audit feed unavailable")
                                     : null,
                             ]
                                 .filter(Boolean)
@@ -1585,6 +1683,157 @@ export default function SettingsPage() {
                                         {alertActionError}
                                     </div>
                                 ) : null}
+                            </div>
+
+                            <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-white">Incident Timeline</h4>
+                                        <p className="text-xs text-zinc-500">
+                                            Cross-scope integration incidents for triage context and recent history.
+                                        </p>
+                                    </div>
+                                    <div className="text-xs text-zinc-500">
+                                        {integrationIncidentTimelineFetching ? "Refreshing..." : "Latest incidents"}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+                                    <select
+                                        value={timelineScopeFilter}
+                                        onChange={(e) =>
+                                            setTimelineScopeFilter(
+                                                e.target.value as
+                                                    | "all"
+                                                    | "alert_triage"
+                                                    | "webhook_auth"
+                                                    | "webhook_processing"
+                                                    | "notification_delivery"
+                                                    | "issue_sync"
+                                            )
+                                        }
+                                        className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                    >
+                                        <option value="all">All scopes</option>
+                                        <option value="alert_triage">Alert triage</option>
+                                        <option value="webhook_auth">Webhook auth</option>
+                                        <option value="webhook_processing">Webhook processing</option>
+                                        <option value="notification_delivery">Notification delivery</option>
+                                        <option value="issue_sync">Issue sync</option>
+                                    </select>
+                                    <select
+                                        value={timelineSeverityFilter}
+                                        onChange={(e) => setTimelineSeverityFilter(e.target.value as "all" | "warning" | "critical")}
+                                        className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                    >
+                                        <option value="all">All severities</option>
+                                        <option value="critical">Critical</option>
+                                        <option value="warning">Warning</option>
+                                    </select>
+                                    <div className="text-zinc-500 md:col-span-2 flex items-center">
+                                        {integrationIncidentTimelineData?.total ?? 0} timeline event(s)
+                                    </div>
+                                </div>
+
+                                {integrationIncidentTimelineLoading ? (
+                                    <div className="text-sm text-zinc-500">Loading incident timeline...</div>
+                                ) : incidentTimeline.length === 0 ? (
+                                    <div className="text-sm text-zinc-500">No incidents match the current filters.</div>
+                                ) : (
+                                    <div className="space-y-2" data-testid="settings-incident-timeline">
+                                        {incidentTimeline.slice(0, 8).map((entry: IntegrationIncidentTimelineEntry) => (
+                                            <div
+                                                key={entry.id}
+                                                className="rounded border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-xs text-zinc-300"
+                                            >
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <div className="font-medium text-zinc-100 truncate">{entry.title}</div>
+                                                    <span
+                                                        className={
+                                                            entry.severity === "critical" ? "text-red-300" : "text-yellow-300"
+                                                        }
+                                                    >
+                                                        {entry.severity}
+                                                    </span>
+                                                </div>
+                                                <div className="text-zinc-400">
+                                                    {formatIncidentScope(entry.scope)} | {formatAuthTimestamp(entry.timestamp)}
+                                                    {entry.actor ? ` | ${entry.actor}` : ""}
+                                                </div>
+                                                <div className="text-zinc-400">{entry.summary}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-white">Alert Triage Audit Feed</h4>
+                                        <p className="text-xs text-zinc-500">
+                                            Persisted triage history with actor attribution and action filters.
+                                        </p>
+                                    </div>
+                                    <div className="text-xs text-zinc-500">
+                                        {triageAuditsFetching ? "Refreshing..." : `${triageAuditsData?.total ?? 0} event(s)`}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                                    <select
+                                        value={triageAuditActionFilter}
+                                        onChange={(e) =>
+                                            setTriageAuditActionFilter(
+                                                e.target.value as "all" | "acknowledge" | "mute" | "unmute"
+                                            )
+                                        }
+                                        className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                    >
+                                        <option value="all">All actions</option>
+                                        <option value="acknowledge">Acknowledge</option>
+                                        <option value="mute">Mute</option>
+                                        <option value="unmute">Unmute</option>
+                                    </select>
+                                    <input
+                                        value={triageAuditActorFilter}
+                                        onChange={(e) => setTriageAuditActorFilter(e.target.value)}
+                                        placeholder="actor (e.g. settings-ui)"
+                                        className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100 placeholder:text-zinc-500"
+                                    />
+                                    <input
+                                        value={triageAuditAlertCodeFilter}
+                                        onChange={(e) => setTriageAuditAlertCodeFilter(e.target.value)}
+                                        placeholder="alert code (e.g. webhook_auth_failures_high)"
+                                        className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100 placeholder:text-zinc-500"
+                                    />
+                                </div>
+
+                                {triageAuditsLoading ? (
+                                    <div className="text-sm text-zinc-500">Loading triage audits...</div>
+                                ) : triageAudits.length === 0 ? (
+                                    <div className="text-sm text-zinc-500">No triage audits found for the selected filters.</div>
+                                ) : (
+                                    <div className="space-y-2" data-testid="settings-alert-triage-audits">
+                                        {triageAudits.map((event: IntegrationAlertTriageAuditEvent) => (
+                                            <div
+                                                key={event.id}
+                                                className="rounded border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-xs text-zinc-300"
+                                            >
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="font-medium text-zinc-100">
+                                                        {formatAlertTriageAction(event.action)}
+                                                    </span>
+                                                    <span className="text-zinc-500">{formatAuthTimestamp(event.createdAt)}</span>
+                                                </div>
+                                                <div className="text-zinc-400">
+                                                    Alert: {event.alertCode || "unknown"} | Actor: {event.actor || "system"}
+                                                </div>
+                                                <div className="text-zinc-400">{event.summary || "No summary"}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
 
                             <div

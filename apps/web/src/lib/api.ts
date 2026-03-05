@@ -1086,6 +1086,89 @@ export async function unmuteIntegrationAlert(
     }>(res, "Failed to unmute integration alert");
 }
 
+export interface IntegrationAlertTriageAuditEvent {
+    id: string;
+    action: string;
+    actor?: string;
+    alertCode?: string;
+    repoId?: string;
+    outcome: "success" | "error";
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationAlertTriageAuditsResponse {
+    events: IntegrationAlertTriageAuditEvent[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export async function fetchIntegrationAlertTriageAudits(options: {
+    repoId?: string;
+    alertCode?: string;
+    action?: "acknowledge" | "mute" | "unmute";
+    actor?: string;
+    sinceMinutes?: number;
+    limit?: number;
+    offset?: number;
+} = {}): Promise<IntegrationAlertTriageAuditsResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.alertCode) params.set("alertCode", options.alertCode);
+    if (options.action) params.set("action", options.action);
+    if (options.actor) params.set("actor", options.actor);
+    if (typeof options.sinceMinutes === "number") params.set("sinceMinutes", String(options.sinceMinutes));
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/alerts/triage-audits${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationAlertTriageAuditsResponse>(res, "Failed to fetch integration alert triage audits");
+}
+
+export interface IntegrationIncidentTimelineEntry {
+    id: string;
+    timestamp: string;
+    severity: "warning" | "critical";
+    scope: "alert_triage" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync";
+    title: string;
+    summary: string;
+    repoId?: string;
+    provider?: "slack" | "linear" | "jira";
+    actor?: string;
+    action?: string;
+    alertCode?: string;
+    metadata: Record<string, unknown>;
+}
+
+export interface IntegrationIncidentTimelineResponse {
+    events: IntegrationIncidentTimelineEntry[];
+    total: number;
+    limit: number;
+    generatedAt: string;
+}
+
+export async function fetchIntegrationIncidentTimeline(options: {
+    repoId?: string;
+    provider?: "slack" | "linear" | "jira";
+    scope?: "alert_triage" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync";
+    severity?: "warning" | "critical";
+    sinceMinutes?: number;
+    limit?: number;
+} = {}): Promise<IntegrationIncidentTimelineResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.provider) params.set("provider", options.provider);
+    if (options.scope) params.set("scope", options.scope);
+    if (options.severity) params.set("severity", options.severity);
+    if (typeof options.sinceMinutes === "number") params.set("sinceMinutes", String(options.sinceMinutes));
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/incidents/timeline${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationIncidentTimelineResponse>(res, "Failed to fetch integrations incident timeline");
+}
+
 export interface IntegrationNotificationDelivery {
     id: string;
     connectionId: string;

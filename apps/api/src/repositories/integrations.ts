@@ -27,6 +27,13 @@ type IssueLinkSyncStatus = "pending" | "synced" | "failed" | "dead_letter";
 type IntegrationAlertSeverity = "warning" | "critical";
 type IntegrationAlertStatus = "healthy" | "warning" | "critical";
 type WebhookActionAuditOutcome = "success" | "error";
+type IntegrationIncidentSeverity = "warning" | "critical";
+type IntegrationIncidentScope =
+    | "alert_triage"
+    | "webhook_auth"
+    | "webhook_processing"
+    | "notification_delivery"
+    | "issue_sync";
 type IntegrationAlertCode =
     | "notification_dead_letter"
     | "webhook_dead_letter"
@@ -51,6 +58,18 @@ type IntegrationAlertTriageState = {
     runbookUrl: string;
     lastAction?: string;
     lastActionAt?: string;
+};
+
+type IntegrationAlertTriageAuditEvent = {
+    id: string;
+    action: string;
+    actor?: string;
+    alertCode?: string;
+    repoId?: string;
+    outcome: WebhookActionAuditOutcome;
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
 };
 
 const PROVIDERS: IntegrationProvider[] = ["slack", "linear", "jira"];
@@ -361,6 +380,26 @@ function normalizeIssueLinkActionAudit(row: any) {
         entityId: row.entityId || undefined,
         repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
         issueLinkId: typeof metadata.issueLinkId === "string" ? metadata.issueLinkId : undefined,
+        outcome,
+        summary: typeof metadata.summary === "string" ? metadata.summary : "",
+        metadata,
+        createdAt: toIso(row.createdAt),
+    };
+}
+
+function normalizeAlertTriageAudit(row: any): IntegrationAlertTriageAuditEvent {
+    const metadata =
+        row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+    const metadataOutcome = String(metadata.outcome || "").toLowerCase();
+    const outcome: WebhookActionAuditOutcome = metadataOutcome === "error" ? "error" : "success";
+    return {
+        id: row.id,
+        action: row.action,
+        actor: typeof metadata.actor === "string" ? metadata.actor : undefined,
+        alertCode: typeof metadata.alertCode === "string" ? normalizeAlertCode(metadata.alertCode) : undefined,
+        repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
         outcome,
         summary: typeof metadata.summary === "string" ? metadata.summary : "",
         metadata,
@@ -2014,6 +2053,274 @@ export const integrationsRepository = {
         return {
             reason: "ok" as const,
             states,
+        };
+    },
+
+    async listAlertTriageAudits(filters: {
+        repoId?: string;
+        alertCode?: string;
+        action?: "acknowledge" | "mute" | "unmute" | string;
+        actor?: string;
+        sinceMinutes?: number;
+        limit?: number;
+        offset?: number;
+    }) {
+        const conditions = [eq(auditLog.entityType, "integration_alert"), sql`${auditLog.action} LIKE 'integration.alert.%'`];
+        if (filters.repoId) {
+            const repo = await findRepository(filters.repoId);
+            if (!repo) {
+                return {
+                    events: [] as IntegrationAlertTriageAuditEvent[],
+                    total: 0,
+                    limit: clampInteger(Number(filters.limit ?? 20), 1, 100),
+                    offset: clampInteger(Number(filters.offset ?? 0), 0, 100_000),
+                };
+            }
+            conditions.push(eq(auditLog.orgId, repo.orgId));
+            conditions.push(sql`${auditLog.metadata} ->> 'repoId' = ${filters.repoId}`);
+        }
+        if (filters.alertCode) {
+            const alertCode = normalizeAlertCode(filters.alertCode);
+            if (alertCode) conditions.push(sql`${auditLog.metadata} ->> 'alertCode' = ${alertCode}`);
+        }
+        if (filters.action) {
+            const rawAction = (filters.action || "").trim();
+            const action = rawAction.startsWith("integration.alert.") ? rawAction : `integration.alert.${rawAction}`;
+            conditions.push(eq(auditLog.action, action));
+        }
+        if (filters.actor) {
+            const actor = (filters.actor || "").trim();
+            if (actor) conditions.push(sql`${auditLog.metadata} ->> 'actor' = ${actor}`);
+        }
+        if (filters.sinceMinutes && Number.isFinite(filters.sinceMinutes) && filters.sinceMinutes > 0) {
+            const since = new Date(Date.now() - clampInteger(filters.sinceMinutes, 1, 43_200) * 60_000);
+            conditions.push(gte(auditLog.createdAt, since));
+        }
+
+        const limit = clampInteger(Number(filters.limit ?? 20), 1, 100);
+        const offset = clampInteger(Number(filters.offset ?? 0), 0, 100_000);
+
+        const [{ value: totalValue }] = await db
+            .select({ value: count() })
+            .from(auditLog)
+            .where(and(...conditions));
+
+        const rows = await db
+            .select()
+            .from(auditLog)
+            .where(and(...conditions))
+            .orderBy(desc(auditLog.createdAt))
+            .limit(limit)
+            .offset(offset);
+
+        return {
+            events: rows.map(normalizeAlertTriageAudit),
+            total: Number(totalValue || 0),
+            limit,
+            offset,
+        };
+    },
+
+    async listIncidentTimeline(filters: {
+        repoId?: string;
+        provider?: string;
+        scope?: IntegrationIncidentScope;
+        severity?: IntegrationIncidentSeverity;
+        sinceMinutes?: number;
+        limit?: number;
+    }) {
+        const limit = clampInteger(Number(filters.limit ?? 50), 1, 200);
+        const sourceLimit = Math.min(limit * 3, 600);
+        const now = Date.now();
+        const since =
+            filters.sinceMinutes && Number.isFinite(filters.sinceMinutes) && filters.sinceMinutes > 0
+                ? new Date(now - clampInteger(filters.sinceMinutes, 1, 43_200) * 60_000)
+                : null;
+        const provider = normalizeProvider(filters.provider || "");
+
+        const timeline: Array<{
+            id: string;
+            timestamp: string;
+            severity: IntegrationIncidentSeverity;
+            scope: IntegrationIncidentScope;
+            title: string;
+            summary: string;
+            repoId?: string;
+            provider?: IntegrationProvider;
+            actor?: string;
+            action?: string;
+            alertCode?: string;
+            metadata: Record<string, unknown>;
+        }> = [];
+
+        const triage = await this.listAlertTriageAudits({
+            repoId: filters.repoId,
+            sinceMinutes: filters.sinceMinutes,
+            limit: sourceLimit,
+        });
+        for (const event of triage.events) {
+            timeline.push({
+                id: `triage-${event.id}`,
+                timestamp: event.createdAt,
+                severity: "warning",
+                scope: "alert_triage",
+                title: `Alert triage: ${event.action.replace("integration.alert.", "")}`,
+                summary: event.summary || `Alert ${event.alertCode || "unknown"} triage updated.`,
+                repoId: event.repoId,
+                actor: event.actor,
+                action: event.action,
+                alertCode: event.alertCode,
+                metadata: event.metadata || {},
+            });
+        }
+
+        const webhookAuthConditions = [];
+        if (filters.repoId) webhookAuthConditions.push(eq(integrationWebhookAuthEvents.repoId, filters.repoId));
+        if (provider) webhookAuthConditions.push(eq(integrationWebhookAuthEvents.provider, provider));
+        if (since) webhookAuthConditions.push(gte(integrationWebhookAuthEvents.createdAt, since));
+        const webhookAuthRows = await db
+            .select()
+            .from(integrationWebhookAuthEvents)
+            .where(webhookAuthConditions.length > 0 ? and(...webhookAuthConditions) : undefined)
+            .orderBy(desc(integrationWebhookAuthEvents.createdAt))
+            .limit(sourceLimit);
+        for (const row of webhookAuthRows) {
+            const event = normalizeWebhookAuthEvent(row);
+            timeline.push({
+                id: `webhook-auth-${event.id}`,
+                timestamp: event.createdAt,
+                severity: event.outcome === "config_error" ? "critical" : "warning",
+                scope: "webhook_auth",
+                title: `Webhook auth ${event.outcome}`,
+                summary: `${event.provider} ${event.reason}`,
+                repoId: event.repoId,
+                provider: event.provider,
+                metadata: {
+                    reason: event.reason,
+                    statusCode: event.statusCode,
+                    eventType: event.eventType,
+                    externalEventId: event.externalEventId,
+                },
+            });
+        }
+
+        const webhookConditions = [inArray(integrationWebhookEvents.status, ["failed", "dead_letter"])];
+        if (filters.repoId) webhookConditions.push(eq(integrationWebhookEvents.repoId, filters.repoId));
+        if (provider) webhookConditions.push(eq(integrationWebhookEvents.provider, provider));
+        if (since) webhookConditions.push(gte(integrationWebhookEvents.updatedAt, since));
+        const webhookRows = await db
+            .select()
+            .from(integrationWebhookEvents)
+            .where(and(...webhookConditions))
+            .orderBy(desc(integrationWebhookEvents.updatedAt))
+            .limit(sourceLimit);
+        for (const row of webhookRows) {
+            const event = normalizeWebhookEvent(row);
+            timeline.push({
+                id: `webhook-${event.id}`,
+                timestamp: event.updatedAt,
+                severity: event.status === "dead_letter" ? "critical" : "warning",
+                scope: "webhook_processing",
+                title: `Webhook ${event.status.replace("_", " ")}`,
+                summary: `${event.provider} ${event.eventType} (${event.externalEventId})`,
+                repoId: event.repoId,
+                provider: event.provider,
+                metadata: {
+                    status: event.status,
+                    attempts: event.attempts,
+                    maxAttempts: event.maxAttempts,
+                    errorMessage: event.errorMessage,
+                },
+            });
+        }
+
+        const deliveryConditions = [inArray(notificationDeliveries.status, ["failed", "dead_letter"])];
+        if (filters.repoId) deliveryConditions.push(eq(notificationDeliveries.repoId, filters.repoId));
+        if (since) deliveryConditions.push(gte(notificationDeliveries.updatedAt, since));
+        const deliveryRows = await db
+            .select({
+                delivery: notificationDeliveries,
+                provider: integrationConnections.provider,
+            })
+            .from(notificationDeliveries)
+            .leftJoin(integrationConnections, eq(notificationDeliveries.connectionId, integrationConnections.id))
+            .where(and(...deliveryConditions))
+            .orderBy(desc(notificationDeliveries.updatedAt))
+            .limit(sourceLimit);
+        for (const row of deliveryRows) {
+            const delivery = normalizeDelivery(row.delivery);
+            const rowProvider = normalizeProvider(row.provider || "");
+            if (provider && rowProvider !== provider) continue;
+            timeline.push({
+                id: `delivery-${delivery.id}`,
+                timestamp: delivery.updatedAt,
+                severity: delivery.status === "dead_letter" ? "critical" : "warning",
+                scope: "notification_delivery",
+                title: `Notification ${delivery.status.replace("_", " ")}`,
+                summary: `${rowProvider || "unknown"} ${delivery.eventType} (${delivery.correlationId})`,
+                repoId: delivery.repoId,
+                provider: rowProvider || undefined,
+                metadata: {
+                    status: delivery.status,
+                    attempts: delivery.attempts,
+                    maxAttempts: delivery.maxAttempts,
+                    errorMessage: delivery.errorMessage,
+                    channel: delivery.channel,
+                },
+            });
+        }
+
+        const issueConditions = [inArray(issueLinkSyncEvents.status, ["failed", "dead_letter"])];
+        if (since) issueConditions.push(gte(issueLinkSyncEvents.createdAt, since));
+        if (provider) issueConditions.push(eq(issueLinkSyncEvents.provider, provider));
+        if (filters.repoId) issueConditions.push(eq(issueLinks.repoId, filters.repoId));
+        const issueRows = await db
+            .select({
+                syncEvent: issueLinkSyncEvents,
+                repoId: issueLinks.repoId,
+                issueKey: issueLinks.issueKey,
+            })
+            .from(issueLinkSyncEvents)
+            .leftJoin(issueLinks, eq(issueLinkSyncEvents.issueLinkId, issueLinks.id))
+            .where(and(...issueConditions))
+            .orderBy(desc(issueLinkSyncEvents.createdAt))
+            .limit(sourceLimit);
+        for (const row of issueRows) {
+            const event = normalizeIssueLinkSyncEvent(row.syncEvent);
+            const rowProvider = normalizeProvider(event.provider || "");
+            timeline.push({
+                id: `issue-sync-${event.id}`,
+                timestamp: event.createdAt,
+                severity: event.status === "dead_letter" ? "critical" : "warning",
+                scope: "issue_sync",
+                title: `Issue sync ${event.status.replace("_", " ")}`,
+                summary: `${rowProvider || "unknown"} ${row.issueKey || event.issueLinkId}`,
+                repoId: row.repoId || undefined,
+                provider: rowProvider || undefined,
+                metadata: {
+                    status: event.status,
+                    attemptNumber: event.attemptNumber,
+                    responseCode: event.responseCode,
+                    latencyMs: event.latencyMs,
+                    errorMessage: event.errorMessage,
+                },
+            });
+        }
+
+        const filtered = timeline.filter((entry) => {
+            if (filters.scope && entry.scope !== filters.scope) return false;
+            if (filters.severity && entry.severity !== filters.severity) return false;
+            if (provider && entry.provider && entry.provider !== provider) return false;
+            return true;
+        });
+        filtered.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+        const events = filtered.slice(0, limit);
+
+        return {
+            events,
+            total: filtered.length,
+            limit,
+            generatedAt: new Date().toISOString(),
         };
     },
 

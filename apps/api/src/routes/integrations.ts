@@ -211,6 +211,23 @@ const alertsSchema = z.object({
     minDeliverySamples: z.coerce.number().int().min(0).max(100_000).optional(),
     minWebhookAuthSamples: z.coerce.number().int().min(0).max(100_000).optional(),
 });
+const alertTriageAuditsSchema = z.object({
+    repoId: z.string().optional(),
+    alertCode: z.string().min(1).max(120).optional(),
+    action: z.enum(["acknowledge", "mute", "unmute"]).optional(),
+    actor: z.string().min(1).max(120).optional(),
+    sinceMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    offset: z.coerce.number().int().min(0).default(0),
+});
+const incidentTimelineSchema = z.object({
+    repoId: z.string().optional(),
+    provider: z.enum(["slack", "linear", "jira"]).optional(),
+    scope: z.enum(["alert_triage", "webhook_auth", "webhook_processing", "notification_delivery", "issue_sync"]).optional(),
+    severity: z.enum(["warning", "critical"]).optional(),
+    sinceMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+});
 const alertCodeParamSchema = z.object({
     alertCode: z.string().min(1).max(120),
 });
@@ -1445,6 +1462,53 @@ integrationsRouter.get("/alerts", zValidator("query", alertsSchema), async (c) =
         return c.json(
             {
                 error: "Database unavailable for integration alerts",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/alerts/triage-audits", zValidator("query", alertTriageAuditsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const audits = await integrationsRepository.listAlertTriageAudits({
+            repoId: query.repoId,
+            alertCode: query.alertCode,
+            action: query.action,
+            actor: query.actor,
+            sinceMinutes: query.sinceMinutes,
+            limit: query.limit,
+            offset: query.offset,
+        });
+        return c.json(audits);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration alert triage audits",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/incidents/timeline", zValidator("query", incidentTimelineSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const timeline = await integrationsRepository.listIncidentTimeline({
+            repoId: query.repoId,
+            provider: query.provider,
+            scope: query.scope,
+            severity: query.severity,
+            sinceMinutes: query.sinceMinutes,
+            limit: query.limit,
+        });
+        return c.json(timeline);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integrations incident timeline",
                 details: details(error),
             },
             503
