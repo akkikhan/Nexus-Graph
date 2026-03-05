@@ -10,10 +10,20 @@ export interface TrayTemplateItem {
     run?: () => Promise<void> | void;
 }
 
+export interface TrayUpdateStatus {
+    state: "idle" | "checking" | "available" | "upToDate" | "rolloutDeferred" | "incompatible" | "error";
+    label: string;
+    latestVersion?: string;
+    downloadUrl?: string;
+}
+
 interface BuildTrayTemplateOptions {
     onRefresh: () => Promise<void> | void;
     onQuit: () => Promise<void> | void;
     onPullRequestAction: (prId: string, actionId: PullRequestActionId) => Promise<void> | void;
+    updateStatus?: TrayUpdateStatus;
+    onCheckForUpdates?: () => Promise<void> | void;
+    onOpenUpdateDownload?: (url: string) => Promise<void> | void;
 }
 
 export function buildTrayTemplate(
@@ -43,6 +53,35 @@ export function buildTrayTemplate(
                 })),
             });
         }
+    }
+
+    if (options.updateStatus) {
+        items.push(
+            { type: "separator" },
+            {
+                label: options.updateStatus.label,
+                enabled: false,
+            }
+        );
+
+        if (
+            options.updateStatus.state === "available" &&
+            options.updateStatus.downloadUrl &&
+            options.onOpenUpdateDownload
+        ) {
+            const updateVersion = options.updateStatus.latestVersion || "latest";
+            const downloadUrl = options.updateStatus.downloadUrl;
+            items.push({
+                label: `Download Update (${updateVersion})`,
+                run: () => options.onOpenUpdateDownload?.(downloadUrl),
+            });
+        }
+
+        items.push({
+            label: "Check for Updates",
+            enabled: Boolean(options.onCheckForUpdates),
+            run: options.onCheckForUpdates,
+        });
     }
 
     items.push(

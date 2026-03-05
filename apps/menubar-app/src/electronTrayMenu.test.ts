@@ -70,5 +70,36 @@ describe("electron tray template", () => {
         expect(onAction).toHaveBeenCalledWith("pr_123", "requestAiReview");
         expect(onError).not.toHaveBeenCalled();
     });
-});
 
+    it("renders update status actions when update is available", async () => {
+        const onError = vi.fn();
+        const onCheckForUpdates = vi.fn(async () => {});
+        const onOpenUpdateDownload = vi.fn(async () => {});
+
+        const template = buildTrayTemplate(makeModel(), {
+            onRefresh: vi.fn(async () => {}),
+            onQuit: vi.fn(async () => {}),
+            onPullRequestAction: vi.fn(async () => {}),
+            updateStatus: {
+                state: "available",
+                label: "Update available: 0.2.0",
+                latestVersion: "0.2.0",
+                downloadUrl: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+            },
+            onCheckForUpdates,
+            onOpenUpdateDownload,
+        });
+
+        const electronTemplate = toElectronTemplate(template, onError);
+        const checkUpdates = electronTemplate.find((item) => item.label === "Check for Updates");
+        const downloadUpdate = electronTemplate.find((item) => item.label?.startsWith("Download Update"));
+
+        checkUpdates?.click?.({} as never, {} as never, {} as never);
+        downloadUpdate?.click?.({} as never, {} as never, {} as never);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(onCheckForUpdates).toHaveBeenCalledTimes(1);
+        expect(onOpenUpdateDownload).toHaveBeenCalledTimes(1);
+        expect(onError).not.toHaveBeenCalled();
+    });
+});

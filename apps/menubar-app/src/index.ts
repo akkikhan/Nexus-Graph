@@ -19,6 +19,7 @@ export {
     buildTrayTemplate,
     toElectronTemplate,
     type TrayTemplateItem,
+    type TrayUpdateStatus,
 } from "./electronTrayMenu.js";
 export {
     RELEASE_CHANNELS,
@@ -32,4 +33,13 @@ export {
     type ParsedArtifactName,
     type ReleaseChannel,
 } from "./releaseMetadata.js";
+export {
+    checkForMenubarUpdate,
+    compareVersions,
+    computeRolloutBucket,
+    resolveManifestUrl,
+    type MenubarUpdateCheckInput,
+    type MenubarUpdateCheckResult,
+    type UpdateCheckStatus,
+} from "./updateClient.js";
 export type { PullRequest, PullRequestStatus, PullRequestActionId } from "./types.js";
