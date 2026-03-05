@@ -163,7 +163,7 @@ Prerequisite:
 What it does:
 
 - Runs menu bar app unit tests (`@nexus/menubar-app`, including Electron tray template/action wiring coverage)
-- Includes auto-update client coverage (manifest parsing, channel resolution, sha256 checksum validation, optional Ed25519 signature verification, rollout gating, availability states, and persisted snooze/skip decision logic)
+- Includes auto-update client coverage (manifest parsing, channel resolution, sha256 checksum validation, optional Ed25519 signature verification, rollout gating, authenticated download + local checksum verification, availability states, and persisted snooze/skip decision logic)
 - Runs VS Code extension unit tests (`@nexus/vscode-extension`)
 - Starts API and Web services
 - Waits for readiness checks

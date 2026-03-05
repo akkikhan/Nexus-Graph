@@ -9,10 +9,12 @@ import { NexusMenuBarApp } from "./menuBarApp.js";
 import {
     buildTrayTemplate,
     toElectronTemplate,
+    type TrayDownloadRequest,
     type TrayUpdateStatus,
 } from "./electronTrayMenu.js";
 import { UpdateDecisionStore } from "./updateDecisionStore.js";
 import { checkForMenubarUpdate, resolveManifestUrl } from "./updateClient.js";
+import { downloadAndVerifyUpdateArtifact } from "./updateDownloader.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +35,9 @@ const updateCheckIntervalMs = Number(process.env.NEXUS_MENUBAR_UPDATE_CHECK_MS |
 const updateSnoozeHours = Number(process.env.NEXUS_MENUBAR_UPDATE_SNOOZE_HOURS || 24);
 const updateSignaturePublicKey = process.env.NEXUS_MENUBAR_UPDATE_PUBLIC_KEY || "";
 const requireUpdateSignature = parseBoolean(process.env.NEXUS_MENUBAR_UPDATE_REQUIRE_SIGNATURE || "false");
+const updateDownloadDirectoryOverride = process.env.NEXUS_MENUBAR_UPDATE_DOWNLOAD_DIR || "";
+const updateAuthToken = process.env.NEXUS_MENUBAR_UPDATE_AUTH_TOKEN || "";
+const updateAuthHeaderName = process.env.NEXUS_MENUBAR_UPDATE_AUTH_HEADER || "Authorization";
 const rolloutKey =
     process.env.NEXUS_MENUBAR_ROLLOUT_KEY ||
     `${os.hostname()}|${process.env.USERNAME || process.env.USER || "user"}`;
@@ -112,8 +117,8 @@ async function rebuildMenu() {
         onCheckForUpdates: async () => {
             await refreshUpdateStatus(true);
         },
-        onOpenUpdateDownload: async (url) => {
-            await shell.openExternal(url);
+        onOpenUpdateDownload: async (downloadRequest) => {
+            await handleUpdateDownload(downloadRequest);
         },
         onSnoozeUpdate: async () => {
             const store = ensureUpdateDecisionStore();
@@ -196,6 +201,9 @@ async function refreshUpdateStatus(manualCheck = false) {
             label: `Update available (${releaseChannel}): ${latestVersion}`,
             latestVersion,
             downloadUrl: result.downloadUrl,
+            downloadFileName: result.downloadFileName,
+            downloadSha256: result.downloadSha256,
+            downloadSizeBytes: result.downloadSizeBytes,
         };
     } else if (result.status === "upToDate") {
         updateStatus = {
@@ -286,4 +294,45 @@ function ensureUpdateDecisionStore(): UpdateDecisionStore {
 function parseBoolean(value: string): boolean {
     const normalized = value.trim().toLowerCase();
     return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+async function handleUpdateDownload(downloadRequest: TrayDownloadRequest): Promise<void> {
+    if (!downloadRequest.url) {
+        throw new Error("Update download URL is missing.");
+    }
+    if (!downloadRequest.expectedSha256) {
+        throw new Error("Update checksum metadata is missing for secure download.");
+    }
+
+    updateStatus = {
+        ...updateStatus,
+        state: "checking",
+        label: `Updates (${releaseChannel}): downloading...`,
+    };
+    await rebuildMenu();
+
+    const destinationDir = updateDownloadDirectoryOverride.trim()
+        ? path.resolve(updateDownloadDirectoryOverride)
+        : path.resolve(app.getPath("downloads"), "Nexus Updates");
+
+    const artifact = await downloadAndVerifyUpdateArtifact({
+        url: downloadRequest.url,
+        expectedSha256: downloadRequest.expectedSha256,
+        expectedSizeBytes: downloadRequest.expectedSizeBytes,
+        fileName: downloadRequest.fileName,
+        destinationDir,
+        authToken: updateAuthToken,
+        authHeaderName: updateAuthHeaderName,
+    });
+
+    updateStatus = {
+        ...updateStatus,
+        state: "upToDate",
+        label: `Updates (${releaseChannel}): downloaded ${artifact.fileName}`,
+    };
+    await rebuildMenu();
+    shell.showItemInFolder(artifact.filePath);
+    process.stdout.write(
+        `[menubar] Downloaded update ${artifact.fileName} (${artifact.sizeBytes} bytes, sha256=${artifact.sha256}).\n`
+    );
 }

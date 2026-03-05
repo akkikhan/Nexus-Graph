@@ -15,6 +15,16 @@ export interface TrayUpdateStatus {
     label: string;
     latestVersion?: string;
     downloadUrl?: string;
+    downloadFileName?: string;
+    downloadSha256?: string;
+    downloadSizeBytes?: number;
+}
+
+export interface TrayDownloadRequest {
+    url: string;
+    fileName?: string;
+    expectedSha256?: string;
+    expectedSizeBytes?: number;
 }
 
 interface BuildTrayTemplateOptions {
@@ -23,7 +33,7 @@ interface BuildTrayTemplateOptions {
     onPullRequestAction: (prId: string, actionId: PullRequestActionId) => Promise<void> | void;
     updateStatus?: TrayUpdateStatus;
     onCheckForUpdates?: () => Promise<void> | void;
-    onOpenUpdateDownload?: (url: string) => Promise<void> | void;
+    onOpenUpdateDownload?: (request: TrayDownloadRequest) => Promise<void> | void;
     onSnoozeUpdate?: () => Promise<void> | void;
     onSkipUpdateVersion?: (version: string) => Promise<void> | void;
 }
@@ -73,9 +83,15 @@ export function buildTrayTemplate(
         ) {
             const updateVersion = options.updateStatus.latestVersion || "latest";
             const downloadUrl = options.updateStatus.downloadUrl;
+            const downloadRequest: TrayDownloadRequest = {
+                url: downloadUrl,
+                fileName: options.updateStatus.downloadFileName,
+                expectedSha256: options.updateStatus.downloadSha256,
+                expectedSizeBytes: options.updateStatus.downloadSizeBytes,
+            };
             items.push({
                 label: `Download Update (${updateVersion})`,
-                run: () => options.onOpenUpdateDownload?.(downloadUrl),
+                run: () => options.onOpenUpdateDownload?.(downloadRequest),
             });
             if (options.onSnoozeUpdate) {
                 items.push({

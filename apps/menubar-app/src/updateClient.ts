@@ -22,6 +22,9 @@ export interface MenubarUpdateCheckResult {
     message: string;
     manifestUrl: string;
     downloadUrl?: string;
+    downloadFileName?: string;
+    downloadSha256?: string;
+    downloadSizeBytes?: number;
     rolloutPercentage?: number;
     rolloutBucket?: number;
     checkedAt: string;
@@ -216,6 +219,9 @@ export async function checkForMenubarUpdate(
             message: `Update ${manifest.latestVersion} is available.`,
             manifestUrl,
             downloadUrl: artifact.url,
+            downloadFileName: artifact.fileName,
+            downloadSha256: artifact.sha256,
+            downloadSizeBytes: artifact.sizeBytes,
             rolloutPercentage: manifest.rolloutPercentage,
             rolloutBucket,
             checkedAt,

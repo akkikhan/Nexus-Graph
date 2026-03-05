@@ -84,6 +84,9 @@ describe("updateClient", () => {
         expect(result.status).toBe("available");
         expect(result.latestVersion).toBe("0.2.0");
         expect(result.downloadUrl).toContain("0.2.0.zip");
+        expect(result.downloadFileName).toBe("nexus-menubar-win-x64-0.2.0.zip");
+        expect(result.downloadSha256).toBe(SHA);
+        expect(result.downloadSizeBytes).toBe(100);
     });
 
     it("returns rolloutDeferred when bucket is outside staged percentage", async () => {

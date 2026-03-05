@@ -87,6 +87,9 @@ describe("electron tray template", () => {
                 label: "Update available: 0.2.0",
                 latestVersion: "0.2.0",
                 downloadUrl: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+                downloadFileName: "nexus-menubar-win-x64-0.2.0.zip",
+                downloadSha256: "a".repeat(64),
+                downloadSizeBytes: 123,
             },
             onCheckForUpdates,
             onOpenUpdateDownload,
@@ -108,6 +111,12 @@ describe("electron tray template", () => {
 
         expect(onCheckForUpdates).toHaveBeenCalledTimes(1);
         expect(onOpenUpdateDownload).toHaveBeenCalledTimes(1);
+        expect(onOpenUpdateDownload).toHaveBeenCalledWith({
+            url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+            fileName: "nexus-menubar-win-x64-0.2.0.zip",
+            expectedSha256: "a".repeat(64),
+            expectedSizeBytes: 123,
+        });
         expect(onSnoozeUpdate).toHaveBeenCalledTimes(1);
         expect(onSkipUpdateVersion).toHaveBeenCalledWith("0.2.0");
         expect(onError).not.toHaveBeenCalled();

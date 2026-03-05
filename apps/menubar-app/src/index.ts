@@ -18,6 +18,7 @@ export {
 export {
     buildTrayTemplate,
     toElectronTemplate,
+    type TrayDownloadRequest,
     type TrayTemplateItem,
     type TrayUpdateStatus,
 } from "./electronTrayMenu.js";
@@ -47,5 +48,10 @@ export {
     type MenubarUpdateCheckResult,
     type UpdateCheckStatus,
 } from "./updateClient.js";
+export {
+    downloadAndVerifyUpdateArtifact,
+    type DownloadedUpdateArtifact,
+    type UpdateDownloadInput,
+} from "./updateDownloader.js";
 export { UpdateDecisionStore, type UpdateDecisionState } from "./updateDecisionStore.js";
 export type { PullRequest, PullRequestStatus, PullRequestActionId } from "./types.js";

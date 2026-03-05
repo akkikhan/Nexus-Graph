@@ -69,6 +69,9 @@ Metadata output:
 - `NEXUS_MENUBAR_ROLLOUT_KEY` (optional deterministic rollout identity override)
 - `NEXUS_MENUBAR_UPDATE_PUBLIC_KEY` (optional Ed25519 PEM public key used to verify signed manifests)
 - `NEXUS_MENUBAR_UPDATE_REQUIRE_SIGNATURE` (`true`/`false`; when true, unsigned or unverifiable manifests are rejected)
+- `NEXUS_MENUBAR_UPDATE_DOWNLOAD_DIR` (optional override for where verified update artifacts are written)
+- `NEXUS_MENUBAR_UPDATE_AUTH_TOKEN` (optional token sent when downloading update artifacts)
+- `NEXUS_MENUBAR_UPDATE_AUTH_HEADER` (default `Authorization`)
 - `NEXUS_MENUBAR_ROLLOUT_PERCENT` (default per channel: stable=`100`, beta=`40`, nightly=`10`)
 - `NEXUS_MENUBAR_UPDATE_BASE_URL` (default `https://downloads.nexus.dev/menubar`)
 - `NEXUS_MENUBAR_RELEASE_VERSION` (optional override; defaults to `apps/menubar-app/package.json` version)
@@ -89,6 +92,7 @@ Tray menu now includes:
 Rollout gating is deterministic per machine identity (`NEXUS_MENUBAR_ROLLOUT_KEY` or hostname/user fallback).
 Local update preferences are persisted under Electron `userData` (`update-decision-state.json`).
 Manifest integrity is enforced with strict `sha256` digest format checks and optional Ed25519 signature verification.
+Downloaded artifacts are verified against manifest checksum and size before being revealed in the file explorer.
 
 ## Example Integration Sketch
 
