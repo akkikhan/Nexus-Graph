@@ -1169,6 +1169,118 @@ export async function fetchIntegrationIncidentTimeline(options: {
     return parseResponse<IntegrationIncidentTimelineResponse>(res, "Failed to fetch integrations incident timeline");
 }
 
+export interface IntegrationIncidentSlaSummary {
+    repoId?: string;
+    windowMinutes: number;
+    warningSlaMinutes: number;
+    criticalSlaMinutes: number;
+    totals: {
+        activeAlerts: number;
+        mutedAlerts: number;
+        breaches: number;
+        warningBreaches: number;
+        criticalBreaches: number;
+    };
+    breaches: Array<{
+        code: string;
+        severity: "warning" | "critical";
+        message: string;
+        runbookUrl: string;
+        ageMinutes: number;
+        slaMinutes: number;
+        breached: boolean;
+        acknowledged: boolean;
+        acknowledgedAt?: string;
+        lastActionAt?: string;
+    }>;
+    generatedAt: string;
+}
+
+export async function fetchIntegrationIncidentSlaSummary(options: {
+    repoId?: string;
+    windowMinutes?: number;
+    warningSlaMinutes?: number;
+    criticalSlaMinutes?: number;
+} = {}): Promise<IntegrationIncidentSlaSummary> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (typeof options.windowMinutes === "number") params.set("windowMinutes", String(options.windowMinutes));
+    if (typeof options.warningSlaMinutes === "number") params.set("warningSlaMinutes", String(options.warningSlaMinutes));
+    if (typeof options.criticalSlaMinutes === "number") params.set("criticalSlaMinutes", String(options.criticalSlaMinutes));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/incidents/sla-summary${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationIncidentSlaSummary>(res, "Failed to fetch integrations incident SLA summary");
+}
+
+export async function bulkTriageIntegrationAlerts(input: {
+    repoId: string;
+    action: "acknowledge" | "mute" | "unmute";
+    alertCodes: string[];
+    actor?: string;
+    note?: string;
+    reason?: string;
+    durationMinutes?: number;
+}): Promise<{
+    success: boolean;
+    reason: string;
+    action: string;
+    processed: number;
+    succeeded: number;
+    failed: number;
+    results: Array<{
+        alertCode: string;
+        success: boolean;
+        reason: string;
+        state?: {
+            alertCode: string;
+            repoId?: string;
+            acknowledgedAt?: string;
+            acknowledgedBy?: string;
+            acknowledgeNote?: string;
+            mutedUntil?: string;
+            mutedBy?: string;
+            muteReason?: string;
+            isMuted: boolean;
+            runbookUrl: string;
+            lastAction?: string;
+            lastActionAt?: string;
+        };
+    }>;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/alerts/bulk-triage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{
+        success: boolean;
+        reason: string;
+        action: string;
+        processed: number;
+        succeeded: number;
+        failed: number;
+        results: Array<{
+            alertCode: string;
+            success: boolean;
+            reason: string;
+            state?: {
+                alertCode: string;
+                repoId?: string;
+                acknowledgedAt?: string;
+                acknowledgedBy?: string;
+                acknowledgeNote?: string;
+                mutedUntil?: string;
+                mutedBy?: string;
+                muteReason?: string;
+                isMuted: boolean;
+                runbookUrl: string;
+                lastAction?: string;
+                lastActionAt?: string;
+            };
+        }>;
+    }>(res, "Failed to apply bulk integration alert triage");
+}
+
 export interface IntegrationNotificationDelivery {
     id: string;
     connectionId: string;

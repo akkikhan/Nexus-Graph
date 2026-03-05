@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import {
     acknowledgeIntegrationAlert,
+    bulkTriageIntegrationAlerts,
     fetchIntegrationAlertTriageAudits,
     IntegrationWebhookAuthEventListOptions,
     fetchIntegrationConnectionActionAudits,
@@ -25,6 +26,7 @@ import {
     fetchIntegrationIssueLinkActionAudits,
     fetchIntegrationIssueLinks,
     fetchIntegrationIncidentTimeline,
+    fetchIntegrationIncidentSlaSummary,
     fetchIntegrationMetrics,
     fetchIntegrationNotificationActionAudits,
     fetchIntegrationNotifications,
@@ -47,6 +49,7 @@ import {
     IntegrationConnection,
     IntegrationAlertTriageAuditEvent,
     IntegrationIncidentTimelineEntry,
+    IntegrationIncidentSlaSummary,
     IntegrationIssueLink,
     IntegrationIssueLinkActionAuditEvent,
     IntegrationMetrics,
@@ -363,6 +366,8 @@ export default function SettingsPage() {
         "all" | "alert_triage" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync"
     >("all");
     const [timelineSeverityFilter, setTimelineSeverityFilter] = useState<"all" | "warning" | "critical">("all");
+    const [warningSlaMinutes, setWarningSlaMinutes] = useState(60);
+    const [criticalSlaMinutes, setCriticalSlaMinutes] = useState(30);
     const [triageAuditActionFilter, setTriageAuditActionFilter] = useState<AlertTriageActionFilter>("all");
     const [triageAuditActorFilter, setTriageAuditActorFilter] = useState("");
     const [triageAuditAlertCodeFilter, setTriageAuditAlertCodeFilter] = useState("");
@@ -397,6 +402,7 @@ export default function SettingsPage() {
         code: string;
         mode: AlertActionMode;
     } | null>(null);
+    const [bulkAlertActionMode, setBulkAlertActionMode] = useState<"acknowledge" | "mute" | "unmute" | null>(null);
     const [alertActionMessage, setAlertActionMessage] = useState("");
     const [alertActionError, setAlertActionError] = useState("");
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
@@ -575,6 +581,30 @@ export default function SettingsPage() {
         refetchInterval: 30_000,
     });
     const {
+        data: integrationIncidentSlaSummaryData,
+        isLoading: integrationIncidentSlaSummaryLoading,
+        isFetching: integrationIncidentSlaSummaryFetching,
+        error: integrationIncidentSlaSummaryError,
+        refetch: refetchIntegrationIncidentSlaSummary,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "integration-incident-sla-summary",
+            integrationRepoId,
+            warningSlaMinutes,
+            criticalSlaMinutes,
+            authSinceMinutes,
+        ],
+        queryFn: () =>
+            fetchIntegrationIncidentSlaSummary({
+                repoId: integrationRepoId,
+                windowMinutes: authSinceMinutes,
+                warningSlaMinutes,
+                criticalSlaMinutes,
+            }),
+        refetchInterval: 30_000,
+    });
+    const {
         data: webhookActionAuditsData,
         isLoading: webhookActionAuditsLoading,
         isFetching: webhookActionAuditsFetching,
@@ -696,6 +726,7 @@ export default function SettingsPage() {
                 refetchIntegrationMetrics(),
                 refetchIntegrationAlerts(),
                 refetchIntegrationIncidentTimeline(),
+                refetchIntegrationIncidentSlaSummary(),
                 refetchTriageAudits(),
                 refetchWebhookEvents(),
                 refetchWebhookActionAudits(),
@@ -765,6 +796,7 @@ export default function SettingsPage() {
         refetchIntegrationAlerts,
         refetchIntegrationConnections,
         refetchIntegrationIncidentTimeline,
+        refetchIntegrationIncidentSlaSummary,
         refetchIntegrationMetrics,
         refetchIssueLinkActionAudits,
         refetchIssueLinks,
@@ -794,6 +826,7 @@ export default function SettingsPage() {
     const triageTargetRepoId = integrationRepoId || integrationConnections[0]?.repoId;
     const connectionActionAudits = connectionActionAuditsData?.events || [];
     const incidentTimeline = integrationIncidentTimelineData?.events || [];
+    const incidentSlaSummary: IntegrationIncidentSlaSummary | null = integrationIncidentSlaSummaryData || null;
     const triageAudits = triageAuditsData?.events || [];
     const webhookEvents = webhookEventsData?.events || [];
     const webhookActionAudits = webhookActionAuditsData?.events || [];
@@ -808,6 +841,7 @@ export default function SettingsPage() {
         integrationMetricsLoading ||
         integrationAlertsLoading ||
         integrationIncidentTimelineLoading ||
+        integrationIncidentSlaSummaryLoading ||
         triageAuditsLoading ||
         webhookEventsLoading ||
         webhookActionAuditsLoading ||
@@ -821,6 +855,7 @@ export default function SettingsPage() {
         integrationMetricsFetching ||
         integrationAlertsFetching ||
         integrationIncidentTimelineFetching ||
+        integrationIncidentSlaSummaryFetching ||
         triageAuditsFetching ||
         webhookEventsFetching ||
         webhookActionAuditsFetching ||
@@ -899,6 +934,8 @@ export default function SettingsPage() {
         setIssueLinkStatusFilter("all");
         setTimelineScopeFilter("all");
         setTimelineSeverityFilter("all");
+        setWarningSlaMinutes(60);
+        setCriticalSlaMinutes(30);
         setTriageAuditActionFilter("all");
         setTriageAuditActorFilter("");
         setTriageAuditAlertCodeFilter("");
@@ -955,7 +992,12 @@ export default function SettingsPage() {
                 actor: "settings-ui",
             });
             setAlertActionMessage(`Alert ${alertCode} acknowledged.`);
-            await Promise.all([refetchIntegrationAlerts(), refetchIntegrationIncidentTimeline(), refetchTriageAudits()]);
+            await Promise.all([
+                refetchIntegrationAlerts(),
+                refetchIntegrationIncidentTimeline(),
+                refetchIntegrationIncidentSlaSummary(),
+                refetchTriageAudits(),
+            ]);
         } catch (error) {
             setAlertActionError(getErrorMessage(error, `Failed to acknowledge alert ${alertCode}.`));
         } finally {
@@ -982,7 +1024,12 @@ export default function SettingsPage() {
                 durationMinutes: 120,
             });
             setAlertActionMessage(`Alert ${alertCode} muted until ${formatAuthTimestamp(result.mutedUntil)}.`);
-            await Promise.all([refetchIntegrationAlerts(), refetchIntegrationIncidentTimeline(), refetchTriageAudits()]);
+            await Promise.all([
+                refetchIntegrationAlerts(),
+                refetchIntegrationIncidentTimeline(),
+                refetchIntegrationIncidentSlaSummary(),
+                refetchTriageAudits(),
+            ]);
         } catch (error) {
             setAlertActionError(getErrorMessage(error, `Failed to mute alert ${alertCode}.`));
         } finally {
@@ -1008,11 +1055,58 @@ export default function SettingsPage() {
                 reason: "Manual unmute from settings integration operations panel",
             });
             setAlertActionMessage(`Alert ${alertCode} unmuted.`);
-            await Promise.all([refetchIntegrationAlerts(), refetchIntegrationIncidentTimeline(), refetchTriageAudits()]);
+            await Promise.all([
+                refetchIntegrationAlerts(),
+                refetchIntegrationIncidentTimeline(),
+                refetchIntegrationIncidentSlaSummary(),
+                refetchTriageAudits(),
+            ]);
         } catch (error) {
             setAlertActionError(getErrorMessage(error, `Failed to unmute alert ${alertCode}.`));
         } finally {
             setProcessingAlertAction(null);
+        }
+    };
+
+    const onBulkTriageAlerts = async (
+        action: "acknowledge" | "mute" | "unmute",
+        alertCodes: string[]
+    ) => {
+        setAlertActionMessage("");
+        setAlertActionError("");
+        if (!triageTargetRepoId) {
+            setAlertActionError("Select or load a repository before bulk triage actions.");
+            return;
+        }
+        if (alertCodes.length === 0) {
+            setAlertActionError(`No alerts available for bulk ${action}.`);
+            return;
+        }
+
+        setBulkAlertActionMode(action);
+        try {
+            const result = await bulkTriageIntegrationAlerts({
+                repoId: triageTargetRepoId,
+                action,
+                alertCodes,
+                actor: "settings-ui",
+                reason: "Bulk action from settings integration operations panel",
+                note: "Bulk action from settings integration operations panel",
+                durationMinutes: action === "mute" ? 120 : undefined,
+            });
+            setAlertActionMessage(
+                `Bulk ${action} processed ${result.processed} alert(s): ${result.succeeded} succeeded, ${result.failed} failed.`
+            );
+            await Promise.all([
+                refetchIntegrationAlerts(),
+                refetchIntegrationIncidentTimeline(),
+                refetchIntegrationIncidentSlaSummary(),
+                refetchTriageAudits(),
+            ]);
+        } catch (error) {
+            setAlertActionError(getErrorMessage(error, `Failed to apply bulk ${action} triage.`));
+        } finally {
+            setBulkAlertActionMode(null);
         }
     };
 
@@ -1456,6 +1550,7 @@ export default function SettingsPage() {
                       integrationMetricsError ||
                       integrationAlertsError ||
                       integrationIncidentTimelineError ||
+                      integrationIncidentSlaSummaryError ||
                       triageAuditsError ? (
                         <div className="rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
                             {[
@@ -1473,6 +1568,9 @@ export default function SettingsPage() {
                                     : null,
                                 integrationIncidentTimelineError
                                     ? getErrorMessage(integrationIncidentTimelineError, "Incident timeline unavailable")
+                                    : null,
+                                integrationIncidentSlaSummaryError
+                                    ? getErrorMessage(integrationIncidentSlaSummaryError, "Incident SLA summary unavailable")
                                     : null,
                                 triageAuditsError
                                     ? getErrorMessage(triageAuditsError, "Alert triage audit feed unavailable")
@@ -1552,6 +1650,45 @@ export default function SettingsPage() {
                                     <div className="text-xs text-zinc-500">
                                         {triageTargetRepoId ? `Repo ${triageTargetRepoId}` : "Repo not selected"}
                                     </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 text-xs">
+                                    <button
+                                        onClick={() =>
+                                            onBulkTriageAlerts(
+                                                "acknowledge",
+                                                (integrationSnapshot.alerts?.alerts || []).map((alert) => alert.code)
+                                            )
+                                        }
+                                        disabled={!triageTargetRepoId || bulkAlertActionMode !== null}
+                                        className="px-2 py-1 rounded border border-zinc-700 text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                    >
+                                        {bulkAlertActionMode === "acknowledge" ? "Acknowledging..." : "Acknowledge All Active"}
+                                    </button>
+                                    <button
+                                        onClick={() =>
+                                            onBulkTriageAlerts(
+                                                "mute",
+                                                (integrationSnapshot.alerts?.alerts || []).map((alert) => alert.code)
+                                            )
+                                        }
+                                        disabled={!triageTargetRepoId || bulkAlertActionMode !== null}
+                                        className="px-2 py-1 rounded border border-yellow-800/60 text-yellow-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-yellow-900/30 transition-colors"
+                                    >
+                                        {bulkAlertActionMode === "mute" ? "Muting..." : "Mute All Active (2h)"}
+                                    </button>
+                                    <button
+                                        onClick={() =>
+                                            onBulkTriageAlerts(
+                                                "unmute",
+                                                (integrationSnapshot.alerts?.mutedAlerts || []).map((alert) => alert.code)
+                                            )
+                                        }
+                                        disabled={!triageTargetRepoId || bulkAlertActionMode !== null}
+                                        className="px-2 py-1 rounded border border-green-800/70 text-green-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-green-900/30 transition-colors"
+                                    >
+                                        {bulkAlertActionMode === "unmute" ? "Unmuting..." : "Unmute All Muted"}
+                                    </button>
                                 </div>
 
                                 {integrationSnapshot.alerts?.alerts.length ||
@@ -1696,6 +1833,67 @@ export default function SettingsPage() {
                                     <div className="text-xs text-zinc-500">
                                         {integrationIncidentTimelineFetching ? "Refreshing..." : "Latest incidents"}
                                     </div>
+                                </div>
+
+                                <div className="rounded border border-zinc-800 bg-zinc-950/50 px-3 py-3 space-y-2">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="text-xs text-zinc-400">Incident SLA Summary</div>
+                                        <div className="text-xs text-zinc-500">
+                                            {integrationIncidentSlaSummaryFetching ? "Refreshing..." : "Window: last diagnostics range"}
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+                                        <label className="space-y-1">
+                                            <span className="text-zinc-500">Warning SLA (min)</span>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                max={43200}
+                                                value={warningSlaMinutes}
+                                                onChange={(e) => setWarningSlaMinutes(Math.max(0, Number(e.target.value) || 0))}
+                                                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                            />
+                                        </label>
+                                        <label className="space-y-1">
+                                            <span className="text-zinc-500">Critical SLA (min)</span>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                max={43200}
+                                                value={criticalSlaMinutes}
+                                                onChange={(e) => setCriticalSlaMinutes(Math.max(0, Number(e.target.value) || 0))}
+                                                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                            />
+                                        </label>
+                                        <div className="md:col-span-2 grid grid-cols-3 gap-2">
+                                            <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-2">
+                                                <div className="text-zinc-500">Active</div>
+                                                <div className="text-zinc-100 font-medium">
+                                                    {incidentSlaSummary?.totals.activeAlerts ?? 0}
+                                                </div>
+                                            </div>
+                                            <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-2">
+                                                <div className="text-zinc-500">Muted</div>
+                                                <div className="text-zinc-100 font-medium">
+                                                    {incidentSlaSummary?.totals.mutedAlerts ?? 0}
+                                                </div>
+                                            </div>
+                                            <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-2">
+                                                <div className="text-zinc-500">Breaches</div>
+                                                <div className="text-zinc-100 font-medium">
+                                                    {incidentSlaSummary?.totals.breaches ?? 0}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {integrationIncidentSlaSummaryLoading ? (
+                                        <div className="text-xs text-zinc-500">Loading SLA summary...</div>
+                                    ) : (
+                                        <div className="text-xs text-zinc-400">
+                                            {(incidentSlaSummary?.breaches || []).slice(0, 2).map((breach) => breach.code).join(", ") ||
+                                                "No SLA breaches in window."}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">

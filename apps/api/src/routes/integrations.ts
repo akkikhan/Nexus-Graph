@@ -228,6 +228,12 @@ const incidentTimelineSchema = z.object({
     sinceMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
     limit: z.coerce.number().int().min(1).max(200).default(50),
 });
+const incidentSlaSummarySchema = z.object({
+    repoId: z.string().optional(),
+    windowMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
+    warningSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
+    criticalSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
+});
 const alertCodeParamSchema = z.object({
     alertCode: z.string().min(1).max(120),
 });
@@ -251,6 +257,15 @@ const unmuteAlertSchema = z.object({
     repoId: z.string(),
     actor: z.string().trim().min(1).max(120).optional(),
     reason: z.string().trim().max(500).optional(),
+});
+const bulkAlertTriageSchema = z.object({
+    repoId: z.string(),
+    action: z.enum(["acknowledge", "mute", "unmute"]),
+    alertCodes: z.array(z.string().min(1)).min(1).max(100),
+    actor: z.string().trim().min(1).max(120).optional(),
+    note: z.string().trim().max(500).optional(),
+    reason: z.string().trim().max(500).optional(),
+    durationMinutes: z.coerce.number().int().min(5).max(43_200).optional(),
 });
 
 function details(error: unknown): string {
@@ -1516,6 +1531,27 @@ integrationsRouter.get("/incidents/timeline", zValidator("query", incidentTimeli
     }
 });
 
+integrationsRouter.get("/incidents/sla-summary", zValidator("query", incidentSlaSummarySchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const summary = await integrationsRepository.incidentSlaSummary({
+            repoId: query.repoId,
+            windowMinutes: query.windowMinutes,
+            warningSlaMinutes: query.warningSlaMinutes,
+            criticalSlaMinutes: query.criticalSlaMinutes,
+        });
+        return c.json(summary);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integrations incident SLA summary",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
 integrationsRouter.get("/alerts/triage", zValidator("query", alertTriageSchema), async (c) => {
     const query = c.req.valid("query");
     const alertCodes = (query.alertCodes || "")
@@ -1599,6 +1635,51 @@ integrationsRouter.post(
         }
     }
 );
+
+integrationsRouter.post("/alerts/bulk-triage", zValidator("json", bulkAlertTriageSchema), async (c) => {
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.bulkTriageAlerts({
+            repoId: body.repoId,
+            action: body.action,
+            alertCodes: body.alertCodes,
+            actor: body.actor,
+            note: body.note,
+            reason: body.reason,
+            durationMinutes: body.durationMinutes,
+        });
+        if (result.reason === "repo_not_found") {
+            return c.json({ error: "Repository not found for bulk triage" }, 404);
+        }
+        if (result.reason !== "ok") {
+            return c.json({ error: "Failed to apply bulk triage action", reason: result.reason }, 400);
+        }
+        notifyIntegrationUpdate({
+            repoId: body.repoId,
+            scope: "alert",
+            action: `bulk_${body.action}`,
+            outcome: result.failed > 0 ? "error" : "success",
+            metadata: {
+                processed: result.processed,
+                succeeded: result.succeeded,
+                failed: result.failed,
+                alertCodes: body.alertCodes,
+            },
+        });
+        return c.json({
+            success: true,
+            ...result,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for bulk alert triage",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
 
 integrationsRouter.post(
     "/alerts/:alertCode/mute",

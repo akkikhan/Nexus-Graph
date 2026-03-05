@@ -2324,6 +2324,156 @@ export const integrationsRepository = {
         };
     },
 
+    async bulkTriageAlerts(input: {
+        repoId: string;
+        action: "acknowledge" | "mute" | "unmute";
+        alertCodes: string[];
+        actor?: string;
+        note?: string;
+        reason?: string;
+        durationMinutes?: number;
+    }) {
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const action = (input.action || "").trim().toLowerCase();
+        if (action !== "acknowledge" && action !== "mute" && action !== "unmute") {
+            return { reason: "invalid_bulk_action" as const };
+        }
+
+        const alertCodes = Array.from(new Set((input.alertCodes || []).map((code) => normalizeAlertCode(code)).filter(Boolean)));
+        if (alertCodes.length === 0) return { reason: "alert_codes_required" as const };
+
+        const actor = (input.actor || "settings-ui").trim().slice(0, 120) || "settings-ui";
+        const results: Array<{
+            alertCode: string;
+            success: boolean;
+            reason: string;
+            state?: IntegrationAlertTriageState;
+        }> = [];
+
+        for (const alertCode of alertCodes) {
+            if (action === "acknowledge") {
+                const result = await this.acknowledgeAlert({
+                    repoId: input.repoId,
+                    alertCode,
+                    actor,
+                    note: input.note,
+                });
+                results.push({
+                    alertCode,
+                    success: result.reason === "acknowledged",
+                    reason: result.reason,
+                    state: (result as any).state,
+                });
+                continue;
+            }
+            if (action === "mute") {
+                const result = await this.muteAlert({
+                    repoId: input.repoId,
+                    alertCode,
+                    actor,
+                    reason: input.reason,
+                    durationMinutes: input.durationMinutes,
+                });
+                results.push({
+                    alertCode,
+                    success: result.reason === "muted",
+                    reason: result.reason,
+                    state: (result as any).state,
+                });
+                continue;
+            }
+            const result = await this.unmuteAlert({
+                repoId: input.repoId,
+                alertCode,
+                actor,
+                reason: input.reason,
+            });
+            results.push({
+                alertCode,
+                success: result.reason === "unmuted",
+                reason: result.reason,
+                state: (result as any).state,
+            });
+        }
+
+        const succeeded = results.filter((result) => result.success).length;
+        return {
+            reason: "ok" as const,
+            action,
+            processed: results.length,
+            succeeded,
+            failed: results.length - succeeded,
+            results,
+        };
+    },
+
+    async incidentSlaSummary(input: {
+        repoId?: string;
+        windowMinutes?: number;
+        warningSlaMinutes?: number;
+        criticalSlaMinutes?: number;
+    } = {}) {
+        const windowMinutes = clampInteger(Number(input.windowMinutes ?? 1_440), 1, 43_200);
+        const warningSlaMinutes = clampInteger(Number(input.warningSlaMinutes ?? 60), 0, 43_200);
+        const criticalSlaMinutes = clampInteger(Number(input.criticalSlaMinutes ?? 30), 0, 43_200);
+        const now = Date.now();
+
+        const alertStatus = await this.alertStatus({
+            repoId: input.repoId,
+        });
+        const activeAlerts = Array.isArray((alertStatus as any).alerts) ? (alertStatus as any).alerts : [];
+        const mutedAlerts = Array.isArray((alertStatus as any).mutedAlerts) ? (alertStatus as any).mutedAlerts : [];
+
+        const breaches = activeAlerts
+            .map((alert: any) => {
+                const triage =
+                    alert?.triage && typeof alert.triage === "object" && !Array.isArray(alert.triage)
+                        ? (alert.triage as Record<string, unknown>)
+                        : {};
+                const referenceTimestamp =
+                    (typeof triage.lastActionAt === "string" && triage.lastActionAt) ||
+                    (typeof triage.acknowledgedAt === "string" && triage.acknowledgedAt) ||
+                    alertStatus.generatedAt;
+                const referenceMs = Date.parse(referenceTimestamp);
+                const ageMinutes = Number.isFinite(referenceMs)
+                    ? Math.max(Math.floor((now - referenceMs) / 60_000), 0)
+                    : 0;
+                const slaMinutes = alert.severity === "critical" ? criticalSlaMinutes : warningSlaMinutes;
+                return {
+                    code: String(alert.code || ""),
+                    severity: alert.severity === "critical" ? "critical" : "warning",
+                    message: String(alert.message || ""),
+                    runbookUrl: typeof alert.runbookUrl === "string" ? alert.runbookUrl : runbookUrlForAlert(String(alert.code || "")),
+                    ageMinutes,
+                    slaMinutes,
+                    breached: ageMinutes >= slaMinutes,
+                    acknowledged: Boolean(triage.acknowledgedAt),
+                    acknowledgedAt: typeof triage.acknowledgedAt === "string" ? triage.acknowledgedAt : undefined,
+                    lastActionAt: typeof triage.lastActionAt === "string" ? triage.lastActionAt : undefined,
+                };
+            })
+            .filter((entry) => entry.ageMinutes <= windowMinutes)
+            .filter((entry) => entry.breached);
+
+        return {
+            repoId: input.repoId,
+            windowMinutes,
+            warningSlaMinutes,
+            criticalSlaMinutes,
+            totals: {
+                activeAlerts: activeAlerts.length,
+                mutedAlerts: mutedAlerts.length,
+                breaches: breaches.length,
+                warningBreaches: breaches.filter((entry) => entry.severity === "warning").length,
+                criticalBreaches: breaches.filter((entry) => entry.severity === "critical").length,
+            },
+            breaches,
+            generatedAt: new Date().toISOString(),
+        };
+    },
+
     async acknowledgeAlert(input: {
         repoId: string;
         alertCode: string;

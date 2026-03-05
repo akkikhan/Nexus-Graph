@@ -1577,6 +1577,36 @@ async function run() {
                 "integrations incident timeline must include actor-attributed alert triage events"
             );
 
+            const bulkAcknowledge = await request(`/api/v1/integrations/alerts/bulk-triage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    action: "acknowledge",
+                    alertCodes: ["webhook_auth_failures_high"],
+                    actor: "api-smoke",
+                    note: "Bulk acknowledge release validation",
+                }),
+            });
+            printResult("POST /api/v1/integrations/alerts/bulk-triage (acknowledge)", bulkAcknowledge);
+            assert(bulkAcknowledge.response.status === 200, "bulk alert acknowledge must return 200");
+            assert(bulkAcknowledge.payload?.processed === 1, "bulk alert acknowledge must process one alert code");
+            assert(bulkAcknowledge.payload?.succeeded === 1, "bulk alert acknowledge must succeed");
+
+            const incidentSlaSummary = await request(
+                `/api/v1/integrations/incidents/sla-summary?repoId=${encodeURIComponent(firstRepoId)}&windowMinutes=180&warningSlaMinutes=0&criticalSlaMinutes=0`
+            );
+            printResult("GET /api/v1/integrations/incidents/sla-summary", incidentSlaSummary);
+            assert(incidentSlaSummary.response.status === 200, "integrations incident SLA summary must return 200");
+            assert(
+                typeof incidentSlaSummary.payload?.totals?.breaches === "number",
+                "integrations incident SLA summary must include totals.breaches"
+            );
+            assert(
+                Array.isArray(incidentSlaSummary.payload?.breaches),
+                "integrations incident SLA summary must include breaches[]"
+            );
+
             const unmuteAlert = await request(`/api/v1/integrations/alerts/webhook_auth_failures_high/unmute`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },

@@ -130,6 +130,7 @@ Degraded-mode behavior:
 - Integrations metrics/alerts now include webhook auth failure telemetry (provider/reason/rate), sample-gated noisy-alert suppression controls (`minDeliverySamples`, `minWebhookAuthSamples`), and threshold-based alert assertions.
 - Integrations alerts now support triage workflow coverage: repo-scoped acknowledge/mute/unmute actions, muted alert suppression in `alerts[]` with `mutedAlerts[]`, and per-alert runbook links.
 - Integrations observability now includes incident timeline aggregation (`/integrations/incidents/timeline`) and triage audit history filters with actor attribution (`/integrations/alerts/triage-audits`).
+- Integrations incident response automation now includes bulk triage (`/integrations/alerts/bulk-triage`) and SLA breach summaries (`/integrations/incidents/sla-summary`) with repo/window/severity thresholds.
 
 ## Web Smoke Coverage
 
@@ -150,6 +151,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Settings integrations operations snapshot (connections + metrics + alerts)
 - Settings alert triage actions (acknowledge, mute/unmute, runbook links) with persisted server responses
 - Settings integrations incident timeline and alert-triage audit feed filters (action/actor/alert-code)
+- Settings integrations incident response automation (bulk triage controls + incident SLA summary panel)
 - Settings connection control plane actions (validate/fail-validate/enable/disable + persisted action audit feed)
 - Settings webhook recovery actions (list/process/fail/retry controls + persisted action audit feed)
 - Settings notification delivery actions (list/deliver/fail/retry controls + persisted action audit feed)

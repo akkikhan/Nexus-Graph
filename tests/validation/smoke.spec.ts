@@ -799,6 +799,66 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
             return;
         }
 
+        if (method === "POST" && pathname.endsWith("/integrations/alerts/bulk-triage")) {
+            const payload = request.postDataJSON() as {
+                action?: "acknowledge" | "mute" | "unmute";
+                alertCodes?: string[];
+                actor?: string;
+            } | null;
+            const action = payload?.action || "acknowledge";
+            const actor = payload?.actor || "settings-ui";
+            const alertCodes = Array.isArray(payload?.alertCodes) ? payload.alertCodes : [];
+            const now = new Date().toISOString();
+
+            for (const code of alertCodes) {
+                if (action === "acknowledge") {
+                    alertAcknowledgedAt = now;
+                    appendTriageAudit({
+                        action: "integration.alert.acknowledge",
+                        actor,
+                        alertCode: code,
+                        repoId: "repo-1",
+                        summary: `Acknowledged integration alert ${code}.`,
+                    });
+                } else if (action === "mute") {
+                    alertMutedUntil = new Date(Date.now() + 120 * 60_000).toISOString();
+                    appendTriageAudit({
+                        action: "integration.alert.mute",
+                        actor,
+                        alertCode: code,
+                        repoId: "repo-1",
+                        summary: `Muted integration alert ${code} for 120 minutes.`,
+                    });
+                } else {
+                    alertMutedUntil = undefined;
+                    appendTriageAudit({
+                        action: "integration.alert.unmute",
+                        actor,
+                        alertCode: code,
+                        repoId: "repo-1",
+                        summary: `Unmuted integration alert ${code}.`,
+                    });
+                }
+            }
+
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "ok",
+                    action,
+                    processed: alertCodes.length,
+                    succeeded: alertCodes.length,
+                    failed: 0,
+                    results: alertCodes.map((code) => ({
+                        alertCode: code,
+                        success: true,
+                        reason: action === "mute" ? "muted" : action === "unmute" ? "unmuted" : "acknowledged",
+                    })),
+                })
+            );
+            return;
+        }
+
         if (method === "GET" && pathname.endsWith("/integrations/alerts/triage")) {
             await route.fulfill(
                 jsonResponse(200, {
@@ -969,6 +1029,52 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                 events: filtered.slice(0, limit),
                 total: filtered.length,
                 limit,
+                generatedAt: new Date().toISOString(),
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/incidents/sla-summary**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const warningSlaMinutes = Number(url.searchParams.get("warningSlaMinutes") || "60");
+        const criticalSlaMinutes = Number(url.searchParams.get("criticalSlaMinutes") || "30");
+        const now = Date.now();
+        const referenceTimestamp = alertAcknowledgedAt || new Date(now - 90 * 60_000).toISOString();
+        const ageMinutes = Math.max(Math.floor((now - Date.parse(referenceTimestamp)) / 60_000), 0);
+        const severity: "warning" | "critical" = "warning";
+        const slaMinutes = severity === "critical" ? criticalSlaMinutes : warningSlaMinutes;
+        const breaches =
+            ageMinutes >= slaMinutes
+                ? [
+                      {
+                          code: alertCode,
+                          severity,
+                          message: "Webhook auth failure count is above threshold.",
+                          runbookUrl: alertRunbook,
+                          ageMinutes,
+                          slaMinutes,
+                          breached: true,
+                          acknowledged: Boolean(alertAcknowledgedAt),
+                          acknowledgedAt: alertAcknowledgedAt,
+                          lastActionAt: alertAcknowledgedAt,
+                      },
+                  ]
+                : [];
+        await route.fulfill(
+            jsonResponse(200, {
+                repoId: "repo-1",
+                windowMinutes: 60,
+                warningSlaMinutes,
+                criticalSlaMinutes,
+                totals: {
+                    activeAlerts: alertMutedUntil ? 0 : 1,
+                    mutedAlerts: alertMutedUntil ? 1 : 0,
+                    breaches: breaches.length,
+                    warningBreaches: breaches.filter((entry) => entry.severity === "warning").length,
+                    criticalBreaches: breaches.filter((entry) => entry.severity === "critical").length,
+                },
+                breaches,
                 generatedAt: new Date().toISOString(),
             })
         );
@@ -1729,10 +1835,14 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/Notification Delivery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Issue-Link Sync Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Incident Timeline/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Incident SLA Summary/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Alert Triage Audit Feed/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /^Acknowledge$/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Mute 2h/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /Acknowledge All Active/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /Mute All Active \(2h\)/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /Unmute All Muted/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("link", { name: /Open Runbook/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Connected \(1\)/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/push.failed/i)).toBeVisible({ timeout: 20000 });
@@ -1752,6 +1862,22 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     });
     await page.getByRole("button", { name: /^Unmute$/i }).first().click();
     await expect(page.getByText("Alert webhook_auth_failures_high unmuted.", { exact: true })).toBeVisible({
+        timeout: 20000,
+    });
+    await expect(page.getByTestId("integration-alert-webhook_auth_failures_high")).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /Acknowledge All Active/i }).click();
+    await expect(page.getByText(/Bulk acknowledge processed 1 alert\(s\): 1 succeeded, 0 failed\./i)).toBeVisible({
+        timeout: 20000,
+    });
+    await page.getByRole("button", { name: /Mute All Active \(2h\)/i }).click();
+    await expect(page.getByText(/Bulk mute processed 1 alert\(s\): 1 succeeded, 0 failed\./i)).toBeVisible({
+        timeout: 20000,
+    });
+    await expect(page.getByTestId("integration-muted-alert-webhook_auth_failures_high")).toBeVisible({
+        timeout: 20000,
+    });
+    await page.getByRole("button", { name: /Unmute All Muted/i }).click();
+    await expect(page.getByText(/Bulk unmute processed 1 alert\(s\): 1 succeeded, 0 failed\./i)).toBeVisible({
         timeout: 20000,
     });
     await expect(page.getByTestId("integration-alert-webhook_auth_failures_high")).toBeVisible({ timeout: 20000 });
