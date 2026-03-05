@@ -73,15 +73,25 @@ set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[remote] installing docker..."
-  curl -fsSL https://get.docker.com | sh
+  if [ -f /etc/oracle-release ] || grep -qi "Oracle Linux" /etc/os-release 2>/dev/null; then
+    sudo dnf install -y dnf-plugins-core
+    sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo || true
+    sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  else
+    curl -fsSL https://get.docker.com | sh
+  fi
   sudo usermod -aG docker "$USER"
   sudo systemctl enable docker
   sudo systemctl start docker
 fi
 
 if ! docker compose version >/dev/null 2>&1; then
-  sudo apt-get update -y
-  sudo apt-get install -y docker-compose-plugin
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -y
+    sudo apt-get install -y docker-compose-plugin
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y docker-compose-plugin
+  fi
 fi
 
 TS="$(date +%Y%m%d%H%M%S)"

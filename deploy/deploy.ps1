@@ -39,12 +39,12 @@ function Invoke-Rollback {
     $rollbackScript = @'
 set -euo pipefail
 LATEST_BACKUP="$(ls -1t ~/nexus-backup-*.tar.gz 2>/dev/null | head -n1 || true)"
-if [ -z "`$LATEST_BACKUP" ]; then
+if [ -z "$LATEST_BACKUP" ]; then
   echo "[rollback] no backup archive found"
   exit 1
 fi
 rm -rf ~/nexus
-tar -xzf "`$LATEST_BACKUP" -C ~
+tar -xzf "$LATEST_BACKUP" -C ~
 cd ~/nexus/docker
 docker compose up -d
 sleep 10
@@ -100,15 +100,25 @@ try {
 set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1; then
-  curl -fsSL https://get.docker.com | sh
-  sudo usermod -aG docker \$USER
+  if [ -f /etc/oracle-release ] || grep -qi "Oracle Linux" /etc/os-release 2>/dev/null; then
+    sudo dnf install -y dnf-plugins-core
+    sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo || true
+    sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  else
+    curl -fsSL https://get.docker.com | sh
+  fi
+  sudo usermod -aG docker "$USER"
   sudo systemctl enable docker
   sudo systemctl start docker
 fi
 
 if ! docker compose version >/dev/null 2>&1; then
-  sudo apt-get update -y
-  sudo apt-get install -y docker-compose-plugin
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -y
+    sudo apt-get install -y docker-compose-plugin
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y docker-compose-plugin
+  fi
 fi
 
 TS="$(date +%Y%m%d%H%M%S)"
