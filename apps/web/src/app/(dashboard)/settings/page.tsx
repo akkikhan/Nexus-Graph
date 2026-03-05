@@ -2928,6 +2928,7 @@ export default function SettingsPage() {
                 {sections.map((section, sectionIndex) => (
                     <motion.div
                         key={section.id}
+                        id={section.id}
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: sectionIndex * 0.06 }}
