@@ -16,6 +16,7 @@ import {
     ShieldAlert,
 } from "lucide-react";
 import {
+    acknowledgeIntegrationAlert,
     IntegrationWebhookAuthEventListOptions,
     fetchIntegrationConnectionActionAudits,
     fetchIntegrationAlerts,
@@ -38,6 +39,7 @@ import {
     retryDueIntegrationWebhooks,
     syncIntegrationIssueLink,
     fetchSystemHealth,
+    muteIntegrationAlert,
     IntegrationAlertStatus,
     IntegrationConnectionActionAuditEvent,
     IntegrationConnection,
@@ -49,6 +51,7 @@ import {
     IntegrationWebhookActionAuditEvent,
     IntegrationWebhookEvent,
     IntegrationWebhookAuthEvent,
+    unmuteIntegrationAlert,
 } from "../../../lib/api";
 
 type SelectOption = {
@@ -262,6 +265,7 @@ type AuthOutcomeFilter = "all" | "rejected" | "config_error";
 type WebhookStatusFilter = "all" | "received" | "processed" | "failed" | "dead_letter";
 type WebhookActionMode = "process" | "fail";
 type ConnectionActionMode = "validate" | "fail_validate" | "enable" | "disable";
+type AlertActionMode = "acknowledge" | "mute" | "unmute";
 type NotificationStatusFilter = "all" | "pending" | "retrying" | "delivered" | "failed" | "dead_letter";
 type NotificationActionMode = "deliver" | "fail";
 type IssueLinkStatusFilter = "all" | "linked" | "sync_pending" | "sync_failed";
@@ -368,6 +372,12 @@ export default function SettingsPage() {
     const [issueLinkActionError, setIssueLinkActionError] = useState("");
     const [connectionActionMessage, setConnectionActionMessage] = useState("");
     const [connectionActionError, setConnectionActionError] = useState("");
+    const [processingAlertAction, setProcessingAlertAction] = useState<{
+        code: string;
+        mode: AlertActionMode;
+    } | null>(null);
+    const [alertActionMessage, setAlertActionMessage] = useState("");
+    const [alertActionError, setAlertActionError] = useState("");
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
     const [exportError, setExportError] = useState("");
     const lastRealtimeRefreshAtRef = useRef(0);
@@ -702,6 +712,7 @@ export default function SettingsPage() {
 
     const authEvents = authEventsData?.events || [];
     const integrationConnections = integrationConnectionsData?.connections || [];
+    const triageTargetRepoId = integrationRepoId || integrationConnections[0]?.repoId;
     const connectionActionAudits = connectionActionAuditsData?.events || [];
     const webhookEvents = webhookEventsData?.events || [];
     const webhookActionAudits = webhookActionAuditsData?.events || [];
@@ -801,6 +812,8 @@ export default function SettingsPage() {
         setWebhookStatusFilter("all");
         setNotificationStatusFilter("all");
         setIssueLinkStatusFilter("all");
+        setAlertActionMessage("");
+        setAlertActionError("");
         setConnectionActionMessage("");
         setConnectionActionError("");
         setWebhookActionMessage("");
@@ -832,6 +845,84 @@ export default function SettingsPage() {
             setExportError((error as Error).message || "Failed to export diagnostics.");
         } finally {
             setExportingFormat(null);
+        }
+    };
+
+    const onAcknowledgeAlert = async (alertCode: string) => {
+        setAlertActionMessage("");
+        setAlertActionError("");
+        if (!triageTargetRepoId) {
+            setAlertActionError("Select or load a repository before alert triage actions.");
+            return;
+        }
+        setProcessingAlertAction({
+            code: alertCode,
+            mode: "acknowledge",
+        });
+        try {
+            await acknowledgeIntegrationAlert(alertCode, {
+                repoId: triageTargetRepoId,
+                actor: "settings-ui",
+            });
+            setAlertActionMessage(`Alert ${alertCode} acknowledged.`);
+            await refetchIntegrationAlerts();
+        } catch (error) {
+            setAlertActionError(getErrorMessage(error, `Failed to acknowledge alert ${alertCode}.`));
+        } finally {
+            setProcessingAlertAction(null);
+        }
+    };
+
+    const onMuteAlert = async (alertCode: string) => {
+        setAlertActionMessage("");
+        setAlertActionError("");
+        if (!triageTargetRepoId) {
+            setAlertActionError("Select or load a repository before alert triage actions.");
+            return;
+        }
+        setProcessingAlertAction({
+            code: alertCode,
+            mode: "mute",
+        });
+        try {
+            const result = await muteIntegrationAlert(alertCode, {
+                repoId: triageTargetRepoId,
+                actor: "settings-ui",
+                reason: "Manual mute from settings integration operations panel",
+                durationMinutes: 120,
+            });
+            setAlertActionMessage(`Alert ${alertCode} muted until ${formatAuthTimestamp(result.mutedUntil)}.`);
+            await refetchIntegrationAlerts();
+        } catch (error) {
+            setAlertActionError(getErrorMessage(error, `Failed to mute alert ${alertCode}.`));
+        } finally {
+            setProcessingAlertAction(null);
+        }
+    };
+
+    const onUnmuteAlert = async (alertCode: string) => {
+        setAlertActionMessage("");
+        setAlertActionError("");
+        if (!triageTargetRepoId) {
+            setAlertActionError("Select or load a repository before alert triage actions.");
+            return;
+        }
+        setProcessingAlertAction({
+            code: alertCode,
+            mode: "unmute",
+        });
+        try {
+            await unmuteIntegrationAlert(alertCode, {
+                repoId: triageTargetRepoId,
+                actor: "settings-ui",
+                reason: "Manual unmute from settings integration operations panel",
+            });
+            setAlertActionMessage(`Alert ${alertCode} unmuted.`);
+            await refetchIntegrationAlerts();
+        } catch (error) {
+            setAlertActionError(getErrorMessage(error, `Failed to unmute alert ${alertCode}.`));
+        } finally {
+            setProcessingAlertAction(null);
         }
     };
 
@@ -1350,6 +1441,150 @@ export default function SettingsPage() {
                                           .join(", ")}`
                                     : "No active integration alerts."}
                                 {integrationFetching ? " Refreshing..." : ""}
+                            </div>
+
+                            <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-white">Alert Triage</h4>
+                                        <p className="text-xs text-zinc-500">
+                                            Acknowledge active alerts, apply temporary mute windows, and jump into runbooks.
+                                        </p>
+                                    </div>
+                                    <div className="text-xs text-zinc-500">
+                                        {triageTargetRepoId ? `Repo ${triageTargetRepoId}` : "Repo not selected"}
+                                    </div>
+                                </div>
+
+                                {integrationSnapshot.alerts?.alerts.length ||
+                                (integrationSnapshot.alerts?.mutedAlerts || []).length ? (
+                                    <div className="space-y-2">
+                                        {(integrationSnapshot.alerts?.alerts || []).map((alert) => {
+                                            const isProcessing = processingAlertAction?.code === alert.code;
+                                            return (
+                                                <div
+                                                    key={alert.code}
+                                                    data-testid={`integration-alert-${alert.code}`}
+                                                    className="rounded border border-zinc-800 bg-zinc-950/60 p-3 text-xs text-zinc-300 space-y-2"
+                                                >
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            <span
+                                                                className={
+                                                                    alert.severity === "critical"
+                                                                        ? "text-red-300 font-semibold"
+                                                                        : "text-yellow-300 font-semibold"
+                                                                }
+                                                            >
+                                                                {alert.code}
+                                                            </span>
+                                                            {alert.triage?.acknowledgedAt ? (
+                                                                <span className="px-2 py-0.5 rounded bg-blue-500/15 border border-blue-500/30 text-blue-200">
+                                                                    Ack
+                                                                </span>
+                                                            ) : null}
+                                                        </div>
+                                                        <div className="text-zinc-500">
+                                                            {alert.value} / threshold {alert.threshold}
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-zinc-400">{alert.message}</div>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <button
+                                                            onClick={() => onAcknowledgeAlert(alert.code)}
+                                                            disabled={!triageTargetRepoId || isProcessing}
+                                                            className="px-2 py-1 rounded border border-zinc-700 text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-800/70 transition-colors"
+                                                        >
+                                                            {isProcessing && processingAlertAction?.mode === "acknowledge"
+                                                                ? "Acknowledging..."
+                                                                : "Acknowledge"}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => onMuteAlert(alert.code)}
+                                                            disabled={!triageTargetRepoId || isProcessing}
+                                                            className="px-2 py-1 rounded border border-yellow-800/60 text-yellow-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-yellow-900/30 transition-colors"
+                                                        >
+                                                            {isProcessing && processingAlertAction?.mode === "mute"
+                                                                ? "Muting..."
+                                                                : "Mute 2h"}
+                                                        </button>
+                                                        {alert.runbookUrl ? (
+                                                            <a
+                                                                href={alert.runbookUrl}
+                                                                target="_blank"
+                                                                rel="noreferrer"
+                                                                className="px-2 py-1 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                                                            >
+                                                                Open Runbook
+                                                            </a>
+                                                        ) : null}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+
+                                        {(integrationSnapshot.alerts?.mutedAlerts || []).map((alert) => {
+                                            const isProcessing = processingAlertAction?.code === alert.code;
+                                            return (
+                                                <div
+                                                    key={`muted-${alert.code}`}
+                                                    data-testid={`integration-muted-alert-${alert.code}`}
+                                                    className="rounded border border-zinc-800 bg-zinc-950/60 p-3 text-xs text-zinc-300 space-y-2"
+                                                >
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            <span className="text-zinc-200 font-semibold">{alert.code}</span>
+                                                            <span className="px-2 py-0.5 rounded bg-zinc-700/40 border border-zinc-700 text-zinc-300">
+                                                                Muted
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-zinc-500">
+                                                            Until{" "}
+                                                            {alert.triage?.mutedUntil
+                                                                ? formatAuthTimestamp(alert.triage.mutedUntil)
+                                                                : "unknown"}
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-zinc-400">{alert.message}</div>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <button
+                                                            onClick={() => onUnmuteAlert(alert.code)}
+                                                            disabled={!triageTargetRepoId || isProcessing}
+                                                            className="px-2 py-1 rounded border border-green-800/70 text-green-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-green-900/30 transition-colors"
+                                                        >
+                                                            {isProcessing && processingAlertAction?.mode === "unmute"
+                                                                ? "Unmuting..."
+                                                                : "Unmute"}
+                                                        </button>
+                                                        {alert.runbookUrl ? (
+                                                            <a
+                                                                href={alert.runbookUrl}
+                                                                target="_blank"
+                                                                rel="noreferrer"
+                                                                className="px-2 py-1 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                                                            >
+                                                                Open Runbook
+                                                            </a>
+                                                        ) : null}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <div className="text-sm text-zinc-500">No active or muted integration alerts.</div>
+                                )}
+
+                                {alertActionMessage ? (
+                                    <div className="text-xs text-green-300 bg-green-500/10 border border-green-500/20 rounded px-3 py-2">
+                                        {alertActionMessage}
+                                    </div>
+                                ) : null}
+                                {alertActionError ? (
+                                    <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                                        {alertActionError}
+                                    </div>
+                                ) : null}
                             </div>
 
                             <div

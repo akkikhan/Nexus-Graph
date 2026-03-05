@@ -663,19 +663,136 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         );
     });
 
+    const alertCode = "webhook_auth_failures_high";
+    const alertRunbook = "https://docs.nexus.dev/runbooks/integrations/webhook-auth-failures";
+    let alertAcknowledgedAt: string | undefined;
+    let alertMutedUntil: string | undefined;
+
     await page.route("**/api/v1/integrations/alerts**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const pathname = url.pathname;
+        const method = request.method().toUpperCase();
+
+        if (method === "POST" && pathname.endsWith(`/integrations/alerts/${alertCode}/acknowledge`)) {
+            alertAcknowledgedAt = new Date().toISOString();
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "acknowledged",
+                    alertCode,
+                    state: {
+                        alertCode,
+                        repoId: "repo-1",
+                        acknowledgedAt: alertAcknowledgedAt,
+                        acknowledgedBy: "settings-ui",
+                        isMuted: Boolean(alertMutedUntil && Date.parse(alertMutedUntil) > Date.now()),
+                        mutedUntil: alertMutedUntil,
+                        runbookUrl: alertRunbook,
+                        lastAction: "integration.alert.acknowledge",
+                        lastActionAt: alertAcknowledgedAt,
+                    },
+                })
+            );
+            return;
+        }
+
+        if (method === "POST" && pathname.endsWith(`/integrations/alerts/${alertCode}/mute`)) {
+            alertMutedUntil = new Date(Date.now() + 120 * 60_000).toISOString();
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "muted",
+                    alertCode,
+                    durationMinutes: 120,
+                    mutedUntil: alertMutedUntil,
+                    state: {
+                        alertCode,
+                        repoId: "repo-1",
+                        acknowledgedAt: alertAcknowledgedAt,
+                        acknowledgedBy: "settings-ui",
+                        isMuted: true,
+                        mutedUntil: alertMutedUntil,
+                        mutedBy: "settings-ui",
+                        muteReason: "Manual mute from settings integration operations panel",
+                        runbookUrl: alertRunbook,
+                        lastAction: "integration.alert.mute",
+                        lastActionAt: new Date().toISOString(),
+                    },
+                })
+            );
+            return;
+        }
+
+        if (method === "POST" && pathname.endsWith(`/integrations/alerts/${alertCode}/unmute`)) {
+            alertMutedUntil = undefined;
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "unmuted",
+                    alertCode,
+                    state: {
+                        alertCode,
+                        repoId: "repo-1",
+                        acknowledgedAt: alertAcknowledgedAt,
+                        acknowledgedBy: "settings-ui",
+                        isMuted: false,
+                        runbookUrl: alertRunbook,
+                        lastAction: "integration.alert.unmute",
+                        lastActionAt: new Date().toISOString(),
+                    },
+                })
+            );
+            return;
+        }
+
+        if (method === "GET" && pathname.endsWith("/integrations/alerts/triage")) {
+            await route.fulfill(
+                jsonResponse(200, {
+                    states: [
+                        {
+                            alertCode,
+                            repoId: "repo-1",
+                            acknowledgedAt: alertAcknowledgedAt,
+                            acknowledgedBy: alertAcknowledgedAt ? "settings-ui" : undefined,
+                            mutedUntil: alertMutedUntil,
+                            mutedBy: alertMutedUntil ? "settings-ui" : undefined,
+                            isMuted: Boolean(alertMutedUntil && Date.parse(alertMutedUntil) > Date.now()),
+                            runbookUrl: alertRunbook,
+                            lastActionAt: new Date().toISOString(),
+                        },
+                    ],
+                    total: 1,
+                    limit: 500,
+                })
+            );
+            return;
+        }
+
+        const isMuted = Boolean(alertMutedUntil && Date.parse(alertMutedUntil) > Date.now());
+        const baseAlert = {
+            code: alertCode,
+            severity: "warning" as const,
+            message: "Webhook auth failure count is above threshold.",
+            value: 2,
+            threshold: 1,
+            runbookUrl: alertRunbook,
+            triage: {
+                acknowledgedAt: alertAcknowledgedAt,
+                acknowledgedBy: alertAcknowledgedAt ? "settings-ui" : undefined,
+                mutedUntil: alertMutedUntil,
+                mutedBy: isMuted ? "settings-ui" : undefined,
+                muteReason: isMuted ? "Manual mute from settings integration operations panel" : undefined,
+                isMuted,
+                lastActionAt: new Date().toISOString(),
+            },
+        };
+
         await route.fulfill(
             jsonResponse(200, {
-                status: "warning",
-                alerts: [
-                    {
-                        code: "webhook_auth_failures_high",
-                        severity: "warning",
-                        message: "Webhook auth failure count is above threshold.",
-                        value: 2,
-                        threshold: 1,
-                    },
-                ],
+                status: isMuted ? "healthy" : "warning",
+                alerts: isMuted ? [] : [baseAlert],
+                mutedAlerts: isMuted ? [baseAlert] : [],
                 thresholds: {
                     minSuccessRatePct: 95,
                     maxRetryQueueAgeSeconds: 300,
@@ -693,6 +810,28 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                     deliverySampleCount: 12,
                     webhookAuthSampleCount: 12,
                     suppressedCodes: [],
+                },
+                triage: {
+                    repoScoped: true,
+                    acknowledgedCount: alertAcknowledgedAt ? 1 : 0,
+                    mutedCount: isMuted ? 1 : 0,
+                    activeCount: isMuted ? 0 : 1,
+                    states: [
+                        {
+                            alertCode,
+                            repoId: "repo-1",
+                            acknowledgedAt: alertAcknowledgedAt,
+                            acknowledgedBy: alertAcknowledgedAt ? "settings-ui" : undefined,
+                            mutedUntil: alertMutedUntil,
+                            mutedBy: isMuted ? "settings-ui" : undefined,
+                            isMuted,
+                            runbookUrl: alertRunbook,
+                            lastActionAt: new Date().toISOString(),
+                        },
+                    ],
+                },
+                runbooks: {
+                    [alertCode]: alertRunbook,
                 },
                 webhookAuthWindow: {
                     startAt: new Date().toISOString(),
@@ -1461,6 +1600,9 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/Notification Delivery Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Issue-Link Sync Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /^Acknowledge$/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /Mute 2h/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("link", { name: /Open Runbook/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Connected \(1\)/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/push.failed/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/pr.review.requested/i)).toBeVisible({ timeout: 20000 });
@@ -1468,6 +1610,20 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/missing signature headers/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export JSON/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Export CSV/i })).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /^Acknowledge$/i }).first().click();
+    await expect(page.getByText("Alert webhook_auth_failures_high acknowledged.", { exact: true })).toBeVisible({
+        timeout: 20000,
+    });
+    await page.getByRole("button", { name: /Mute 2h/i }).first().click();
+    await expect(page.getByText(/Alert webhook_auth_failures_high muted until/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByTestId("integration-muted-alert-webhook_auth_failures_high")).toBeVisible({
+        timeout: 20000,
+    });
+    await page.getByRole("button", { name: /^Unmute$/i }).first().click();
+    await expect(page.getByText("Alert webhook_auth_failures_high unmuted.", { exact: true })).toBeVisible({
+        timeout: 20000,
+    });
+    await expect(page.getByTestId("integration-alert-webhook_auth_failures_high")).toBeVisible({ timeout: 20000 });
 
     const jiraConnectionRow = page.getByTestId("connection-row-conn-jira-1");
     await jiraConnectionRow.getByRole("button", { name: /^Validate$/i }).click();

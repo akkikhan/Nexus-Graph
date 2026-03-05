@@ -1472,6 +1472,114 @@ async function run() {
                     integrationsAlerts.payload.alerts.some((alert) => alert.code === "webhook_auth_failures_high"),
                 "integration alerts must surface webhook auth failure alert when threshold is zero"
             );
+            assert(
+                Array.isArray(integrationsAlerts.payload?.alerts) &&
+                    integrationsAlerts.payload.alerts.some((alert) => typeof alert.runbookUrl === "string"),
+                "integration alerts must include runbookUrl on active alerts"
+            );
+
+            const acknowledgeAlert = await request(
+                `/api/v1/integrations/alerts/webhook_auth_failures_high/acknowledge`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        repoId: firstRepoId,
+                        actor: "api-smoke",
+                        note: "Acknowledge from release validation",
+                    }),
+                }
+            );
+            printResult("POST /api/v1/integrations/alerts/:code/acknowledge", acknowledgeAlert);
+            assert(acknowledgeAlert.response.status === 200, "integration alert acknowledge must return 200");
+            assert(
+                typeof acknowledgeAlert.payload?.state?.acknowledgedAt === "string",
+                "integration alert acknowledge must return state.acknowledgedAt"
+            );
+
+            const integrationsAlertsAcknowledged = await request(
+                `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60&minWebhookAuthSamples=1`
+            );
+            printResult("GET /api/v1/integrations/alerts (acknowledged)", integrationsAlertsAcknowledged);
+            assert(integrationsAlertsAcknowledged.response.status === 200, "acknowledged integration alerts must return 200");
+            assert(
+                Array.isArray(integrationsAlertsAcknowledged.payload?.alerts) &&
+                    integrationsAlertsAcknowledged.payload.alerts.some(
+                        (alert) =>
+                            alert.code === "webhook_auth_failures_high" &&
+                            typeof alert.triage?.acknowledgedAt === "string"
+                    ),
+                "acknowledged integration alerts must include alert triage acknowledgment metadata"
+            );
+
+            const muteAlert = await request(`/api/v1/integrations/alerts/webhook_auth_failures_high/mute`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    actor: "api-smoke",
+                    reason: "Mute noisy signal during investigation",
+                    durationMinutes: 60,
+                }),
+            });
+            printResult("POST /api/v1/integrations/alerts/:code/mute", muteAlert);
+            assert(muteAlert.response.status === 200, "integration alert mute must return 200");
+            assert(muteAlert.payload?.state?.isMuted === true, "integration alert mute must return state.isMuted=true");
+
+            const integrationsAlertsMuted = await request(
+                `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60&minWebhookAuthSamples=1`
+            );
+            printResult("GET /api/v1/integrations/alerts (muted)", integrationsAlertsMuted);
+            assert(integrationsAlertsMuted.response.status === 200, "muted integration alerts must return 200");
+            assert(
+                Array.isArray(integrationsAlertsMuted.payload?.alerts) &&
+                    !integrationsAlertsMuted.payload.alerts.some((alert) => alert.code === "webhook_auth_failures_high"),
+                "muted integration alerts must hide muted alert from active alerts[]"
+            );
+            assert(
+                Array.isArray(integrationsAlertsMuted.payload?.mutedAlerts) &&
+                    integrationsAlertsMuted.payload.mutedAlerts.some((alert) => alert.code === "webhook_auth_failures_high"),
+                "muted integration alerts must include muted alert in mutedAlerts[]"
+            );
+
+            const listAlertTriage = await request(
+                `/api/v1/integrations/alerts/triage?repoId=${encodeURIComponent(firstRepoId)}&limit=50`
+            );
+            printResult("GET /api/v1/integrations/alerts/triage", listAlertTriage);
+            assert(listAlertTriage.response.status === 200, "integration alert triage list must return 200");
+            assert(Array.isArray(listAlertTriage.payload?.states), "integration alert triage list must include states[]");
+            assert(
+                listAlertTriage.payload.states.some((state) => state.alertCode === "webhook_auth_failures_high"),
+                "integration alert triage list must include muted alert state"
+            );
+
+            const unmuteAlert = await request(`/api/v1/integrations/alerts/webhook_auth_failures_high/unmute`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    actor: "api-smoke",
+                    reason: "Restore alert visibility for validation",
+                }),
+            });
+            printResult("POST /api/v1/integrations/alerts/:code/unmute", unmuteAlert);
+            assert(unmuteAlert.response.status === 200, "integration alert unmute must return 200");
+
+            const integrationsAlertsUnmuted = await request(
+                `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60&minWebhookAuthSamples=1`
+            );
+            printResult("GET /api/v1/integrations/alerts (unmuted)", integrationsAlertsUnmuted);
+            assert(integrationsAlertsUnmuted.response.status === 200, "unmuted integration alerts must return 200");
+            assert(
+                Array.isArray(integrationsAlertsUnmuted.payload?.alerts) &&
+                    integrationsAlertsUnmuted.payload.alerts.some((alert) => alert.code === "webhook_auth_failures_high"),
+                "unmuted integration alerts must restore alert in active alerts[]"
+            );
+            assert(
+                Array.isArray(integrationsAlertsUnmuted.payload?.mutedAlerts) &&
+                    !integrationsAlertsUnmuted.payload.mutedAlerts.some((alert) => alert.code === "webhook_auth_failures_high"),
+                "unmuted integration alerts must remove alert from mutedAlerts[]"
+            );
 
             const integrationsAlertsSuppressed = await request(
                 `/api/v1/integrations/alerts?repoId=${encodeURIComponent(firstRepoId)}&maxWebhookAuthFailures=0&maxWebhookAuthFailureRatePct=0&webhookAuthWindowMinutes=60&minWebhookAuthSamples=100000`

@@ -808,6 +808,37 @@ export interface IntegrationAlertStatus {
         message: string;
         value: number;
         threshold: number;
+        runbookUrl?: string;
+        triage?: {
+            acknowledgedAt?: string;
+            acknowledgedBy?: string;
+            acknowledgeNote?: string;
+            mutedUntil?: string;
+            mutedBy?: string;
+            muteReason?: string;
+            isMuted: boolean;
+            lastAction?: string;
+            lastActionAt?: string;
+        };
+    }>;
+    mutedAlerts?: Array<{
+        code: string;
+        severity: "warning" | "critical";
+        message: string;
+        value: number;
+        threshold: number;
+        runbookUrl?: string;
+        triage?: {
+            acknowledgedAt?: string;
+            acknowledgedBy?: string;
+            acknowledgeNote?: string;
+            mutedUntil?: string;
+            mutedBy?: string;
+            muteReason?: string;
+            isMuted: boolean;
+            lastAction?: string;
+            lastActionAt?: string;
+        };
     }>;
     thresholds: {
         minSuccessRatePct: number;
@@ -827,6 +858,27 @@ export interface IntegrationAlertStatus {
         webhookAuthSampleCount: number;
         suppressedCodes: string[];
     };
+    triage?: {
+        repoScoped: boolean;
+        acknowledgedCount: number;
+        mutedCount: number;
+        activeCount: number;
+        states: Array<{
+            alertCode: string;
+            repoId?: string;
+            acknowledgedAt?: string;
+            acknowledgedBy?: string;
+            acknowledgeNote?: string;
+            mutedUntil?: string;
+            mutedBy?: string;
+            muteReason?: string;
+            isMuted: boolean;
+            runbookUrl: string;
+            lastAction?: string;
+            lastActionAt?: string;
+        }>;
+    };
+    runbooks?: Record<string, string>;
     webhookAuthWindow: {
         startAt: string;
         failures: number;
@@ -871,6 +923,167 @@ export async function fetchIntegrationAlerts(options: {
     const query = params.toString();
     const res = await fetch(`${API_BASE_URL}/integrations/alerts${query ? `?${query}` : ""}`);
     return parseResponse<IntegrationAlertStatus>(res, "Failed to fetch integration alert status");
+}
+
+export async function acknowledgeIntegrationAlert(
+    alertCode: string,
+    input: {
+        repoId: string;
+        actor?: string;
+        note?: string;
+    }
+): Promise<{
+    success: boolean;
+    reason: string;
+    alertCode: string;
+    state: {
+        alertCode: string;
+        repoId?: string;
+        acknowledgedAt?: string;
+        acknowledgedBy?: string;
+        acknowledgeNote?: string;
+        mutedUntil?: string;
+        mutedBy?: string;
+        muteReason?: string;
+        isMuted: boolean;
+        runbookUrl: string;
+        lastAction?: string;
+        lastActionAt?: string;
+    };
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/alerts/${encodeURIComponent(alertCode)}/acknowledge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{
+        success: boolean;
+        reason: string;
+        alertCode: string;
+        state: {
+            alertCode: string;
+            repoId?: string;
+            acknowledgedAt?: string;
+            acknowledgedBy?: string;
+            acknowledgeNote?: string;
+            mutedUntil?: string;
+            mutedBy?: string;
+            muteReason?: string;
+            isMuted: boolean;
+            runbookUrl: string;
+            lastAction?: string;
+            lastActionAt?: string;
+        };
+    }>(res, "Failed to acknowledge integration alert");
+}
+
+export async function muteIntegrationAlert(
+    alertCode: string,
+    input: {
+        repoId: string;
+        actor?: string;
+        reason?: string;
+        durationMinutes?: number;
+    }
+): Promise<{
+    success: boolean;
+    reason: string;
+    alertCode: string;
+    durationMinutes: number;
+    mutedUntil: string;
+    state: {
+        alertCode: string;
+        repoId?: string;
+        acknowledgedAt?: string;
+        acknowledgedBy?: string;
+        acknowledgeNote?: string;
+        mutedUntil?: string;
+        mutedBy?: string;
+        muteReason?: string;
+        isMuted: boolean;
+        runbookUrl: string;
+        lastAction?: string;
+        lastActionAt?: string;
+    };
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/alerts/${encodeURIComponent(alertCode)}/mute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{
+        success: boolean;
+        reason: string;
+        alertCode: string;
+        durationMinutes: number;
+        mutedUntil: string;
+        state: {
+            alertCode: string;
+            repoId?: string;
+            acknowledgedAt?: string;
+            acknowledgedBy?: string;
+            acknowledgeNote?: string;
+            mutedUntil?: string;
+            mutedBy?: string;
+            muteReason?: string;
+            isMuted: boolean;
+            runbookUrl: string;
+            lastAction?: string;
+            lastActionAt?: string;
+        };
+    }>(res, "Failed to mute integration alert");
+}
+
+export async function unmuteIntegrationAlert(
+    alertCode: string,
+    input: {
+        repoId: string;
+        actor?: string;
+        reason?: string;
+    }
+): Promise<{
+    success: boolean;
+    reason: string;
+    alertCode: string;
+    state: {
+        alertCode: string;
+        repoId?: string;
+        acknowledgedAt?: string;
+        acknowledgedBy?: string;
+        acknowledgeNote?: string;
+        mutedUntil?: string;
+        mutedBy?: string;
+        muteReason?: string;
+        isMuted: boolean;
+        runbookUrl: string;
+        lastAction?: string;
+        lastActionAt?: string;
+    };
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/alerts/${encodeURIComponent(alertCode)}/unmute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{
+        success: boolean;
+        reason: string;
+        alertCode: string;
+        state: {
+            alertCode: string;
+            repoId?: string;
+            acknowledgedAt?: string;
+            acknowledgedBy?: string;
+            acknowledgeNote?: string;
+            mutedUntil?: string;
+            mutedBy?: string;
+            muteReason?: string;
+            isMuted: boolean;
+            runbookUrl: string;
+            lastAction?: string;
+            lastActionAt?: string;
+        };
+    }>(res, "Failed to unmute integration alert");
 }
 
 export interface IntegrationNotificationDelivery {

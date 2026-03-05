@@ -27,6 +27,31 @@ type IssueLinkSyncStatus = "pending" | "synced" | "failed" | "dead_letter";
 type IntegrationAlertSeverity = "warning" | "critical";
 type IntegrationAlertStatus = "healthy" | "warning" | "critical";
 type WebhookActionAuditOutcome = "success" | "error";
+type IntegrationAlertCode =
+    | "notification_dead_letter"
+    | "webhook_dead_letter"
+    | "issue_sync_dead_letter"
+    | "delivery_success_rate_low"
+    | "webhook_auth_failures_high"
+    | "webhook_auth_failure_rate_high"
+    | "webhook_auth_config_error"
+    | "notification_retry_stale"
+    | "webhook_retry_stale";
+
+type IntegrationAlertTriageState = {
+    alertCode: string;
+    repoId?: string;
+    acknowledgedAt?: string;
+    acknowledgedBy?: string;
+    acknowledgeNote?: string;
+    mutedUntil?: string;
+    mutedBy?: string;
+    muteReason?: string;
+    isMuted: boolean;
+    runbookUrl: string;
+    lastAction?: string;
+    lastActionAt?: string;
+};
 
 const PROVIDERS: IntegrationProvider[] = ["slack", "linear", "jira"];
 const ISSUE_LINK_PROVIDERS = new Set<IntegrationProvider>(["linear", "jira"]);
@@ -73,6 +98,25 @@ const DEFAULT_WEBHOOK_AUTH_ALERT_MIN_SAMPLES =
     Number.isFinite(RAW_WEBHOOK_AUTH_ALERT_MIN_SAMPLES) && RAW_WEBHOOK_AUTH_ALERT_MIN_SAMPLES >= 0
         ? Math.min(Math.max(Math.round(RAW_WEBHOOK_AUTH_ALERT_MIN_SAMPLES), 0), 100_000)
         : 20;
+const RAW_INTEGRATION_ALERT_MUTE_DEFAULT_MINUTES = Number(process.env.NEXUS_INTEGRATION_ALERT_MUTE_DEFAULT_MINUTES ?? 120);
+const DEFAULT_INTEGRATION_ALERT_MUTE_DEFAULT_MINUTES =
+    Number.isFinite(RAW_INTEGRATION_ALERT_MUTE_DEFAULT_MINUTES) && RAW_INTEGRATION_ALERT_MUTE_DEFAULT_MINUTES >= 5
+        ? Math.min(Math.max(Math.round(RAW_INTEGRATION_ALERT_MUTE_DEFAULT_MINUTES), 5), 43_200)
+        : 120;
+const INTEGRATION_ALERT_RUNBOOK_BASE_URL =
+    (process.env.NEXUS_INTEGRATION_ALERT_RUNBOOK_BASE_URL || "https://docs.nexus.dev/runbooks/integrations").trim() ||
+    "https://docs.nexus.dev/runbooks/integrations";
+const INTEGRATION_ALERT_RUNBOOK_URLS: Record<IntegrationAlertCode, string> = {
+    notification_dead_letter: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/notification-dead-letter`,
+    webhook_dead_letter: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/webhook-dead-letter`,
+    issue_sync_dead_letter: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/issue-sync-dead-letter`,
+    delivery_success_rate_low: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/delivery-success-rate-low`,
+    webhook_auth_failures_high: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/webhook-auth-failures`,
+    webhook_auth_failure_rate_high: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/webhook-auth-failure-rate`,
+    webhook_auth_config_error: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/webhook-auth-config-error`,
+    notification_retry_stale: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/notification-retry-stale`,
+    webhook_retry_stale: `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/webhook-retry-stale`,
+};
 
 const SECRET_FIELD_PATTERN = /(?:token|secret|password|api[_-]?key|authorization|auth[_-]?header)/i;
 const SECRET_PATTERNS: RegExp[] = [
@@ -322,6 +366,108 @@ function normalizeIssueLinkActionAudit(row: any) {
         metadata,
         createdAt: toIso(row.createdAt),
     };
+}
+
+function normalizeAlertCode(value: string): string {
+    return (value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_");
+}
+
+function runbookUrlForAlert(alertCode: string): string {
+    const normalized = normalizeAlertCode(alertCode) as IntegrationAlertCode;
+    return INTEGRATION_ALERT_RUNBOOK_URLS[normalized] || `${INTEGRATION_ALERT_RUNBOOK_BASE_URL}/general-alert-triage`;
+}
+
+function emptyAlertTriageState(alertCode: string, repoId?: string): IntegrationAlertTriageState {
+    return {
+        alertCode,
+        repoId,
+        isMuted: false,
+        runbookUrl: runbookUrlForAlert(alertCode),
+    };
+}
+
+function deriveAlertTriageStates(
+    rows: any[],
+    now: Date,
+    repoId?: string,
+    allowedCodes?: Set<string>
+): IntegrationAlertTriageState[] {
+    const states = new Map<
+        string,
+        IntegrationAlertTriageState & {
+            _ackResolved?: boolean;
+            _muteResolved?: boolean;
+        }
+    >();
+    for (const row of rows) {
+        const metadata =
+            row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+                ? (row.metadata as Record<string, unknown>)
+                : {};
+        const alertCode = normalizeAlertCode(typeof metadata.alertCode === "string" ? metadata.alertCode : "");
+        if (!alertCode) continue;
+        if (allowedCodes && !allowedCodes.has(alertCode)) continue;
+
+        const existing =
+            states.get(alertCode) ||
+            ({
+                ...emptyAlertTriageState(alertCode, repoId),
+                _ackResolved: false,
+                _muteResolved: false,
+            } as IntegrationAlertTriageState & { _ackResolved?: boolean; _muteResolved?: boolean });
+
+        if (!existing.lastActionAt) {
+            existing.lastAction = String(row.action || "");
+            existing.lastActionAt = toIso(row.createdAt);
+        }
+
+        if (!existing._ackResolved && row.action === "integration.alert.acknowledge") {
+            existing.acknowledgedAt = toIso(row.createdAt);
+            existing.acknowledgedBy = typeof metadata.actor === "string" ? metadata.actor : undefined;
+            existing.acknowledgeNote = typeof metadata.note === "string" ? metadata.note : undefined;
+            existing._ackResolved = true;
+        }
+
+        if (!existing._muteResolved) {
+            if (row.action === "integration.alert.mute") {
+                existing.mutedUntil = typeof metadata.mutedUntil === "string" ? metadata.mutedUntil : undefined;
+                existing.mutedBy = typeof metadata.actor === "string" ? metadata.actor : undefined;
+                existing.muteReason = typeof metadata.reason === "string" ? metadata.reason : undefined;
+                existing._muteResolved = true;
+            } else if (row.action === "integration.alert.unmute") {
+                existing.mutedUntil = undefined;
+                existing.mutedBy = typeof metadata.actor === "string" ? metadata.actor : undefined;
+                existing.muteReason = undefined;
+                existing._muteResolved = true;
+            }
+        }
+
+        states.set(alertCode, existing);
+    }
+
+    return Array.from(states.values())
+        .map((state) => {
+            const mutedUntilMs = state.mutedUntil ? Date.parse(state.mutedUntil) : Number.NaN;
+            const isMuted = Number.isFinite(mutedUntilMs) && mutedUntilMs > now.getTime();
+            return {
+                alertCode: state.alertCode,
+                repoId: state.repoId,
+                acknowledgedAt: state.acknowledgedAt,
+                acknowledgedBy: state.acknowledgedBy,
+                acknowledgeNote: state.acknowledgeNote,
+                mutedUntil: state.mutedUntil,
+                mutedBy: state.mutedBy,
+                muteReason: state.muteReason,
+                isMuted,
+                runbookUrl: state.runbookUrl,
+                lastAction: state.lastAction,
+                lastActionAt: state.lastActionAt,
+            } satisfies IntegrationAlertTriageState;
+        })
+        .sort((a, b) => a.alertCode.localeCompare(b.alertCode));
 }
 
 function computeBackoffMs(attemptNumber: number): number {
@@ -1839,6 +1985,205 @@ export const integrationsRepository = {
         };
     },
 
+    async listAlertTriageStates(input: {
+        repoId: string;
+        alertCodes?: string[];
+        limit?: number;
+    }) {
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const limit = clampInteger(Number(input.limit ?? 500), 1, 2_000);
+        const rows = await db
+            .select()
+            .from(auditLog)
+            .where(
+                and(
+                    eq(auditLog.entityType, "integration_alert"),
+                    eq(auditLog.orgId, repo.orgId),
+                    sql`${auditLog.metadata} ->> 'repoId' = ${input.repoId}`,
+                    sql`${auditLog.action} LIKE 'integration.alert.%'`
+                )
+            )
+            .orderBy(desc(auditLog.createdAt))
+            .limit(limit);
+
+        const normalizedAlertCodes = (input.alertCodes || []).map((code) => normalizeAlertCode(code)).filter(Boolean);
+        const allowedCodes = normalizedAlertCodes.length > 0 ? new Set(normalizedAlertCodes) : undefined;
+        const states = deriveAlertTriageStates(rows, new Date(), input.repoId, allowedCodes);
+        return {
+            reason: "ok" as const,
+            states,
+        };
+    },
+
+    async acknowledgeAlert(input: {
+        repoId: string;
+        alertCode: string;
+        actor?: string;
+        note?: string;
+    }) {
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const alertCode = normalizeAlertCode(input.alertCode);
+        if (!alertCode) return { reason: "invalid_alert_code" as const };
+
+        const actor = (input.actor || "settings-ui").trim().slice(0, 120) || "settings-ui";
+        const note = (input.note || "").trim().slice(0, 500);
+        const summary = note
+            ? `Acknowledged integration alert ${alertCode}: ${note}`
+            : `Acknowledged integration alert ${alertCode}.`;
+
+        const [inserted] = await db
+            .insert(auditLog)
+            .values({
+                orgId: repo.orgId,
+                action: "integration.alert.acknowledge",
+                entityType: "integration_alert",
+                entityId: null,
+                metadata: sanitizeUnknown({
+                    outcome: "success",
+                    summary,
+                    repoId: input.repoId,
+                    alertCode,
+                    actor,
+                    note: note || undefined,
+                }),
+                createdAt: new Date(),
+            })
+            .returning();
+        if (!inserted) return { reason: "insert_failed" as const };
+
+        const triage = await this.listAlertTriageStates({
+            repoId: input.repoId,
+            alertCodes: [alertCode],
+            limit: 100,
+        });
+        const state =
+            triage.reason === "ok" ? triage.states[0] || emptyAlertTriageState(alertCode, input.repoId) : emptyAlertTriageState(alertCode, input.repoId);
+        return {
+            reason: "acknowledged" as const,
+            alertCode,
+            state,
+        };
+    },
+
+    async muteAlert(input: {
+        repoId: string;
+        alertCode: string;
+        durationMinutes?: number;
+        reason?: string;
+        actor?: string;
+    }) {
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const alertCode = normalizeAlertCode(input.alertCode);
+        if (!alertCode) return { reason: "invalid_alert_code" as const };
+
+        const durationMinutes = clampInteger(
+            Number(input.durationMinutes ?? DEFAULT_INTEGRATION_ALERT_MUTE_DEFAULT_MINUTES),
+            5,
+            43_200
+        );
+        const actor = (input.actor || "settings-ui").trim().slice(0, 120) || "settings-ui";
+        const reason = (input.reason || "").trim().slice(0, 500);
+        const now = new Date();
+        const mutedUntilIso = new Date(now.getTime() + durationMinutes * 60_000).toISOString();
+        const summary = reason
+            ? `Muted integration alert ${alertCode} for ${durationMinutes} minutes: ${reason}`
+            : `Muted integration alert ${alertCode} for ${durationMinutes} minutes.`;
+
+        const [inserted] = await db
+            .insert(auditLog)
+            .values({
+                orgId: repo.orgId,
+                action: "integration.alert.mute",
+                entityType: "integration_alert",
+                entityId: null,
+                metadata: sanitizeUnknown({
+                    outcome: "success",
+                    summary,
+                    repoId: input.repoId,
+                    alertCode,
+                    actor,
+                    reason: reason || undefined,
+                    durationMinutes,
+                    mutedUntil: mutedUntilIso,
+                }),
+                createdAt: now,
+            })
+            .returning();
+        if (!inserted) return { reason: "insert_failed" as const };
+
+        const triage = await this.listAlertTriageStates({
+            repoId: input.repoId,
+            alertCodes: [alertCode],
+            limit: 100,
+        });
+        const state =
+            triage.reason === "ok" ? triage.states[0] || emptyAlertTriageState(alertCode, input.repoId) : emptyAlertTriageState(alertCode, input.repoId);
+        return {
+            reason: "muted" as const,
+            alertCode,
+            durationMinutes,
+            mutedUntil: mutedUntilIso,
+            state,
+        };
+    },
+
+    async unmuteAlert(input: {
+        repoId: string;
+        alertCode: string;
+        actor?: string;
+        reason?: string;
+    }) {
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const alertCode = normalizeAlertCode(input.alertCode);
+        if (!alertCode) return { reason: "invalid_alert_code" as const };
+        const actor = (input.actor || "settings-ui").trim().slice(0, 120) || "settings-ui";
+        const reason = (input.reason || "").trim().slice(0, 500);
+        const summary = reason
+            ? `Unmuted integration alert ${alertCode}: ${reason}`
+            : `Unmuted integration alert ${alertCode}.`;
+
+        const [inserted] = await db
+            .insert(auditLog)
+            .values({
+                orgId: repo.orgId,
+                action: "integration.alert.unmute",
+                entityType: "integration_alert",
+                entityId: null,
+                metadata: sanitizeUnknown({
+                    outcome: "success",
+                    summary,
+                    repoId: input.repoId,
+                    alertCode,
+                    actor,
+                    reason: reason || undefined,
+                }),
+                createdAt: new Date(),
+            })
+            .returning();
+        if (!inserted) return { reason: "insert_failed" as const };
+
+        const triage = await this.listAlertTriageStates({
+            repoId: input.repoId,
+            alertCodes: [alertCode],
+            limit: 100,
+        });
+        const state =
+            triage.reason === "ok" ? triage.states[0] || emptyAlertTriageState(alertCode, input.repoId) : emptyAlertTriageState(alertCode, input.repoId);
+        return {
+            reason: "unmuted" as const,
+            alertCode,
+            state,
+        };
+    },
+
     async alertStatus(input: {
         repoId?: string;
         minSuccessRatePct?: number;
@@ -1922,7 +2267,7 @@ export const integrationsRepository = {
         const deliverySampleCount = metrics.totals.delivered + metrics.totals.failed + metrics.totals.deadLetter;
         const webhookAuthSampleCount = webhookAuthRecentDenominator;
         const suppressedCodes: string[] = [];
-        const alerts: Array<{
+        const rawAlerts: Array<{
             code: string;
             severity: IntegrationAlertSeverity;
             message: string;
@@ -1931,7 +2276,7 @@ export const integrationsRepository = {
         }> = [];
 
         if (metrics.totals.deadLetter > 0) {
-            alerts.push({
+            rawAlerts.push({
                 code: "notification_dead_letter",
                 severity: "critical",
                 message: "Notification deliveries are in dead-letter state.",
@@ -1940,7 +2285,7 @@ export const integrationsRepository = {
             });
         }
         if (metrics.totals.webhooksDeadLetter > 0) {
-            alerts.push({
+            rawAlerts.push({
                 code: "webhook_dead_letter",
                 severity: "critical",
                 message: "Webhook events are in dead-letter state.",
@@ -1949,7 +2294,7 @@ export const integrationsRepository = {
             });
         }
         if (metrics.totals.issueSyncDeadLetter > 0) {
-            alerts.push({
+            rawAlerts.push({
                 code: "issue_sync_dead_letter",
                 severity: "critical",
                 message: "Issue-link sync is in dead-letter state.",
@@ -1959,7 +2304,7 @@ export const integrationsRepository = {
         }
         if (metrics.successRatePct < minSuccessRatePct) {
             if (deliverySampleCount >= minDeliverySamples) {
-                alerts.push({
+                rawAlerts.push({
                     code: "delivery_success_rate_low",
                     severity: "warning",
                     message: "Delivery success rate is below threshold.",
@@ -1972,7 +2317,7 @@ export const integrationsRepository = {
         }
         if (webhookAuthRecentFailures > maxWebhookAuthFailures) {
             if (webhookAuthSampleCount >= minWebhookAuthSamples) {
-                alerts.push({
+                rawAlerts.push({
                     code: "webhook_auth_failures_high",
                     severity: "warning",
                     message: "Webhook auth failure count is above threshold.",
@@ -1985,7 +2330,7 @@ export const integrationsRepository = {
         }
         if (webhookAuthRecentFailureRatePct > maxWebhookAuthFailureRatePct) {
             if (webhookAuthSampleCount >= minWebhookAuthSamples) {
-                alerts.push({
+                rawAlerts.push({
                     code: "webhook_auth_failure_rate_high",
                     severity: "warning",
                     message: "Webhook auth failure rate is above threshold.",
@@ -1997,7 +2342,7 @@ export const integrationsRepository = {
             }
         }
         if (webhookAuthRecentConfigErrors > 0) {
-            alerts.push({
+            rawAlerts.push({
                 code: "webhook_auth_config_error",
                 severity: "critical",
                 message: "Webhook auth configuration errors detected.",
@@ -2012,7 +2357,7 @@ export const integrationsRepository = {
             metrics.retryQueue.notificationQueued > 0 &&
             oldestNotificationRetryAgeSeconds > maxRetryQueueAgeSeconds
         ) {
-            alerts.push({
+            rawAlerts.push({
                 code: "notification_retry_stale",
                 severity: "warning",
                 message: "Oldest pending notification retry is stale.",
@@ -2027,13 +2372,64 @@ export const integrationsRepository = {
             metrics.retryQueue.webhookQueued > 0 &&
             oldestWebhookRetryAgeSeconds > maxRetryQueueAgeSeconds
         ) {
-            alerts.push({
+            rawAlerts.push({
                 code: "webhook_retry_stale",
                 severity: "warning",
                 message: "Oldest pending webhook retry is stale.",
                 value: oldestWebhookRetryAgeSeconds,
                 threshold: maxRetryQueueAgeSeconds,
             });
+        }
+
+        const triageStates =
+            input.repoId && rawAlerts.length > 0
+                ? await this.listAlertTriageStates({
+                      repoId: input.repoId,
+                      alertCodes: rawAlerts.map((alert) => alert.code),
+                      limit: 500,
+                  })
+                : { reason: "ok" as const, states: [] as IntegrationAlertTriageState[] };
+
+        const triageByCode = new Map(
+            (triageStates.reason === "ok" ? triageStates.states : []).map((state) => [state.alertCode, state])
+        );
+        const alerts: Array<{
+            code: string;
+            severity: IntegrationAlertSeverity;
+            message: string;
+            value: number;
+            threshold: number;
+            runbookUrl: string;
+            triage: Omit<IntegrationAlertTriageState, "alertCode" | "repoId" | "runbookUrl">;
+        }> = [];
+        const mutedAlerts: Array<{
+            code: string;
+            severity: IntegrationAlertSeverity;
+            message: string;
+            value: number;
+            threshold: number;
+            runbookUrl: string;
+            triage: Omit<IntegrationAlertTriageState, "alertCode" | "repoId" | "runbookUrl">;
+        }> = [];
+        for (const alert of rawAlerts) {
+            const state = triageByCode.get(alert.code) || emptyAlertTriageState(alert.code, input.repoId);
+            const enriched = {
+                ...alert,
+                runbookUrl: state.runbookUrl,
+                triage: {
+                    acknowledgedAt: state.acknowledgedAt,
+                    acknowledgedBy: state.acknowledgedBy,
+                    acknowledgeNote: state.acknowledgeNote,
+                    mutedUntil: state.mutedUntil,
+                    mutedBy: state.mutedBy,
+                    muteReason: state.muteReason,
+                    isMuted: state.isMuted,
+                    lastAction: state.lastAction,
+                    lastActionAt: state.lastActionAt,
+                },
+            };
+            if (state.isMuted) mutedAlerts.push(enriched);
+            else alerts.push(enriched);
         }
 
         let status: IntegrationAlertStatus = "healthy";
@@ -2061,6 +2457,20 @@ export const integrationsRepository = {
                 webhookAuthSampleCount,
                 suppressedCodes,
             },
+            mutedAlerts,
+            triage: {
+                repoScoped: Boolean(input.repoId),
+                acknowledgedCount: (triageStates.reason === "ok" ? triageStates.states : []).filter(
+                    (state) => Boolean(state.acknowledgedAt)
+                ).length,
+                mutedCount: mutedAlerts.length,
+                activeCount: alerts.length,
+                states: triageStates.reason === "ok" ? triageStates.states : [],
+            },
+            runbooks: rawAlerts.reduce<Record<string, string>>((acc, alert) => {
+                acc[alert.code] = runbookUrlForAlert(alert.code);
+                return acc;
+            }, {}),
             webhookAuthWindow: {
                 startAt: webhookAuthWindowStart.toISOString(),
                 failures: webhookAuthRecentFailures,

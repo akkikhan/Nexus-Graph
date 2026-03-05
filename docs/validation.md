@@ -128,6 +128,7 @@ Degraded-mode behavior:
 - Set `ALLOW_DEGRADED=false` to require strict `200` responses.
 - Integrations webhook ingestion now includes abuse checks for missing signature and stale timestamps (`401` paths validated in smoke).
 - Integrations metrics/alerts now include webhook auth failure telemetry (provider/reason/rate), sample-gated noisy-alert suppression controls (`minDeliverySamples`, `minWebhookAuthSamples`), and threshold-based alert assertions.
+- Integrations alerts now support triage workflow coverage: repo-scoped acknowledge/mute/unmute actions, muted alert suppression in `alerts[]` with `mutedAlerts[]`, and per-alert runbook links.
 
 ## Web Smoke Coverage
 
@@ -146,6 +147,7 @@ Uses Playwright (`tests/validation/smoke.spec.ts`) and validates:
 - Insights dashboard load
 - Settings diagnostics panel load (webhook auth events + filter path)
 - Settings integrations operations snapshot (connections + metrics + alerts)
+- Settings alert triage actions (acknowledge, mute/unmute, runbook links) with persisted server responses
 - Settings connection control plane actions (validate/fail-validate/enable/disable + persisted action audit feed)
 - Settings webhook recovery actions (list/process/fail/retry controls + persisted action audit feed)
 - Settings notification delivery actions (list/deliver/fail/retry controls + persisted action audit feed)

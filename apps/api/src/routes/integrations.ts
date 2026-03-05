@@ -211,6 +211,30 @@ const alertsSchema = z.object({
     minDeliverySamples: z.coerce.number().int().min(0).max(100_000).optional(),
     minWebhookAuthSamples: z.coerce.number().int().min(0).max(100_000).optional(),
 });
+const alertCodeParamSchema = z.object({
+    alertCode: z.string().min(1).max(120),
+});
+const alertTriageSchema = z.object({
+    repoId: z.string(),
+    alertCodes: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(2_000).default(500),
+});
+const acknowledgeAlertSchema = z.object({
+    repoId: z.string(),
+    actor: z.string().trim().min(1).max(120).optional(),
+    note: z.string().trim().max(500).optional(),
+});
+const muteAlertSchema = z.object({
+    repoId: z.string(),
+    actor: z.string().trim().min(1).max(120).optional(),
+    reason: z.string().trim().max(500).optional(),
+    durationMinutes: z.coerce.number().int().min(5).max(43_200).optional(),
+});
+const unmuteAlertSchema = z.object({
+    repoId: z.string(),
+    actor: z.string().trim().min(1).max(120).optional(),
+    reason: z.string().trim().max(500).optional(),
+});
 
 function details(error: unknown): string {
     return integrationsRepository.errorMessage(error);
@@ -357,7 +381,8 @@ type IntegrationRealtimeScope =
     | "issue_link"
     | "webhook"
     | "notification"
-    | "slack_action";
+    | "slack_action"
+    | "alert";
 
 function notifyIntegrationUpdate(input: {
     repoId?: string;
@@ -1426,5 +1451,190 @@ integrationsRouter.get("/alerts", zValidator("query", alertsSchema), async (c) =
         );
     }
 });
+
+integrationsRouter.get("/alerts/triage", zValidator("query", alertTriageSchema), async (c) => {
+    const query = c.req.valid("query");
+    const alertCodes = (query.alertCodes || "")
+        .split(",")
+        .map((code) => code.trim())
+        .filter(Boolean);
+    try {
+        const triage = await integrationsRepository.listAlertTriageStates({
+            repoId: query.repoId,
+            alertCodes: alertCodes.length > 0 ? alertCodes : undefined,
+            limit: query.limit,
+        });
+        if (triage.reason !== "ok") {
+            return c.json(
+                {
+                    error: triage.reason === "repo_not_found" ? "Repository not found for alert triage" : "Invalid alert triage request",
+                },
+                triage.reason === "repo_not_found" ? 404 : 400
+            );
+        }
+        return c.json({
+            states: triage.states,
+            total: triage.states.length,
+            limit: query.limit,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integration alert triage",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post(
+    "/alerts/:alertCode/acknowledge",
+    zValidator("param", alertCodeParamSchema),
+    zValidator("json", acknowledgeAlertSchema),
+    async (c) => {
+        const params = c.req.valid("param");
+        const body = c.req.valid("json");
+        try {
+            const result = await integrationsRepository.acknowledgeAlert({
+                repoId: body.repoId,
+                alertCode: params.alertCode,
+                actor: body.actor,
+                note: body.note,
+            });
+            if (result.reason === "repo_not_found") {
+                return c.json({ error: "Repository not found for alert acknowledge" }, 404);
+            }
+            if (result.reason !== "acknowledged") {
+                return c.json({ error: "Failed to acknowledge integration alert", reason: result.reason }, 400);
+            }
+            notifyIntegrationUpdate({
+                repoId: body.repoId,
+                scope: "alert",
+                action: "acknowledge",
+                outcome: "success",
+                entityId: result.alertCode,
+                metadata: {
+                    state: result.state,
+                },
+            });
+            return c.json({
+                success: true,
+                reason: result.reason,
+                alertCode: result.alertCode,
+                state: result.state,
+            });
+        } catch (error) {
+            return c.json(
+                {
+                    error: "Database unavailable for integration alert acknowledge",
+                    details: details(error),
+                },
+                503
+            );
+        }
+    }
+);
+
+integrationsRouter.post(
+    "/alerts/:alertCode/mute",
+    zValidator("param", alertCodeParamSchema),
+    zValidator("json", muteAlertSchema),
+    async (c) => {
+        const params = c.req.valid("param");
+        const body = c.req.valid("json");
+        try {
+            const result = await integrationsRepository.muteAlert({
+                repoId: body.repoId,
+                alertCode: params.alertCode,
+                actor: body.actor,
+                reason: body.reason,
+                durationMinutes: body.durationMinutes,
+            });
+            if (result.reason === "repo_not_found") {
+                return c.json({ error: "Repository not found for alert mute" }, 404);
+            }
+            if (result.reason !== "muted") {
+                return c.json({ error: "Failed to mute integration alert", reason: result.reason }, 400);
+            }
+            notifyIntegrationUpdate({
+                repoId: body.repoId,
+                scope: "alert",
+                action: "mute",
+                outcome: "success",
+                entityId: result.alertCode,
+                metadata: {
+                    durationMinutes: result.durationMinutes,
+                    mutedUntil: result.mutedUntil,
+                    state: result.state,
+                },
+            });
+            return c.json({
+                success: true,
+                reason: result.reason,
+                alertCode: result.alertCode,
+                durationMinutes: result.durationMinutes,
+                mutedUntil: result.mutedUntil,
+                state: result.state,
+            });
+        } catch (error) {
+            return c.json(
+                {
+                    error: "Database unavailable for integration alert mute",
+                    details: details(error),
+                },
+                503
+            );
+        }
+    }
+);
+
+integrationsRouter.post(
+    "/alerts/:alertCode/unmute",
+    zValidator("param", alertCodeParamSchema),
+    zValidator("json", unmuteAlertSchema),
+    async (c) => {
+        const params = c.req.valid("param");
+        const body = c.req.valid("json");
+        try {
+            const result = await integrationsRepository.unmuteAlert({
+                repoId: body.repoId,
+                alertCode: params.alertCode,
+                actor: body.actor,
+                reason: body.reason,
+            });
+            if (result.reason === "repo_not_found") {
+                return c.json({ error: "Repository not found for alert unmute" }, 404);
+            }
+            if (result.reason !== "unmuted") {
+                return c.json({ error: "Failed to unmute integration alert", reason: result.reason }, 400);
+            }
+            notifyIntegrationUpdate({
+                repoId: body.repoId,
+                scope: "alert",
+                action: "unmute",
+                outcome: "success",
+                entityId: result.alertCode,
+                metadata: {
+                    state: result.state,
+                },
+            });
+            return c.json({
+                success: true,
+                reason: result.reason,
+                alertCode: result.alertCode,
+                state: result.state,
+            });
+        } catch (error) {
+            return c.json(
+                {
+                    error: "Database unavailable for integration alert unmute",
+                    details: details(error),
+                },
+                503
+            );
+        }
+    }
+);
 
 export { integrationsRouter };
