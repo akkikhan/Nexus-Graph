@@ -42,4 +42,5 @@ export {
     type MenubarUpdateCheckResult,
     type UpdateCheckStatus,
 } from "./updateClient.js";
+export { UpdateDecisionStore, type UpdateDecisionState } from "./updateDecisionStore.js";
 export type { PullRequest, PullRequestStatus, PullRequestActionId } from "./types.js";

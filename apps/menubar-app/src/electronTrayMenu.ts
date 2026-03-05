@@ -24,6 +24,8 @@ interface BuildTrayTemplateOptions {
     updateStatus?: TrayUpdateStatus;
     onCheckForUpdates?: () => Promise<void> | void;
     onOpenUpdateDownload?: (url: string) => Promise<void> | void;
+    onSnoozeUpdate?: () => Promise<void> | void;
+    onSkipUpdateVersion?: (version: string) => Promise<void> | void;
 }
 
 export function buildTrayTemplate(
@@ -75,6 +77,19 @@ export function buildTrayTemplate(
                 label: `Download Update (${updateVersion})`,
                 run: () => options.onOpenUpdateDownload?.(downloadUrl),
             });
+            if (options.onSnoozeUpdate) {
+                items.push({
+                    label: "Remind Me Later",
+                    run: options.onSnoozeUpdate,
+                });
+            }
+            if (options.onSkipUpdateVersion && options.updateStatus.latestVersion) {
+                const latestVersion = options.updateStatus.latestVersion;
+                items.push({
+                    label: `Skip This Version (${latestVersion})`,
+                    run: () => options.onSkipUpdateVersion?.(latestVersion),
+                });
+            }
         }
 
         items.push({

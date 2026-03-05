@@ -75,6 +75,8 @@ describe("electron tray template", () => {
         const onError = vi.fn();
         const onCheckForUpdates = vi.fn(async () => {});
         const onOpenUpdateDownload = vi.fn(async () => {});
+        const onSnoozeUpdate = vi.fn(async () => {});
+        const onSkipUpdateVersion = vi.fn(async () => {});
 
         const template = buildTrayTemplate(makeModel(), {
             onRefresh: vi.fn(async () => {}),
@@ -88,18 +90,26 @@ describe("electron tray template", () => {
             },
             onCheckForUpdates,
             onOpenUpdateDownload,
+            onSnoozeUpdate,
+            onSkipUpdateVersion,
         });
 
         const electronTemplate = toElectronTemplate(template, onError);
         const checkUpdates = electronTemplate.find((item) => item.label === "Check for Updates");
         const downloadUpdate = electronTemplate.find((item) => item.label?.startsWith("Download Update"));
+        const remindLater = electronTemplate.find((item) => item.label === "Remind Me Later");
+        const skipVersion = electronTemplate.find((item) => item.label?.startsWith("Skip This Version"));
 
         checkUpdates?.click?.({} as never, {} as never, {} as never);
         downloadUpdate?.click?.({} as never, {} as never, {} as never);
+        remindLater?.click?.({} as never, {} as never, {} as never);
+        skipVersion?.click?.({} as never, {} as never, {} as never);
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(onCheckForUpdates).toHaveBeenCalledTimes(1);
         expect(onOpenUpdateDownload).toHaveBeenCalledTimes(1);
+        expect(onSnoozeUpdate).toHaveBeenCalledTimes(1);
+        expect(onSkipUpdateVersion).toHaveBeenCalledWith("0.2.0");
         expect(onError).not.toHaveBeenCalled();
     });
 });

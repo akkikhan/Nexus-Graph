@@ -11,6 +11,7 @@ import {
     toElectronTemplate,
     type TrayUpdateStatus,
 } from "./electronTrayMenu.js";
+import { UpdateDecisionStore } from "./updateDecisionStore.js";
 import { checkForMenubarUpdate, resolveManifestUrl } from "./updateClient.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,6 +30,7 @@ const updateManifestUrl = resolveManifestUrl(
     releaseChannel
 );
 const updateCheckIntervalMs = Number(process.env.NEXUS_MENUBAR_UPDATE_CHECK_MS || 3600000);
+const updateSnoozeHours = Number(process.env.NEXUS_MENUBAR_UPDATE_SNOOZE_HOURS || 24);
 const rolloutKey =
     process.env.NEXUS_MENUBAR_ROLLOUT_KEY ||
     `${os.hostname()}|${process.env.USERNAME || process.env.USER || "user"}`;
@@ -44,6 +46,7 @@ const runtimePlatform =
 let tray: Tray | null = null;
 let refreshTimer: NodeJS.Timeout | undefined;
 let updateTimer: NodeJS.Timeout | undefined;
+let updateDecisionStore: UpdateDecisionStore | null = null;
 let updateStatus: TrayUpdateStatus = {
     state: "idle",
     label: `Updates (${releaseChannel}): not checked`,
@@ -110,6 +113,27 @@ async function rebuildMenu() {
         onOpenUpdateDownload: async (url) => {
             await shell.openExternal(url);
         },
+        onSnoozeUpdate: async () => {
+            const store = ensureUpdateDecisionStore();
+            await store.snooze(updateSnoozeHours);
+            updateStatus = {
+                ...updateStatus,
+                state: "rolloutDeferred",
+                label: `Updates (${releaseChannel}): reminder snoozed (${updateSnoozeHours}h)`,
+            };
+            await rebuildMenu();
+        },
+        onSkipUpdateVersion: async (version) => {
+            const store = ensureUpdateDecisionStore();
+            await store.skipVersion(version);
+            updateStatus = {
+                ...updateStatus,
+                state: "rolloutDeferred",
+                label: `Updates (${releaseChannel}): skipped ${version}`,
+                latestVersion: version,
+            };
+            await rebuildMenu();
+        },
     });
     const menu = Menu.buildFromTemplate(toElectronTemplate(template, handleError));
     tray.setContextMenu(menu);
@@ -135,10 +159,38 @@ async function refreshUpdateStatus(manualCheck = false) {
     });
 
     if (result.status === "available") {
+        const latestVersion = result.latestVersion;
+        if (!latestVersion) {
+            updateStatus = {
+                state: "error",
+                label: `Updates (${releaseChannel}): invalid update payload`,
+            };
+            await rebuildMenu();
+            if (manualCheck) {
+                process.stdout.write("[menubar] Update payload was missing latest version metadata.\n");
+            }
+            return;
+        }
+
+        const suppressed = updateDecisionStore
+            ? !updateDecisionStore.shouldSurfaceUpdate(latestVersion)
+            : false;
+        if (suppressed) {
+            updateStatus = {
+                state: "rolloutDeferred",
+                label: `Updates (${releaseChannel}): ${latestVersion} hidden (snoozed/skipped)`,
+                latestVersion,
+            };
+            await rebuildMenu();
+            if (manualCheck) {
+                process.stdout.write(`[menubar] Update ${latestVersion} is hidden by local preference.\n`);
+            }
+            return;
+        }
         updateStatus = {
             state: "available",
-            label: `Update available (${releaseChannel}): ${result.latestVersion}`,
-            latestVersion: result.latestVersion,
+            label: `Update available (${releaseChannel}): ${latestVersion}`,
+            latestVersion,
             downloadUrl: result.downloadUrl,
         };
     } else if (result.status === "upToDate") {
@@ -177,6 +229,11 @@ async function refreshUpdateStatus(manualCheck = false) {
 async function bootstrap() {
     await app.whenReady();
 
+    updateDecisionStore = new UpdateDecisionStore(
+        path.resolve(app.getPath("userData"), "update-decision-state.json")
+    );
+    await updateDecisionStore.load();
+
     if (process.platform === "darwin") {
         app.dock?.hide();
     }
@@ -214,3 +271,10 @@ app.on("before-quit", () => {
 });
 
 bootstrap().catch(handleError);
+
+function ensureUpdateDecisionStore(): UpdateDecisionStore {
+    if (!updateDecisionStore) {
+        throw new Error("Update decision store is not initialized.");
+    }
+    return updateDecisionStore;
+}
