@@ -86,13 +86,16 @@ Tray menu now includes:
 - Channel update status row (`checking`, `up to date`, `staged rollout`, `available`, or `check failed`)
 - `Check for Updates` action for manual refresh
 - `Download Update (...)` action when an eligible artifact is available for the current `platform/arch`
+- `Cancel Download` while an artifact transfer is in progress
+- `Install Downloaded Update` and `Reveal Downloaded File` after checksum verification succeeds
+- `Retry Download` / `Re-download Update` controls for failed or already-downloaded artifacts
 - `Remind Me Later` (snoozes update visibility for configured hours)
 - `Skip This Version` (hides a specific version on this machine)
 
 Rollout gating is deterministic per machine identity (`NEXUS_MENUBAR_ROLLOUT_KEY` or hostname/user fallback).
 Local update preferences are persisted under Electron `userData` (`update-decision-state.json`).
 Manifest integrity is enforced with strict `sha256` digest format checks and optional Ed25519 signature verification.
-Downloaded artifacts are verified against manifest checksum and size before being revealed in the file explorer.
+Downloaded artifacts are verified against manifest checksum and size before install/reveal actions are surfaced in the tray.
 
 ## Example Integration Sketch
 

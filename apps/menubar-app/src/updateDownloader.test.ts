@@ -87,4 +87,28 @@ describe("downloadAndVerifyUpdateArtifact", () => {
         const headers = new Headers(init?.headers);
         expect(headers.get("Authorization")).toBe("Bearer abc123");
     });
+
+    it("passes abort signal to fetch and propagates abort errors", async () => {
+        const payload = Buffer.from("payload", "utf8");
+        const expectedSha256 = createHash("sha256").update(payload).digest("hex");
+        const destinationDir = await makeTempDir();
+        const controller = new AbortController();
+        const fetchSpy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+            const signal = init?.signal as AbortSignal | undefined;
+            expect(signal).toBe(controller.signal);
+            throw new DOMException("The operation was aborted.", "AbortError");
+        });
+
+        await expect(
+            downloadAndVerifyUpdateArtifact({
+                url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+                expectedSha256,
+                destinationDir,
+                signal: controller.signal,
+                fetchImpl: fetchSpy as unknown as typeof fetch,
+            })
+        ).rejects.toMatchObject({
+            name: "AbortError",
+        });
+    });
 });

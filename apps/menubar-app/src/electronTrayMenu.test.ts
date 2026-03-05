@@ -121,4 +121,114 @@ describe("electron tray template", () => {
         expect(onSkipUpdateVersion).toHaveBeenCalledWith("0.2.0");
         expect(onError).not.toHaveBeenCalled();
     });
+
+    it("renders cancel action while update download is in progress", async () => {
+        const onError = vi.fn();
+        const onCancelUpdateDownload = vi.fn(async () => {});
+
+        const template = buildTrayTemplate(makeModel(), {
+            onRefresh: vi.fn(async () => {}),
+            onQuit: vi.fn(async () => {}),
+            onPullRequestAction: vi.fn(async () => {}),
+            updateStatus: {
+                state: "downloading",
+                label: "Downloading update...",
+                latestVersion: "0.2.0",
+                downloadUrl: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+                downloadFileName: "nexus-menubar-win-x64-0.2.0.zip",
+                downloadSha256: "a".repeat(64),
+                downloadSizeBytes: 123,
+            },
+            onCancelUpdateDownload,
+            onCheckForUpdates: vi.fn(async () => {}),
+        });
+
+        const electronTemplate = toElectronTemplate(template, onError);
+        const cancelDownload = electronTemplate.find((item) => item.label === "Cancel Download");
+
+        cancelDownload?.click?.({} as never, {} as never, {} as never);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(onCancelUpdateDownload).toHaveBeenCalledTimes(1);
+        expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("renders installer handoff and retry actions for downloaded/error states", async () => {
+        const onError = vi.fn();
+        const onInstallDownloadedUpdate = vi.fn(async () => {});
+        const onRevealDownloadedUpdate = vi.fn(async () => {});
+        const onRetryUpdateDownload = vi.fn(async () => {});
+
+        const readyTemplate = buildTrayTemplate(makeModel(), {
+            onRefresh: vi.fn(async () => {}),
+            onQuit: vi.fn(async () => {}),
+            onPullRequestAction: vi.fn(async () => {}),
+            updateStatus: {
+                state: "readyToInstall",
+                label: "Ready to install update",
+                latestVersion: "0.2.0",
+                downloadUrl: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+                downloadFileName: "nexus-menubar-win-x64-0.2.0.zip",
+                downloadSha256: "a".repeat(64),
+                downloadSizeBytes: 123,
+                downloadedFilePath: "C:/Users/test/Downloads/Nexus Updates/nexus-menubar-win-x64-0.2.0.zip",
+            },
+            onInstallDownloadedUpdate,
+            onRevealDownloadedUpdate,
+            onRetryUpdateDownload,
+            onCheckForUpdates: vi.fn(async () => {}),
+        });
+        const readyElectronTemplate = toElectronTemplate(readyTemplate, onError);
+        const installDownloaded = readyElectronTemplate.find(
+            (item) => item.label === "Install Downloaded Update"
+        );
+        const revealDownloaded = readyElectronTemplate.find((item) => item.label === "Reveal Downloaded File");
+        const redownload = readyElectronTemplate.find((item) => item.label === "Re-download Update");
+
+        installDownloaded?.click?.({} as never, {} as never, {} as never);
+        revealDownloaded?.click?.({} as never, {} as never, {} as never);
+        redownload?.click?.({} as never, {} as never, {} as never);
+
+        const errorTemplate = buildTrayTemplate(makeModel(), {
+            onRefresh: vi.fn(async () => {}),
+            onQuit: vi.fn(async () => {}),
+            onPullRequestAction: vi.fn(async () => {}),
+            updateStatus: {
+                state: "error",
+                label: "Download failed",
+                latestVersion: "0.2.0",
+                downloadUrl: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+                downloadFileName: "nexus-menubar-win-x64-0.2.0.zip",
+                downloadSha256: "a".repeat(64),
+                downloadSizeBytes: 123,
+            },
+            onRetryUpdateDownload,
+            onCheckForUpdates: vi.fn(async () => {}),
+        });
+        const errorElectronTemplate = toElectronTemplate(errorTemplate, onError);
+        const retryDownload = errorElectronTemplate.find((item) => item.label === "Retry Download");
+        retryDownload?.click?.({} as never, {} as never, {} as never);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(onInstallDownloadedUpdate).toHaveBeenCalledWith(
+            "C:/Users/test/Downloads/Nexus Updates/nexus-menubar-win-x64-0.2.0.zip"
+        );
+        expect(onRevealDownloadedUpdate).toHaveBeenCalledWith(
+            "C:/Users/test/Downloads/Nexus Updates/nexus-menubar-win-x64-0.2.0.zip"
+        );
+        expect(onRetryUpdateDownload).toHaveBeenCalledTimes(2);
+        expect(onRetryUpdateDownload).toHaveBeenNthCalledWith(1, {
+            url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+            fileName: "nexus-menubar-win-x64-0.2.0.zip",
+            expectedSha256: "a".repeat(64),
+            expectedSizeBytes: 123,
+        });
+        expect(onRetryUpdateDownload).toHaveBeenNthCalledWith(2, {
+            url: "https://downloads.nexus.dev/menubar/stable/nexus-menubar-win-x64-0.2.0.zip",
+            fileName: "nexus-menubar-win-x64-0.2.0.zip",
+            expectedSha256: "a".repeat(64),
+            expectedSizeBytes: 123,
+        });
+        expect(onError).not.toHaveBeenCalled();
+    });
 });

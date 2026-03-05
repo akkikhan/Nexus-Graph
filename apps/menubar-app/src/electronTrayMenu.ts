@@ -11,13 +11,23 @@ export interface TrayTemplateItem {
 }
 
 export interface TrayUpdateStatus {
-    state: "idle" | "checking" | "available" | "upToDate" | "rolloutDeferred" | "incompatible" | "error";
+    state:
+        | "idle"
+        | "checking"
+        | "downloading"
+        | "available"
+        | "readyToInstall"
+        | "upToDate"
+        | "rolloutDeferred"
+        | "incompatible"
+        | "error";
     label: string;
     latestVersion?: string;
     downloadUrl?: string;
     downloadFileName?: string;
     downloadSha256?: string;
     downloadSizeBytes?: number;
+    downloadedFilePath?: string;
 }
 
 export interface TrayDownloadRequest {
@@ -34,6 +44,10 @@ interface BuildTrayTemplateOptions {
     updateStatus?: TrayUpdateStatus;
     onCheckForUpdates?: () => Promise<void> | void;
     onOpenUpdateDownload?: (request: TrayDownloadRequest) => Promise<void> | void;
+    onRetryUpdateDownload?: (request: TrayDownloadRequest) => Promise<void> | void;
+    onCancelUpdateDownload?: () => Promise<void> | void;
+    onInstallDownloadedUpdate?: (filePath: string) => Promise<void> | void;
+    onRevealDownloadedUpdate?: (filePath: string) => Promise<void> | void;
     onSnoozeUpdate?: () => Promise<void> | void;
     onSkipUpdateVersion?: (version: string) => Promise<void> | void;
 }
@@ -106,6 +120,60 @@ export function buildTrayTemplate(
                     run: () => options.onSkipUpdateVersion?.(latestVersion),
                 });
             }
+        }
+
+        if (options.updateStatus.state === "downloading" && options.onCancelUpdateDownload) {
+            items.push({
+                label: "Cancel Download",
+                run: options.onCancelUpdateDownload,
+            });
+        }
+
+        if (
+            options.updateStatus.state === "readyToInstall" &&
+            options.updateStatus.downloadedFilePath &&
+            options.onInstallDownloadedUpdate
+        ) {
+            const filePath = options.updateStatus.downloadedFilePath;
+            items.push({
+                label: "Install Downloaded Update",
+                run: () => options.onInstallDownloadedUpdate?.(filePath),
+            });
+            if (options.onRevealDownloadedUpdate) {
+                items.push({
+                    label: "Reveal Downloaded File",
+                    run: () => options.onRevealDownloadedUpdate?.(filePath),
+                });
+            }
+            if (options.onRetryUpdateDownload && options.updateStatus.downloadUrl) {
+                items.push({
+                    label: "Re-download Update",
+                    run: () =>
+                        options.onRetryUpdateDownload?.({
+                            url: options.updateStatus?.downloadUrl || "",
+                            fileName: options.updateStatus?.downloadFileName,
+                            expectedSha256: options.updateStatus?.downloadSha256,
+                            expectedSizeBytes: options.updateStatus?.downloadSizeBytes,
+                        }),
+                });
+            }
+        }
+
+        if (
+            options.updateStatus.state === "error" &&
+            options.onRetryUpdateDownload &&
+            options.updateStatus.downloadUrl
+        ) {
+            items.push({
+                label: "Retry Download",
+                run: () =>
+                    options.onRetryUpdateDownload?.({
+                        url: options.updateStatus?.downloadUrl || "",
+                        fileName: options.updateStatus?.downloadFileName,
+                        expectedSha256: options.updateStatus?.downloadSha256,
+                        expectedSizeBytes: options.updateStatus?.downloadSizeBytes,
+                    }),
+            });
         }
 
         items.push({

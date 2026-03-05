@@ -11,6 +11,7 @@ export interface UpdateDownloadInput {
     fileName?: string;
     authToken?: string;
     authHeaderName?: string;
+    signal?: AbortSignal;
     fetchImpl?: typeof fetch;
 }
 
@@ -51,6 +52,7 @@ export async function downloadAndVerifyUpdateArtifact(
     const response = await fetchImpl(downloadUrl, {
         method: "GET",
         headers,
+        signal: input.signal,
     });
     if (!response.ok) {
         throw new Error(`Update download failed with status ${response.status}.`);

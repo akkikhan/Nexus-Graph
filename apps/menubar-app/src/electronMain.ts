@@ -54,6 +54,7 @@ let tray: Tray | null = null;
 let refreshTimer: NodeJS.Timeout | undefined;
 let updateTimer: NodeJS.Timeout | undefined;
 let updateDecisionStore: UpdateDecisionStore | null = null;
+let activeDownloadAbortController: AbortController | null = null;
 let updateStatus: TrayUpdateStatus = {
     state: "idle",
     label: `Updates (${releaseChannel}): not checked`,
@@ -119,6 +120,21 @@ async function rebuildMenu() {
         },
         onOpenUpdateDownload: async (downloadRequest) => {
             await handleUpdateDownload(downloadRequest);
+        },
+        onRetryUpdateDownload: async (downloadRequest) => {
+            await handleUpdateDownload(downloadRequest);
+        },
+        onCancelUpdateDownload: async () => {
+            await cancelUpdateDownload();
+        },
+        onInstallDownloadedUpdate: async (filePath) => {
+            await installDownloadedUpdate(filePath);
+        },
+        onRevealDownloadedUpdate: async (filePath) => {
+            if (!fs.existsSync(filePath)) {
+                throw new Error(`Downloaded update file does not exist: ${filePath}`);
+            }
+            shell.showItemInFolder(filePath);
         },
         onSnoozeUpdate: async () => {
             const store = ensureUpdateDecisionStore();
@@ -303,36 +319,126 @@ async function handleUpdateDownload(downloadRequest: TrayDownloadRequest): Promi
     if (!downloadRequest.expectedSha256) {
         throw new Error("Update checksum metadata is missing for secure download.");
     }
+    if (activeDownloadAbortController) {
+        throw new Error("Update download is already in progress.");
+    }
 
     updateStatus = {
         ...updateStatus,
-        state: "checking",
+        state: "downloading",
         label: `Updates (${releaseChannel}): downloading...`,
+        downloadUrl: downloadRequest.url,
+        downloadFileName: downloadRequest.fileName,
+        downloadSha256: downloadRequest.expectedSha256,
+        downloadSizeBytes: downloadRequest.expectedSizeBytes,
+        downloadedFilePath: undefined,
     };
     await rebuildMenu();
+    activeDownloadAbortController = new AbortController();
 
-    const destinationDir = updateDownloadDirectoryOverride.trim()
-        ? path.resolve(updateDownloadDirectoryOverride)
-        : path.resolve(app.getPath("downloads"), "Nexus Updates");
+    try {
+        const destinationDir = updateDownloadDirectoryOverride.trim()
+            ? path.resolve(updateDownloadDirectoryOverride)
+            : path.resolve(app.getPath("downloads"), "Nexus Updates");
 
-    const artifact = await downloadAndVerifyUpdateArtifact({
-        url: downloadRequest.url,
-        expectedSha256: downloadRequest.expectedSha256,
-        expectedSizeBytes: downloadRequest.expectedSizeBytes,
-        fileName: downloadRequest.fileName,
-        destinationDir,
-        authToken: updateAuthToken,
-        authHeaderName: updateAuthHeaderName,
-    });
+        const artifact = await downloadAndVerifyUpdateArtifact({
+            url: downloadRequest.url,
+            expectedSha256: downloadRequest.expectedSha256,
+            expectedSizeBytes: downloadRequest.expectedSizeBytes,
+            fileName: downloadRequest.fileName,
+            destinationDir,
+            authToken: updateAuthToken,
+            authHeaderName: updateAuthHeaderName,
+            signal: activeDownloadAbortController.signal,
+        });
+
+        updateStatus = {
+            ...updateStatus,
+            state: "readyToInstall",
+            label: `Updates (${releaseChannel}): ready to install ${artifact.fileName}`,
+            downloadUrl: downloadRequest.url,
+            downloadFileName: artifact.fileName,
+            downloadSha256: artifact.sha256,
+            downloadSizeBytes: artifact.sizeBytes,
+            downloadedFilePath: artifact.filePath,
+        };
+        await rebuildMenu();
+        process.stdout.write(
+            `[menubar] Downloaded update ${artifact.fileName} (${artifact.sizeBytes} bytes, sha256=${artifact.sha256}).\n`
+        );
+    } catch (error) {
+        if (isAbortError(error)) {
+            updateStatus = {
+                ...updateStatus,
+                state: "error",
+                label: `Updates (${releaseChannel}): download canceled`,
+                downloadUrl: downloadRequest.url,
+                downloadFileName: downloadRequest.fileName,
+                downloadSha256: downloadRequest.expectedSha256,
+                downloadSizeBytes: downloadRequest.expectedSizeBytes,
+                downloadedFilePath: undefined,
+            };
+            await rebuildMenu();
+            process.stdout.write("[menubar] Update download canceled.\n");
+            return;
+        }
+        updateStatus = {
+            ...updateStatus,
+            state: "error",
+            label: `Updates (${releaseChannel}): download failed`,
+            downloadUrl: downloadRequest.url,
+            downloadFileName: downloadRequest.fileName,
+            downloadSha256: downloadRequest.expectedSha256,
+            downloadSizeBytes: downloadRequest.expectedSizeBytes,
+            downloadedFilePath: undefined,
+        };
+        await rebuildMenu();
+        throw error;
+    } finally {
+        activeDownloadAbortController = null;
+    }
+}
+
+async function cancelUpdateDownload(): Promise<void> {
+    if (!activeDownloadAbortController) {
+        return;
+    }
+    updateStatus = {
+        ...updateStatus,
+        state: "downloading",
+        label: `Updates (${releaseChannel}): canceling download...`,
+    };
+    await rebuildMenu();
+    activeDownloadAbortController.abort();
+}
+
+async function installDownloadedUpdate(filePath: string): Promise<void> {
+    const resolvedFilePath = path.resolve(filePath);
+    if (!fs.existsSync(resolvedFilePath)) {
+        throw new Error(`Downloaded update file does not exist: ${resolvedFilePath}`);
+    }
+
+    const openError = await shell.openPath(resolvedFilePath);
+    if (openError) {
+        throw new Error(`Failed to launch installer: ${openError}`);
+    }
 
     updateStatus = {
         ...updateStatus,
-        state: "upToDate",
-        label: `Updates (${releaseChannel}): downloaded ${artifact.fileName}`,
+        state: "readyToInstall",
+        label: `Updates (${releaseChannel}): installer launched`,
+        downloadedFilePath: resolvedFilePath,
     };
     await rebuildMenu();
-    shell.showItemInFolder(artifact.filePath);
-    process.stdout.write(
-        `[menubar] Downloaded update ${artifact.fileName} (${artifact.sizeBytes} bytes, sha256=${artifact.sha256}).\n`
-    );
+    process.stdout.write(`[menubar] Launched installer: ${resolvedFilePath}\n`);
+}
+
+function isAbortError(error: unknown): boolean {
+    if (error instanceof DOMException && error.name === "AbortError") {
+        return true;
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+        return true;
+    }
+    return false;
 }
