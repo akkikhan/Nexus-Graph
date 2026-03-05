@@ -188,9 +188,15 @@ insightsRouter.get("/optimal-reviewers", async (c) => {
     try {
         const input = await insightsRepository.optimalReviewerInputs(prId || undefined, files);
         const scored = nexusAI.flowAnalyzer.scoreReviewers(input.prContext, input.candidates);
+        type ReviewerScore = {
+            userId: string;
+            username: string;
+            overallScore: number;
+            reasoning: string[];
+        };
 
         const candidateById = new Map(input.candidates.map((candidate) => [candidate.userId, candidate]));
-        const recommendations = scored.slice(0, 3).map((score) => {
+        const recommendations = scored.slice(0, 3).map((score: ReviewerScore) => {
             const candidate = candidateById.get(score.userId);
             const currentLoad = candidate?.currentWorkload ?? 0;
             return {
@@ -219,4 +225,3 @@ insightsRouter.get("/optimal-reviewers", async (c) => {
 });
 
 export { insightsRouter };
-
