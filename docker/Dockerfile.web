@@ -6,6 +6,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache libc6-compat curl git
 
+# Next.js rewrites are resolved during build, so pass proxy target at build time.
+ARG API_PROXY_TARGET=http://api:3001
+ENV API_PROXY_TARGET=${API_PROXY_TARGET}
+
 ENV NODE_OPTIONS="--max-old-space-size=3072"
 ENV NEXUS_BUILD_DTS="false"
 ENV NEXUS_BUILD_SOURCEMAP="false"
