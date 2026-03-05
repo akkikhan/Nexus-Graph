@@ -699,6 +699,45 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
             createdAt: new Date().toISOString(),
         });
     };
+    const incidentEscalationEvents: Array<{
+        id: string;
+        action: string;
+        actor?: string;
+        alertCode?: string;
+        repoId?: string;
+        target: "slack" | "pagerduty" | "email" | "runbook";
+        mode: "breaches" | "active" | "muted" | "custom";
+        severity?: "warning" | "critical";
+        outcome: "success" | "error";
+        summary: string;
+        metadata: Record<string, unknown>;
+        createdAt: string;
+    }> = [];
+    const appendIncidentEscalation = (entry: {
+        actor?: string;
+        alertCode: string;
+        repoId?: string;
+        target: "slack" | "pagerduty" | "email" | "runbook";
+        mode: "breaches" | "active" | "muted" | "custom";
+        severity?: "warning" | "critical";
+        summary: string;
+        metadata?: Record<string, unknown>;
+    }) => {
+        incidentEscalationEvents.unshift({
+            id: `escalation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            action: "integration.alert.escalate",
+            actor: entry.actor,
+            alertCode: entry.alertCode,
+            repoId: entry.repoId,
+            target: entry.target,
+            mode: entry.mode,
+            severity: entry.severity,
+            outcome: "success",
+            summary: entry.summary,
+            metadata: entry.metadata || {},
+            createdAt: new Date().toISOString(),
+        });
+    };
 
     await page.route("**/api/v1/integrations/alerts**", async (route) => {
         const request = route.request();
@@ -1016,8 +1055,21 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                 reason: "missing_signature_headers",
             },
         };
+        const escalationIncidents = incidentEscalationEvents.map((event) => ({
+            id: `timeline-${event.id}`,
+            timestamp: event.createdAt,
+            severity: event.severity || "critical",
+            scope: "alert_escalation",
+            title: `Alert escalation: ${event.target}`,
+            summary: event.summary,
+            repoId: event.repoId,
+            actor: event.actor,
+            action: event.action,
+            alertCode: event.alertCode,
+            metadata: event.metadata || {},
+        }));
 
-        const allEvents = [staticWebhookAuthIncident, ...triageIncidents];
+        const allEvents = [staticWebhookAuthIncident, ...escalationIncidents, ...triageIncidents];
         const filtered = allEvents.filter((event) => {
             if (scopeFilter && event.scope !== scopeFilter) return false;
             if (severityFilter && event.severity !== severityFilter) return false;
@@ -1030,6 +1082,152 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
                 total: filtered.length,
                 limit,
                 generatedAt: new Date().toISOString(),
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/incidents/escalate", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const method = request.method().toUpperCase();
+        if (method !== "POST") {
+            await route.fulfill(jsonResponse(405, { error: "Method not allowed in smoke route" }));
+            return;
+        }
+        const payload = request.postDataJSON() as {
+            target?: "slack" | "pagerduty" | "email" | "runbook";
+            mode?: "breaches" | "active" | "muted" | "custom";
+            actor?: string;
+            alertCodes?: string[];
+            warningSlaMinutes?: number;
+            criticalSlaMinutes?: number;
+        } | null;
+        const target = payload?.target || "slack";
+        const mode = payload?.mode || "breaches";
+        const actor = payload?.actor || "settings-ui";
+        const warningSlaMinutes = Number(payload?.warningSlaMinutes ?? 60);
+        const criticalSlaMinutes = Number(payload?.criticalSlaMinutes ?? 30);
+        const referenceTimestamp = alertAcknowledgedAt || new Date(Date.now() - 90 * 60_000).toISOString();
+        const ageMinutes = Math.max(Math.floor((Date.now() - Date.parse(referenceTimestamp)) / 60_000), 0);
+        const warningSla = Number.isFinite(warningSlaMinutes) ? warningSlaMinutes : 60;
+        const criticalSla = Number.isFinite(criticalSlaMinutes) ? criticalSlaMinutes : 30;
+        const alertSeverity: "warning" | "critical" = "warning";
+        const threshold = alertSeverity === "critical" ? criticalSla : warningSla;
+        const isMuted = Boolean(alertMutedUntil && Date.parse(alertMutedUntil) > Date.now());
+        const customAlertCodes = Array.isArray(payload?.alertCodes) ? payload.alertCodes : [];
+
+        let alertsToEscalate: string[] = [];
+        if (mode === "custom") {
+            alertsToEscalate = customAlertCodes;
+        } else if (mode === "muted") {
+            alertsToEscalate = isMuted ? [alertCode] : [];
+        } else if (mode === "active") {
+            alertsToEscalate = isMuted ? [] : [alertCode];
+        } else {
+            alertsToEscalate = !isMuted && ageMinutes >= threshold ? [alertCode] : [];
+        }
+        alertsToEscalate = Array.from(new Set(alertsToEscalate.filter(Boolean)));
+
+        if (alertsToEscalate.length === 0) {
+            await route.fulfill(
+                jsonResponse(200, {
+                    success: true,
+                    reason: "no_alerts_to_escalate",
+                    target,
+                    mode,
+                    processed: 0,
+                    succeeded: 0,
+                    failed: 0,
+                    results: [],
+                })
+            );
+            return;
+        }
+
+        const createdAt = new Date().toISOString();
+        for (const code of alertsToEscalate) {
+            appendIncidentEscalation({
+                actor,
+                alertCode: code,
+                repoId: "repo-1",
+                target,
+                mode,
+                severity: "critical",
+                summary: `Escalated integration alert ${code} to ${target}.`,
+                metadata: {
+                    actor,
+                    alertCode: code,
+                    repoId: "repo-1",
+                    target,
+                    mode,
+                    severity: "critical",
+                },
+            });
+        }
+
+        await route.fulfill(
+            jsonResponse(200, {
+                success: true,
+                reason: "ok",
+                target,
+                mode,
+                processed: alertsToEscalate.length,
+                succeeded: alertsToEscalate.length,
+                failed: 0,
+                results: alertsToEscalate.map((code) => ({
+                    alertCode: code,
+                    success: true,
+                    reason: "escalated",
+                    event: {
+                        id: `escalation-${code}`,
+                        action: "integration.alert.escalate",
+                        actor,
+                        alertCode: code,
+                        repoId: "repo-1",
+                        target,
+                        mode,
+                        severity: "critical",
+                        outcome: "success",
+                        summary: `Escalated integration alert ${code} to ${target}.`,
+                        metadata: {
+                            actor,
+                            alertCode: code,
+                            repoId: "repo-1",
+                            target,
+                            mode,
+                            severity: "critical",
+                        },
+                        createdAt,
+                    },
+                })),
+            })
+        );
+    });
+
+    await page.route("**/api/v1/integrations/incidents/escalations**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+
+        const alertCodeFilter = (url.searchParams.get("alertCode") || "").trim();
+        const targetFilter = (url.searchParams.get("target") || "").trim();
+        const modeFilter = (url.searchParams.get("mode") || "").trim();
+        const actorFilter = (url.searchParams.get("actor") || "").trim();
+        const limit = Number(url.searchParams.get("limit") || "8");
+        const offset = Number(url.searchParams.get("offset") || "0");
+        const filtered = incidentEscalationEvents.filter((event) => {
+            if (alertCodeFilter && event.alertCode !== alertCodeFilter) return false;
+            if (targetFilter && event.target !== targetFilter) return false;
+            if (modeFilter && event.mode !== modeFilter) return false;
+            if (actorFilter && event.actor !== actorFilter) return false;
+            return true;
+        });
+
+        await route.fulfill(
+            jsonResponse(200, {
+                events: filtered.slice(offset, offset + limit),
+                total: filtered.length,
+                limit,
+                offset,
             })
         );
     });
@@ -1836,6 +2034,7 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByText(/Issue-Link Sync Queue/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Incident Timeline/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Incident SLA Summary/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Incident Escalation Feed/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Alert Triage Audit Feed/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/webhook_auth_failures_high/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /^Acknowledge$/i })).toBeVisible({ timeout: 20000 });
@@ -1843,6 +2042,7 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
     await expect(page.getByRole("button", { name: /Acknowledge All Active/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Mute All Active \(2h\)/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("button", { name: /Unmute All Muted/i })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("button", { name: /Escalate Incidents/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole("link", { name: /Open Runbook/i })).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Connected \(1\)/i)).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/push.failed/i)).toBeVisible({ timeout: 20000 });
@@ -1881,6 +2081,14 @@ test("settings diagnostics: webhook auth events visible with filters", async ({ 
         timeout: 20000,
     });
     await expect(page.getByTestId("integration-alert-webhook_auth_failures_high")).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: /Escalate Incidents/i }).click();
+    await expect(page.getByText(/Escalation to slack processed 1 alert\(s\): 1 succeeded, 0 failed\./i)).toBeVisible({
+        timeout: 20000,
+    });
+    await expect(page.getByTestId("settings-incident-escalations")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Escalated integration alert webhook_auth_failures_high to slack\./i)).toBeVisible({
+        timeout: 20000,
+    });
     await expect(page.getByTestId("settings-incident-timeline")).toBeVisible({ timeout: 20000 });
     await expect(page.getByTestId("settings-alert-triage-audits")).toBeVisible({ timeout: 20000 });
     await expect(page.getByText(/Actor: settings-ui/i)).toBeVisible({ timeout: 20000 });

@@ -18,6 +18,7 @@ import {
 import {
     acknowledgeIntegrationAlert,
     bulkTriageIntegrationAlerts,
+    escalateIntegrationIncidents,
     fetchIntegrationAlertTriageAudits,
     IntegrationWebhookAuthEventListOptions,
     fetchIntegrationConnectionActionAudits,
@@ -26,6 +27,7 @@ import {
     fetchIntegrationIssueLinkActionAudits,
     fetchIntegrationIssueLinks,
     fetchIntegrationIncidentTimeline,
+    fetchIntegrationIncidentEscalations,
     fetchIntegrationIncidentSlaSummary,
     fetchIntegrationMetrics,
     fetchIntegrationNotificationActionAudits,
@@ -48,6 +50,7 @@ import {
     IntegrationConnectionActionAuditEvent,
     IntegrationConnection,
     IntegrationAlertTriageAuditEvent,
+    IntegrationIncidentEscalationAuditEvent,
     IntegrationIncidentTimelineEntry,
     IntegrationIncidentSlaSummary,
     IntegrationIssueLink,
@@ -363,11 +366,13 @@ export default function SettingsPage() {
     const [notificationStatusFilter, setNotificationStatusFilter] = useState<NotificationStatusFilter>("all");
     const [issueLinkStatusFilter, setIssueLinkStatusFilter] = useState<IssueLinkStatusFilter>("all");
     const [timelineScopeFilter, setTimelineScopeFilter] = useState<
-        "all" | "alert_triage" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync"
+        "all" | "alert_triage" | "alert_escalation" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync"
     >("all");
     const [timelineSeverityFilter, setTimelineSeverityFilter] = useState<"all" | "warning" | "critical">("all");
     const [warningSlaMinutes, setWarningSlaMinutes] = useState(60);
     const [criticalSlaMinutes, setCriticalSlaMinutes] = useState(30);
+    const [incidentEscalationTarget, setIncidentEscalationTarget] = useState<"slack" | "pagerduty" | "email" | "runbook">("slack");
+    const [incidentEscalationMode, setIncidentEscalationMode] = useState<"breaches" | "active" | "muted">("breaches");
     const [triageAuditActionFilter, setTriageAuditActionFilter] = useState<AlertTriageActionFilter>("all");
     const [triageAuditActorFilter, setTriageAuditActorFilter] = useState("");
     const [triageAuditAlertCodeFilter, setTriageAuditAlertCodeFilter] = useState("");
@@ -403,6 +408,9 @@ export default function SettingsPage() {
         mode: AlertActionMode;
     } | null>(null);
     const [bulkAlertActionMode, setBulkAlertActionMode] = useState<"acknowledge" | "mute" | "unmute" | null>(null);
+    const [escalatingIncidents, setEscalatingIncidents] = useState(false);
+    const [incidentEscalationMessage, setIncidentEscalationMessage] = useState("");
+    const [incidentEscalationError, setIncidentEscalationError] = useState("");
     const [alertActionMessage, setAlertActionMessage] = useState("");
     const [alertActionError, setAlertActionError] = useState("");
     const [exportingFormat, setExportingFormat] = useState<"json" | "csv" | null>(null);
@@ -550,6 +558,28 @@ export default function SettingsPage() {
                 action: triageAuditActionFilter === "all" ? undefined : triageAuditActionFilter,
                 actor: triageAuditActorFilter.trim() || undefined,
                 alertCode: triageAuditAlertCodeFilter.trim() || undefined,
+                sinceMinutes: authSinceMinutes,
+                limit: 8,
+                offset: 0,
+            }),
+        refetchInterval: 30_000,
+    });
+    const {
+        data: incidentEscalationsData,
+        isLoading: incidentEscalationsLoading,
+        isFetching: incidentEscalationsFetching,
+        error: incidentEscalationsError,
+        refetch: refetchIncidentEscalations,
+    } = useQuery({
+        queryKey: [
+            "settings",
+            "integration-incident-escalations",
+            integrationRepoId,
+            authSinceMinutes,
+        ],
+        queryFn: () =>
+            fetchIntegrationIncidentEscalations({
+                repoId: integrationRepoId,
                 sinceMinutes: authSinceMinutes,
                 limit: 8,
                 offset: 0,
@@ -727,6 +757,7 @@ export default function SettingsPage() {
                 refetchIntegrationAlerts(),
                 refetchIntegrationIncidentTimeline(),
                 refetchIntegrationIncidentSlaSummary(),
+                refetchIncidentEscalations(),
                 refetchTriageAudits(),
                 refetchWebhookEvents(),
                 refetchWebhookActionAudits(),
@@ -797,6 +828,7 @@ export default function SettingsPage() {
         refetchIntegrationConnections,
         refetchIntegrationIncidentTimeline,
         refetchIntegrationIncidentSlaSummary,
+        refetchIncidentEscalations,
         refetchIntegrationMetrics,
         refetchIssueLinkActionAudits,
         refetchIssueLinks,
@@ -827,6 +859,7 @@ export default function SettingsPage() {
     const connectionActionAudits = connectionActionAuditsData?.events || [];
     const incidentTimeline = integrationIncidentTimelineData?.events || [];
     const incidentSlaSummary: IntegrationIncidentSlaSummary | null = integrationIncidentSlaSummaryData || null;
+    const incidentEscalations = incidentEscalationsData?.events || [];
     const triageAudits = triageAuditsData?.events || [];
     const webhookEvents = webhookEventsData?.events || [];
     const webhookActionAudits = webhookActionAuditsData?.events || [];
@@ -842,6 +875,7 @@ export default function SettingsPage() {
         integrationAlertsLoading ||
         integrationIncidentTimelineLoading ||
         integrationIncidentSlaSummaryLoading ||
+        incidentEscalationsLoading ||
         triageAuditsLoading ||
         webhookEventsLoading ||
         webhookActionAuditsLoading ||
@@ -856,6 +890,7 @@ export default function SettingsPage() {
         integrationAlertsFetching ||
         integrationIncidentTimelineFetching ||
         integrationIncidentSlaSummaryFetching ||
+        incidentEscalationsFetching ||
         triageAuditsFetching ||
         webhookEventsFetching ||
         webhookActionAuditsFetching ||
@@ -936,11 +971,15 @@ export default function SettingsPage() {
         setTimelineSeverityFilter("all");
         setWarningSlaMinutes(60);
         setCriticalSlaMinutes(30);
+        setIncidentEscalationTarget("slack");
+        setIncidentEscalationMode("breaches");
         setTriageAuditActionFilter("all");
         setTriageAuditActorFilter("");
         setTriageAuditAlertCodeFilter("");
         setAlertActionMessage("");
         setAlertActionError("");
+        setIncidentEscalationMessage("");
+        setIncidentEscalationError("");
         setConnectionActionMessage("");
         setConnectionActionError("");
         setWebhookActionMessage("");
@@ -996,6 +1035,7 @@ export default function SettingsPage() {
                 refetchIntegrationAlerts(),
                 refetchIntegrationIncidentTimeline(),
                 refetchIntegrationIncidentSlaSummary(),
+                refetchIncidentEscalations(),
                 refetchTriageAudits(),
             ]);
         } catch (error) {
@@ -1028,6 +1068,7 @@ export default function SettingsPage() {
                 refetchIntegrationAlerts(),
                 refetchIntegrationIncidentTimeline(),
                 refetchIntegrationIncidentSlaSummary(),
+                refetchIncidentEscalations(),
                 refetchTriageAudits(),
             ]);
         } catch (error) {
@@ -1059,6 +1100,7 @@ export default function SettingsPage() {
                 refetchIntegrationAlerts(),
                 refetchIntegrationIncidentTimeline(),
                 refetchIntegrationIncidentSlaSummary(),
+                refetchIncidentEscalations(),
                 refetchTriageAudits(),
             ]);
         } catch (error) {
@@ -1101,12 +1143,54 @@ export default function SettingsPage() {
                 refetchIntegrationAlerts(),
                 refetchIntegrationIncidentTimeline(),
                 refetchIntegrationIncidentSlaSummary(),
+                refetchIncidentEscalations(),
                 refetchTriageAudits(),
             ]);
         } catch (error) {
             setAlertActionError(getErrorMessage(error, `Failed to apply bulk ${action} triage.`));
         } finally {
             setBulkAlertActionMode(null);
+        }
+    };
+
+    const onEscalateIncidents = async () => {
+        setIncidentEscalationMessage("");
+        setIncidentEscalationError("");
+        if (!triageTargetRepoId) {
+            setIncidentEscalationError("Select or load a repository before escalating incidents.");
+            return;
+        }
+
+        setEscalatingIncidents(true);
+        try {
+            const result = await escalateIntegrationIncidents({
+                repoId: triageTargetRepoId,
+                target: incidentEscalationTarget,
+                mode: incidentEscalationMode,
+                actor: "settings-ui",
+                note: "Manual escalation from settings incident panel",
+                windowMinutes: authSinceMinutes,
+                warningSlaMinutes,
+                criticalSlaMinutes,
+            });
+            if (result.reason === "no_alerts_to_escalate") {
+                setIncidentEscalationMessage("No incidents matched escalation criteria.");
+            } else {
+                setIncidentEscalationMessage(
+                    `Escalation to ${result.target} processed ${result.processed} alert(s): ${result.succeeded} succeeded, ${result.failed} failed.`
+                );
+            }
+            await Promise.all([
+                refetchIntegrationAlerts(),
+                refetchIntegrationIncidentTimeline(),
+                refetchIntegrationIncidentSlaSummary(),
+                refetchIncidentEscalations(),
+                refetchTriageAudits(),
+            ]);
+        } catch (error) {
+            setIncidentEscalationError(getErrorMessage(error, "Failed to escalate integration incidents."));
+        } finally {
+            setEscalatingIncidents(false);
         }
     };
 
@@ -1551,6 +1635,7 @@ export default function SettingsPage() {
                       integrationAlertsError ||
                       integrationIncidentTimelineError ||
                       integrationIncidentSlaSummaryError ||
+                      incidentEscalationsError ||
                       triageAuditsError ? (
                         <div className="rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-sm px-3 py-2">
                             {[
@@ -1571,6 +1656,9 @@ export default function SettingsPage() {
                                     : null,
                                 integrationIncidentSlaSummaryError
                                     ? getErrorMessage(integrationIncidentSlaSummaryError, "Incident SLA summary unavailable")
+                                    : null,
+                                incidentEscalationsError
+                                    ? getErrorMessage(incidentEscalationsError, "Incident escalation feed unavailable")
                                     : null,
                                 triageAuditsError
                                     ? getErrorMessage(triageAuditsError, "Alert triage audit feed unavailable")
@@ -1886,6 +1974,42 @@ export default function SettingsPage() {
                                             </div>
                                         </div>
                                     </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+                                        <select
+                                            value={incidentEscalationMode}
+                                            onChange={(e) =>
+                                                setIncidentEscalationMode(
+                                                    e.target.value as "breaches" | "active" | "muted"
+                                                )
+                                            }
+                                            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                        >
+                                            <option value="breaches">Escalate SLA breaches</option>
+                                            <option value="active">Escalate active alerts</option>
+                                            <option value="muted">Escalate muted alerts</option>
+                                        </select>
+                                        <select
+                                            value={incidentEscalationTarget}
+                                            onChange={(e) =>
+                                                setIncidentEscalationTarget(
+                                                    e.target.value as "slack" | "pagerduty" | "email" | "runbook"
+                                                )
+                                            }
+                                            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100"
+                                        >
+                                            <option value="slack">Target: Slack</option>
+                                            <option value="pagerduty">Target: PagerDuty</option>
+                                            <option value="email">Target: Email</option>
+                                            <option value="runbook">Target: Runbook</option>
+                                        </select>
+                                        <button
+                                            onClick={onEscalateIncidents}
+                                            disabled={!triageTargetRepoId || escalatingIncidents}
+                                            className="md:col-span-2 px-2 py-1.5 rounded border border-red-800/60 text-red-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-red-900/30 transition-colors"
+                                        >
+                                            {escalatingIncidents ? "Escalating..." : "Escalate Incidents"}
+                                        </button>
+                                    </div>
                                     {integrationIncidentSlaSummaryLoading ? (
                                         <div className="text-xs text-zinc-500">Loading SLA summary...</div>
                                     ) : (
@@ -1894,6 +2018,16 @@ export default function SettingsPage() {
                                                 "No SLA breaches in window."}
                                         </div>
                                     )}
+                                    {incidentEscalationMessage ? (
+                                        <div className="text-xs text-green-300 bg-green-500/10 border border-green-500/20 rounded px-3 py-2">
+                                            {incidentEscalationMessage}
+                                        </div>
+                                    ) : null}
+                                    {incidentEscalationError ? (
+                                        <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                                            {incidentEscalationError}
+                                        </div>
+                                    ) : null}
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
@@ -1904,6 +2038,7 @@ export default function SettingsPage() {
                                                 e.target.value as
                                                     | "all"
                                                     | "alert_triage"
+                                                    | "alert_escalation"
                                                     | "webhook_auth"
                                                     | "webhook_processing"
                                                     | "notification_delivery"
@@ -1914,6 +2049,7 @@ export default function SettingsPage() {
                                     >
                                         <option value="all">All scopes</option>
                                         <option value="alert_triage">Alert triage</option>
+                                        <option value="alert_escalation">Alert escalation</option>
                                         <option value="webhook_auth">Webhook auth</option>
                                         <option value="webhook_processing">Webhook processing</option>
                                         <option value="notification_delivery">Notification delivery</option>
@@ -1959,6 +2095,46 @@ export default function SettingsPage() {
                                                     {entry.actor ? ` | ${entry.actor}` : ""}
                                                 </div>
                                                 <div className="text-zinc-400">{entry.summary}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-white">Incident Escalation Feed</h4>
+                                        <p className="text-xs text-zinc-500">
+                                            Persisted escalation records for incident response traceability.
+                                        </p>
+                                    </div>
+                                    <div className="text-xs text-zinc-500">
+                                        {incidentEscalationsFetching ? "Refreshing..." : `${incidentEscalationsData?.total ?? 0} event(s)`}
+                                    </div>
+                                </div>
+
+                                {incidentEscalationsLoading ? (
+                                    <div className="text-sm text-zinc-500">Loading incident escalations...</div>
+                                ) : incidentEscalations.length === 0 ? (
+                                    <div className="text-sm text-zinc-500">No incident escalations recorded in this window.</div>
+                                ) : (
+                                    <div className="space-y-2" data-testid="settings-incident-escalations">
+                                        {incidentEscalations.map((event: IntegrationIncidentEscalationAuditEvent) => (
+                                            <div
+                                                key={event.id}
+                                                className="rounded border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-xs text-zinc-300"
+                                            >
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="font-medium text-zinc-100">
+                                                        {event.target} | {event.mode}
+                                                    </span>
+                                                    <span className="text-zinc-500">{formatAuthTimestamp(event.createdAt)}</span>
+                                                </div>
+                                                <div className="text-zinc-400">
+                                                    Alert: {event.alertCode || "unknown"} | Actor: {event.actor || "system"}
+                                                </div>
+                                                <div className="text-zinc-400">{event.summary || "No summary"}</div>
                                             </div>
                                         ))}
                                     </div>

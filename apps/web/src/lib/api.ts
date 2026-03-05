@@ -1131,7 +1131,7 @@ export interface IntegrationIncidentTimelineEntry {
     id: string;
     timestamp: string;
     severity: "warning" | "critical";
-    scope: "alert_triage" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync";
+    scope: "alert_triage" | "alert_escalation" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync";
     title: string;
     summary: string;
     repoId?: string;
@@ -1152,7 +1152,13 @@ export interface IntegrationIncidentTimelineResponse {
 export async function fetchIntegrationIncidentTimeline(options: {
     repoId?: string;
     provider?: "slack" | "linear" | "jira";
-    scope?: "alert_triage" | "webhook_auth" | "webhook_processing" | "notification_delivery" | "issue_sync";
+    scope?:
+        | "alert_triage"
+        | "alert_escalation"
+        | "webhook_auth"
+        | "webhook_processing"
+        | "notification_delivery"
+        | "issue_sync";
     severity?: "warning" | "critical";
     sinceMinutes?: number;
     limit?: number;
@@ -1196,6 +1202,28 @@ export interface IntegrationIncidentSlaSummary {
     generatedAt: string;
 }
 
+export interface IntegrationIncidentEscalationAuditEvent {
+    id: string;
+    action: string;
+    actor?: string;
+    alertCode?: string;
+    repoId?: string;
+    target: "slack" | "pagerduty" | "email" | "runbook";
+    mode: "breaches" | "active" | "muted" | "custom";
+    severity?: "warning" | "critical";
+    outcome: "success" | "error";
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+}
+
+export interface IntegrationIncidentEscalationsResponse {
+    events: IntegrationIncidentEscalationAuditEvent[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
 export async function fetchIntegrationIncidentSlaSummary(options: {
     repoId?: string;
     windowMinutes?: number;
@@ -1210,6 +1238,77 @@ export async function fetchIntegrationIncidentSlaSummary(options: {
     const query = params.toString();
     const res = await fetch(`${API_BASE_URL}/integrations/incidents/sla-summary${query ? `?${query}` : ""}`);
     return parseResponse<IntegrationIncidentSlaSummary>(res, "Failed to fetch integrations incident SLA summary");
+}
+
+export async function fetchIntegrationIncidentEscalations(options: {
+    repoId?: string;
+    alertCode?: string;
+    target?: "slack" | "pagerduty" | "email" | "runbook";
+    mode?: "breaches" | "active" | "muted" | "custom";
+    actor?: string;
+    sinceMinutes?: number;
+    limit?: number;
+    offset?: number;
+} = {}): Promise<IntegrationIncidentEscalationsResponse> {
+    const params = new URLSearchParams();
+    if (options.repoId) params.set("repoId", options.repoId);
+    if (options.alertCode) params.set("alertCode", options.alertCode);
+    if (options.target) params.set("target", options.target);
+    if (options.mode) params.set("mode", options.mode);
+    if (options.actor) params.set("actor", options.actor);
+    if (typeof options.sinceMinutes === "number") params.set("sinceMinutes", String(options.sinceMinutes));
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/integrations/incidents/escalations${query ? `?${query}` : ""}`);
+    return parseResponse<IntegrationIncidentEscalationsResponse>(res, "Failed to fetch integrations incident escalations");
+}
+
+export async function escalateIntegrationIncidents(input: {
+    repoId: string;
+    target: "slack" | "pagerduty" | "email" | "runbook";
+    mode?: "breaches" | "active" | "muted" | "custom";
+    actor?: string;
+    note?: string;
+    alertCodes?: string[];
+    windowMinutes?: number;
+    warningSlaMinutes?: number;
+    criticalSlaMinutes?: number;
+}): Promise<{
+    success: boolean;
+    reason: string;
+    target: "slack" | "pagerduty" | "email" | "runbook";
+    mode: "breaches" | "active" | "muted" | "custom";
+    processed: number;
+    succeeded: number;
+    failed: number;
+    results: Array<{
+        alertCode: string;
+        success: boolean;
+        reason: string;
+        event?: IntegrationIncidentEscalationAuditEvent;
+    }>;
+}> {
+    const res = await fetch(`${API_BASE_URL}/integrations/incidents/escalate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+    return parseResponse<{
+        success: boolean;
+        reason: string;
+        target: "slack" | "pagerduty" | "email" | "runbook";
+        mode: "breaches" | "active" | "muted" | "custom";
+        processed: number;
+        succeeded: number;
+        failed: number;
+        results: Array<{
+            alertCode: string;
+            success: boolean;
+            reason: string;
+            event?: IntegrationIncidentEscalationAuditEvent;
+        }>;
+    }>(res, "Failed to escalate integration incidents");
 }
 
 export async function bulkTriageIntegrationAlerts(input: {

@@ -30,10 +30,13 @@ type WebhookActionAuditOutcome = "success" | "error";
 type IntegrationIncidentSeverity = "warning" | "critical";
 type IntegrationIncidentScope =
     | "alert_triage"
+    | "alert_escalation"
     | "webhook_auth"
     | "webhook_processing"
     | "notification_delivery"
     | "issue_sync";
+type IntegrationIncidentEscalationTarget = "slack" | "pagerduty" | "email" | "runbook";
+type IntegrationIncidentEscalationMode = "breaches" | "active" | "muted" | "custom";
 type IntegrationAlertCode =
     | "notification_dead_letter"
     | "webhook_dead_letter"
@@ -72,11 +75,43 @@ type IntegrationAlertTriageAuditEvent = {
     createdAt: string;
 };
 
+type IntegrationIncidentEscalationAuditEvent = {
+    id: string;
+    action: string;
+    actor?: string;
+    alertCode?: string;
+    repoId?: string;
+    target: IntegrationIncidentEscalationTarget;
+    mode: IntegrationIncidentEscalationMode;
+    severity?: IntegrationIncidentSeverity;
+    outcome: WebhookActionAuditOutcome;
+    summary: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+};
+
 const PROVIDERS: IntegrationProvider[] = ["slack", "linear", "jira"];
 const ISSUE_LINK_PROVIDERS = new Set<IntegrationProvider>(["linear", "jira"]);
 const DELIVERY_RETRYABLE_STATUSES: NotificationDeliveryStatus[] = ["pending", "retrying", "failed"];
 const WEBHOOK_RETRYABLE_STATUSES: IntegrationWebhookStatus[] = ["received", "failed"];
 const ISSUE_LINK_RETRYABLE_STATUSES: IssueLinkStatus[] = ["sync_pending", "sync_failed"];
+const INTEGRATION_ALERT_TRIAGE_ACTIONS = [
+    "integration.alert.acknowledge",
+    "integration.alert.mute",
+    "integration.alert.unmute",
+] as const;
+const INTEGRATION_INCIDENT_ESCALATION_TARGETS: IntegrationIncidentEscalationTarget[] = [
+    "slack",
+    "pagerduty",
+    "email",
+    "runbook",
+];
+const INTEGRATION_INCIDENT_ESCALATION_MODES: IntegrationIncidentEscalationMode[] = [
+    "breaches",
+    "active",
+    "muted",
+    "custom",
+];
 
 const RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS = Number(process.env.NEXUS_ISSUE_LINK_MAX_SYNC_ATTEMPTS ?? 3);
 const ISSUE_LINK_MAX_SYNC_ATTEMPTS = Number.isFinite(RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS) && RAW_ISSUE_LINK_MAX_SYNC_ATTEMPTS > 0
@@ -400,6 +435,36 @@ function normalizeAlertTriageAudit(row: any): IntegrationAlertTriageAuditEvent {
         actor: typeof metadata.actor === "string" ? metadata.actor : undefined,
         alertCode: typeof metadata.alertCode === "string" ? normalizeAlertCode(metadata.alertCode) : undefined,
         repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
+        outcome,
+        summary: typeof metadata.summary === "string" ? metadata.summary : "",
+        metadata,
+        createdAt: toIso(row.createdAt),
+    };
+}
+
+function normalizeIncidentEscalationAudit(row: any): IntegrationIncidentEscalationAuditEvent {
+    const metadata =
+        row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+    const metadataOutcome = String(metadata.outcome || "").toLowerCase();
+    const outcome: WebhookActionAuditOutcome = metadataOutcome === "error" ? "error" : "success";
+    const targetRaw = String(metadata.target || "").toLowerCase() as IntegrationIncidentEscalationTarget;
+    const modeRaw = String(metadata.mode || "").toLowerCase() as IntegrationIncidentEscalationMode;
+    const target = INTEGRATION_INCIDENT_ESCALATION_TARGETS.includes(targetRaw) ? targetRaw : "slack";
+    const mode = INTEGRATION_INCIDENT_ESCALATION_MODES.includes(modeRaw) ? modeRaw : "breaches";
+    const severityRaw = String(metadata.severity || "").toLowerCase();
+    const severity: IntegrationIncidentSeverity | undefined =
+        severityRaw === "critical" ? "critical" : severityRaw === "warning" ? "warning" : undefined;
+    return {
+        id: row.id,
+        action: row.action,
+        actor: typeof metadata.actor === "string" ? metadata.actor : undefined,
+        alertCode: typeof metadata.alertCode === "string" ? normalizeAlertCode(metadata.alertCode) : undefined,
+        repoId: typeof metadata.repoId === "string" ? metadata.repoId : undefined,
+        target,
+        mode,
+        severity,
         outcome,
         summary: typeof metadata.summary === "string" ? metadata.summary : "",
         metadata,
@@ -2041,7 +2106,7 @@ export const integrationsRepository = {
                     eq(auditLog.entityType, "integration_alert"),
                     eq(auditLog.orgId, repo.orgId),
                     sql`${auditLog.metadata} ->> 'repoId' = ${input.repoId}`,
-                    sql`${auditLog.action} LIKE 'integration.alert.%'`
+                    inArray(auditLog.action, [...INTEGRATION_ALERT_TRIAGE_ACTIONS])
                 )
             )
             .orderBy(desc(auditLog.createdAt))
@@ -2065,7 +2130,10 @@ export const integrationsRepository = {
         limit?: number;
         offset?: number;
     }) {
-        const conditions = [eq(auditLog.entityType, "integration_alert"), sql`${auditLog.action} LIKE 'integration.alert.%'`];
+        const conditions = [
+            eq(auditLog.entityType, "integration_alert"),
+            inArray(auditLog.action, [...INTEGRATION_ALERT_TRIAGE_ACTIONS]),
+        ];
         if (filters.repoId) {
             const repo = await findRepository(filters.repoId);
             if (!repo) {
@@ -2121,6 +2189,75 @@ export const integrationsRepository = {
         };
     },
 
+    async listIncidentEscalations(filters: {
+        repoId?: string;
+        alertCode?: string;
+        target?: IntegrationIncidentEscalationTarget | string;
+        mode?: IntegrationIncidentEscalationMode | string;
+        actor?: string;
+        sinceMinutes?: number;
+        limit?: number;
+        offset?: number;
+    }) {
+        const conditions = [eq(auditLog.entityType, "integration_alert"), eq(auditLog.action, "integration.alert.escalate")];
+        if (filters.repoId) {
+            const repo = await findRepository(filters.repoId);
+            if (!repo) {
+                return {
+                    events: [] as IntegrationIncidentEscalationAuditEvent[],
+                    total: 0,
+                    limit: clampInteger(Number(filters.limit ?? 20), 1, 100),
+                    offset: clampInteger(Number(filters.offset ?? 0), 0, 100_000),
+                };
+            }
+            conditions.push(eq(auditLog.orgId, repo.orgId));
+            conditions.push(sql`${auditLog.metadata} ->> 'repoId' = ${filters.repoId}`);
+        }
+        if (filters.alertCode) {
+            const alertCode = normalizeAlertCode(filters.alertCode);
+            if (alertCode) conditions.push(sql`${auditLog.metadata} ->> 'alertCode' = ${alertCode}`);
+        }
+        if (filters.target) {
+            const target = String(filters.target || "").trim().toLowerCase();
+            if (target) conditions.push(sql`${auditLog.metadata} ->> 'target' = ${target}`);
+        }
+        if (filters.mode) {
+            const mode = String(filters.mode || "").trim().toLowerCase();
+            if (mode) conditions.push(sql`${auditLog.metadata} ->> 'mode' = ${mode}`);
+        }
+        if (filters.actor) {
+            const actor = (filters.actor || "").trim();
+            if (actor) conditions.push(sql`${auditLog.metadata} ->> 'actor' = ${actor}`);
+        }
+        if (filters.sinceMinutes && Number.isFinite(filters.sinceMinutes) && filters.sinceMinutes > 0) {
+            const since = new Date(Date.now() - clampInteger(filters.sinceMinutes, 1, 43_200) * 60_000);
+            conditions.push(gte(auditLog.createdAt, since));
+        }
+
+        const limit = clampInteger(Number(filters.limit ?? 20), 1, 100);
+        const offset = clampInteger(Number(filters.offset ?? 0), 0, 100_000);
+
+        const [{ value: totalValue }] = await db
+            .select({ value: count() })
+            .from(auditLog)
+            .where(and(...conditions));
+
+        const rows = await db
+            .select()
+            .from(auditLog)
+            .where(and(...conditions))
+            .orderBy(desc(auditLog.createdAt))
+            .limit(limit)
+            .offset(offset);
+
+        return {
+            events: rows.map(normalizeIncidentEscalationAudit),
+            total: Number(totalValue || 0),
+            limit,
+            offset,
+        };
+    },
+
     async listIncidentTimeline(filters: {
         repoId?: string;
         provider?: string;
@@ -2166,6 +2303,27 @@ export const integrationsRepository = {
                 scope: "alert_triage",
                 title: `Alert triage: ${event.action.replace("integration.alert.", "")}`,
                 summary: event.summary || `Alert ${event.alertCode || "unknown"} triage updated.`,
+                repoId: event.repoId,
+                actor: event.actor,
+                action: event.action,
+                alertCode: event.alertCode,
+                metadata: event.metadata || {},
+            });
+        }
+
+        const escalations = await this.listIncidentEscalations({
+            repoId: filters.repoId,
+            sinceMinutes: filters.sinceMinutes,
+            limit: sourceLimit,
+        });
+        for (const event of escalations.events) {
+            timeline.push({
+                id: `escalation-${event.id}`,
+                timestamp: event.createdAt,
+                severity: event.severity || "critical",
+                scope: "alert_escalation",
+                title: `Alert escalation: ${event.target}`,
+                summary: event.summary || `Alert ${event.alertCode || "unknown"} escalated to ${event.target}.`,
                 repoId: event.repoId,
                 actor: event.actor,
                 action: event.action,
@@ -2454,8 +2612,8 @@ export const integrationsRepository = {
                     lastActionAt: typeof triage.lastActionAt === "string" ? triage.lastActionAt : undefined,
                 };
             })
-            .filter((entry) => entry.ageMinutes <= windowMinutes)
-            .filter((entry) => entry.breached);
+            .filter((entry: any) => entry.ageMinutes <= windowMinutes)
+            .filter((entry: any) => entry.breached);
 
         return {
             repoId: input.repoId,
@@ -2466,11 +2624,171 @@ export const integrationsRepository = {
                 activeAlerts: activeAlerts.length,
                 mutedAlerts: mutedAlerts.length,
                 breaches: breaches.length,
-                warningBreaches: breaches.filter((entry) => entry.severity === "warning").length,
-                criticalBreaches: breaches.filter((entry) => entry.severity === "critical").length,
+                warningBreaches: breaches.filter((entry: any) => entry.severity === "warning").length,
+                criticalBreaches: breaches.filter((entry: any) => entry.severity === "critical").length,
             },
             breaches,
             generatedAt: new Date().toISOString(),
+        };
+    },
+
+    async escalateIncidentAlerts(input: {
+        repoId: string;
+        target: IntegrationIncidentEscalationTarget;
+        mode?: IntegrationIncidentEscalationMode;
+        actor?: string;
+        note?: string;
+        alertCodes?: string[];
+        windowMinutes?: number;
+        warningSlaMinutes?: number;
+        criticalSlaMinutes?: number;
+    }) {
+        const repo = await findRepository(input.repoId);
+        if (!repo) return { reason: "repo_not_found" as const };
+
+        const target = (input.target || "").trim().toLowerCase() as IntegrationIncidentEscalationTarget;
+        if (!INTEGRATION_INCIDENT_ESCALATION_TARGETS.includes(target)) {
+            return { reason: "invalid_escalation_target" as const };
+        }
+        const mode = (input.mode || "breaches").trim().toLowerCase() as IntegrationIncidentEscalationMode;
+        if (!INTEGRATION_INCIDENT_ESCALATION_MODES.includes(mode)) {
+            return { reason: "invalid_escalation_mode" as const };
+        }
+
+        const actor = (input.actor || "settings-ui").trim().slice(0, 120) || "settings-ui";
+        const note = (input.note || "").trim().slice(0, 500);
+
+        const candidates: Array<{
+            code: string;
+            severity: IntegrationIncidentSeverity;
+            message: string;
+            runbookUrl: string;
+            acknowledged?: boolean;
+            acknowledgedAt?: string;
+            ageMinutes?: number;
+            slaMinutes?: number;
+        }> = [];
+        if (mode === "breaches") {
+            const summary = await this.incidentSlaSummary({
+                repoId: input.repoId,
+                windowMinutes: input.windowMinutes,
+                warningSlaMinutes: input.warningSlaMinutes,
+                criticalSlaMinutes: input.criticalSlaMinutes,
+            });
+            for (const breach of summary.breaches) {
+                candidates.push({
+                    code: breach.code,
+                    severity: breach.severity,
+                    message: breach.message,
+                    runbookUrl: breach.runbookUrl,
+                    acknowledged: breach.acknowledged,
+                    acknowledgedAt: breach.acknowledgedAt,
+                    ageMinutes: breach.ageMinutes,
+                    slaMinutes: breach.slaMinutes,
+                });
+            }
+        } else if (mode === "custom") {
+            const alertCodes = Array.from(new Set((input.alertCodes || []).map((code) => normalizeAlertCode(code)).filter(Boolean)));
+            if (alertCodes.length === 0) return { reason: "alert_codes_required" as const };
+            for (const code of alertCodes) {
+                candidates.push({
+                    code,
+                    severity: "warning",
+                    message: "Manual custom escalation.",
+                    runbookUrl: runbookUrlForAlert(code),
+                });
+            }
+        } else {
+            const alertStatus = await this.alertStatus({ repoId: input.repoId });
+            const source = mode === "muted" ? ((alertStatus as any).mutedAlerts || []) : ((alertStatus as any).alerts || []);
+            for (const alert of source) {
+                if (!alert || !alert.code) continue;
+                const triage =
+                    alert?.triage && typeof alert.triage === "object" && !Array.isArray(alert.triage)
+                        ? (alert.triage as Record<string, unknown>)
+                        : {};
+                candidates.push({
+                    code: normalizeAlertCode(String(alert.code)),
+                    severity: alert.severity === "critical" ? "critical" : "warning",
+                    message: String(alert.message || ""),
+                    runbookUrl: typeof alert.runbookUrl === "string" ? alert.runbookUrl : runbookUrlForAlert(String(alert.code)),
+                    acknowledged: Boolean(triage.acknowledgedAt),
+                    acknowledgedAt: typeof triage.acknowledgedAt === "string" ? triage.acknowledgedAt : undefined,
+                });
+            }
+        }
+
+        const deduped = Array.from(
+            candidates.reduce((map, candidate) => {
+                if (!candidate.code) return map;
+                if (!map.has(candidate.code)) map.set(candidate.code, candidate);
+                return map;
+            }, new Map<string, (typeof candidates)[number]>()).values()
+        );
+        if (deduped.length === 0) return { reason: "no_alerts_to_escalate" as const };
+
+        const results: Array<{
+            alertCode: string;
+            success: boolean;
+            reason: string;
+            event?: IntegrationIncidentEscalationAuditEvent;
+        }> = [];
+        for (const candidate of deduped) {
+            const summary = note
+                ? `Escalated integration alert ${candidate.code} to ${target}: ${note}`
+                : `Escalated integration alert ${candidate.code} to ${target}.`;
+            const [inserted] = await db
+                .insert(auditLog)
+                .values({
+                    orgId: repo.orgId,
+                    action: "integration.alert.escalate",
+                    entityType: "integration_alert",
+                    entityId: null,
+                    metadata: sanitizeUnknown({
+                        outcome: "success",
+                        summary,
+                        repoId: input.repoId,
+                        alertCode: candidate.code,
+                        actor,
+                        mode,
+                        target,
+                        severity: candidate.severity,
+                        runbookUrl: candidate.runbookUrl,
+                        message: candidate.message,
+                        note: note || undefined,
+                        acknowledged: candidate.acknowledged,
+                        acknowledgedAt: candidate.acknowledgedAt,
+                        ageMinutes: candidate.ageMinutes,
+                        slaMinutes: candidate.slaMinutes,
+                    }),
+                    createdAt: new Date(),
+                })
+                .returning();
+            if (!inserted) {
+                results.push({
+                    alertCode: candidate.code,
+                    success: false,
+                    reason: "insert_failed",
+                });
+                continue;
+            }
+            results.push({
+                alertCode: candidate.code,
+                success: true,
+                reason: "escalated",
+                event: normalizeIncidentEscalationAudit(inserted),
+            });
+        }
+
+        const succeeded = results.filter((result) => result.success).length;
+        return {
+            reason: "ok" as const,
+            target,
+            mode,
+            processed: results.length,
+            succeeded,
+            failed: results.length - succeeded,
+            results,
         };
     },
 

@@ -223,13 +223,36 @@ const alertTriageAuditsSchema = z.object({
 const incidentTimelineSchema = z.object({
     repoId: z.string().optional(),
     provider: z.enum(["slack", "linear", "jira"]).optional(),
-    scope: z.enum(["alert_triage", "webhook_auth", "webhook_processing", "notification_delivery", "issue_sync"]).optional(),
+    scope: z
+        .enum(["alert_triage", "alert_escalation", "webhook_auth", "webhook_processing", "notification_delivery", "issue_sync"])
+        .optional(),
     severity: z.enum(["warning", "critical"]).optional(),
     sinceMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
     limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 const incidentSlaSummarySchema = z.object({
     repoId: z.string().optional(),
+    windowMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
+    warningSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
+    criticalSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
+});
+const incidentEscalationsSchema = z.object({
+    repoId: z.string().optional(),
+    alertCode: z.string().min(1).max(120).optional(),
+    target: z.enum(["slack", "pagerduty", "email", "runbook"]).optional(),
+    mode: z.enum(["breaches", "active", "muted", "custom"]).optional(),
+    actor: z.string().trim().min(1).max(120).optional(),
+    sinceMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    offset: z.coerce.number().int().min(0).default(0),
+});
+const escalateIncidentSchema = z.object({
+    repoId: z.string(),
+    target: z.enum(["slack", "pagerduty", "email", "runbook"]),
+    mode: z.enum(["breaches", "active", "muted", "custom"]).default("breaches"),
+    actor: z.string().trim().min(1).max(120).optional(),
+    note: z.string().trim().max(500).optional(),
+    alertCodes: z.array(z.string().min(1)).max(100).optional(),
     windowMinutes: z.coerce.number().int().min(1).max(43_200).optional(),
     warningSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
     criticalSlaMinutes: z.coerce.number().int().min(0).max(43_200).optional(),
@@ -1545,6 +1568,99 @@ integrationsRouter.get("/incidents/sla-summary", zValidator("query", incidentSla
         return c.json(
             {
                 error: "Database unavailable for integrations incident SLA summary",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.get("/incidents/escalations", zValidator("query", incidentEscalationsSchema), async (c) => {
+    const query = c.req.valid("query");
+    try {
+        const audits = await integrationsRepository.listIncidentEscalations({
+            repoId: query.repoId,
+            alertCode: query.alertCode,
+            target: query.target,
+            mode: query.mode,
+            actor: query.actor,
+            sinceMinutes: query.sinceMinutes,
+            limit: query.limit,
+            offset: query.offset,
+        });
+        return c.json(audits);
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integrations incident escalations",
+                details: details(error),
+            },
+            503
+        );
+    }
+});
+
+integrationsRouter.post("/incidents/escalate", zValidator("json", escalateIncidentSchema), async (c) => {
+    const body = c.req.valid("json");
+    try {
+        const result = await integrationsRepository.escalateIncidentAlerts({
+            repoId: body.repoId,
+            target: body.target,
+            mode: body.mode,
+            actor: body.actor,
+            note: body.note,
+            alertCodes: body.alertCodes,
+            windowMinutes: body.windowMinutes,
+            warningSlaMinutes: body.warningSlaMinutes,
+            criticalSlaMinutes: body.criticalSlaMinutes,
+        });
+        if (result.reason === "repo_not_found") {
+            return c.json({ error: "Repository not found for incident escalation" }, 404);
+        }
+        if (
+            result.reason === "invalid_escalation_target" ||
+            result.reason === "invalid_escalation_mode" ||
+            result.reason === "alert_codes_required"
+        ) {
+            return c.json({ error: "Invalid incident escalation request", reason: result.reason }, 400);
+        }
+        if (result.reason === "no_alerts_to_escalate") {
+            return c.json({
+                success: true,
+                reason: result.reason,
+                target: body.target,
+                mode: body.mode,
+                processed: 0,
+                succeeded: 0,
+                failed: 0,
+                results: [],
+            });
+        }
+        if (result.reason !== "ok") {
+            return c.json({ error: "Failed to escalate incidents" }, 400);
+        }
+        notifyIntegrationUpdate({
+            repoId: body.repoId,
+            scope: "alert",
+            action: "escalate",
+            outcome: result.failed > 0 ? "error" : "success",
+            metadata: {
+                target: result.target,
+                mode: result.mode,
+                processed: result.processed,
+                succeeded: result.succeeded,
+                failed: result.failed,
+                alertCodes: result.results.map((entry) => entry.alertCode),
+            },
+        });
+        return c.json({
+            success: true,
+            ...result,
+        });
+    } catch (error) {
+        return c.json(
+            {
+                error: "Database unavailable for integrations incident escalation",
                 details: details(error),
             },
             503

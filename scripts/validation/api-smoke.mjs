@@ -1607,6 +1607,54 @@ async function run() {
                 "integrations incident SLA summary must include breaches[]"
             );
 
+            const escalateIncidents = await request(`/api/v1/integrations/incidents/escalate`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repoId: firstRepoId,
+                    target: "slack",
+                    mode: "breaches",
+                    actor: "api-smoke",
+                    note: "Escalation smoke validation",
+                    warningSlaMinutes: 0,
+                    criticalSlaMinutes: 0,
+                    windowMinutes: 180,
+                }),
+            });
+            printResult("POST /api/v1/integrations/incidents/escalate", escalateIncidents);
+            assert(escalateIncidents.response.status === 200, "integrations incident escalate must return 200");
+            assert(
+                escalateIncidents.payload?.reason === "ok" || escalateIncidents.payload?.reason === "no_alerts_to_escalate",
+                "integrations incident escalate must return ok or no_alerts_to_escalate reason"
+            );
+
+            const listEscalations = await request(
+                `/api/v1/integrations/incidents/escalations?repoId=${encodeURIComponent(firstRepoId)}&target=slack&limit=20`
+            );
+            printResult("GET /api/v1/integrations/incidents/escalations", listEscalations);
+            assert(listEscalations.response.status === 200, "integrations incident escalations must return 200");
+            assert(Array.isArray(listEscalations.payload?.events), "integrations incident escalations must include events[]");
+            assert(
+                listEscalations.payload.events.some(
+                    (event) => event.action === "integration.alert.escalate" && event.target === "slack"
+                ),
+                "integrations incident escalations must include slack escalation records"
+            );
+
+            const incidentTimelineAfterEscalation = await request(
+                `/api/v1/integrations/incidents/timeline?repoId=${encodeURIComponent(firstRepoId)}&scope=alert_escalation&limit=20&sinceMinutes=180`
+            );
+            printResult("GET /api/v1/integrations/incidents/timeline (alert_escalation)", incidentTimelineAfterEscalation);
+            assert(
+                incidentTimelineAfterEscalation.response.status === 200,
+                "integrations incident timeline alert_escalation scope must return 200"
+            );
+            assert(
+                Array.isArray(incidentTimelineAfterEscalation.payload?.events) &&
+                    incidentTimelineAfterEscalation.payload.events.some((event) => event.scope === "alert_escalation"),
+                "integrations incident timeline must include alert_escalation entries after escalation"
+            );
+
             const unmuteAlert = await request(`/api/v1/integrations/alerts/webhook_auth_failures_high/unmute`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
