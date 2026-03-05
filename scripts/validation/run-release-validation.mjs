@@ -100,7 +100,14 @@ async function stopService(child) {
 
 async function run() {
     await runCommand("Menu bar app tests", PNPM_BIN, ["--filter", "@nexus/menubar-app", "test"]);
-    await runCommand("VS Code extension tests", PNPM_BIN, ["--filter", "@nexus/vscode-extension", "test"]);
+    await runCommand("VS Code extension tests", PNPM_BIN, ["--filter", "nexus-vscode-extension", "test"]);
+    await runCommand("VS Code manifest validation tests", NODE_BIN, [
+        "--test",
+        "scripts/release/vscode-manifest-validation.test.mjs",
+    ]);
+    await runCommand("VS Code extension manifest check", NODE_BIN, [
+        "scripts/release/validate-vscode-extension-manifest.mjs",
+    ]);
 
     process.stdout.write(
         `[validate:release] starting API and Web services (api=${API_BASE_URL}, web=${WEB_BASE_URL})...\n`

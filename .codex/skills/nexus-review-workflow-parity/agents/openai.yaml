@@ -1,0 +1,3 @@
+interface:
+  display_name: "Nexus review workflow parity"
+  short_description: "Help implement Nexus review workflow parity workflows"

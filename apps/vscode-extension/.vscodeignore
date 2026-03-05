@@ -1,0 +1,6 @@
+src/**
+node_modules/**
+dist/**/*.map
+dist/**/*.d.ts
+*.tsbuildinfo
+vitest.config.*

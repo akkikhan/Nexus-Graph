@@ -1,0 +1,3 @@
+interface:
+  display_name: "Nexus merge queue integration"
+  short_description: "Help implement Nexus merge queue integration workflows"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Nexus persistence hardening"
+  short_description: "Help implement Nexus persistence hardening workflows"

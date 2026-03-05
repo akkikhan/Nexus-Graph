@@ -9,6 +9,9 @@ Validation includes API smoke contracts, browser smoke checks, and release orche
 - `pnpm smoke:web`
 - `pnpm validate:release`
 - `pnpm validate:release:ci`
+- `pnpm vscode:manifest:test`
+- `pnpm vscode:manifest:check`
+- `pnpm vscode:release:ci`
 - `pnpm menubar:metadata`
 - `pnpm menubar:release:ci`
 
@@ -164,7 +167,8 @@ What it does:
 
 - Runs menu bar app unit tests (`@nexus/menubar-app`, including Electron tray template/action wiring coverage)
 - Includes auto-update client coverage (manifest parsing, channel resolution, sha256 checksum validation, optional Ed25519 signature verification, rollout gating, authenticated download + local checksum verification, download cancel/retry + installer handoff tray actions, availability states, and persisted snooze/skip decision logic)
-- Runs VS Code extension unit tests (`@nexus/vscode-extension`)
+- Runs VS Code extension unit tests (`nexus-vscode-extension`)
+- Runs VS Code manifest contract tests (`scripts/release/vscode-manifest-validation.test.mjs`) and strict manifest checks before smoke orchestration
 - Starts API and Web services
 - Waits for readiness checks
 - Runs API smoke
@@ -182,6 +186,7 @@ Jobs:
 - `api-smoke`
 - `web-smoke`
 - `release-validation` (depends on both)
+- `vscode-extension-package` (depends on `release-validation`, builds VSIX artifact and enforces manifest checks)
 - `menubar-package` (depends on `release-validation`, builds Electron distribution artifacts and generates release-channel auto-update metadata)
 
 Failure artifacts uploaded:
@@ -189,6 +194,7 @@ Failure artifacts uploaded:
 - `output/ci-logs/`
 - `output/playwright/`
 - `output/playwright-report/`
+- `output/vscode-extension/` (VS Code `.vsix` artifact + package logs)
 - `output/menubar/` (Electron package artifacts + `updates/latest-*.json` metadata manifests)
 
 ## Environment Variables

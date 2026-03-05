@@ -23,7 +23,7 @@
 | `@nexus/web` | Web dashboard (Next.js) |
 | `@nexus/api` | API server |
 | `@nexus/menubar-app` | Menu bar inbox summary and quick PR actions MVP |
-| `@nexus/vscode-extension` | VS Code inbox and PR actions MVP |
+| `nexus-vscode-extension` | VS Code inbox and PR actions MVP |
 | `@nexus/core` | Shared business logic |
 | `@nexus/ai` | AI engine with multi-LLM support |
 | `@nexus/git` | Git operations |
@@ -46,7 +46,13 @@ pnpm build
 pnpm test
 
 # Run VS Code extension tests
-pnpm --filter @nexus/vscode-extension test
+pnpm --filter nexus-vscode-extension test
+
+# Validate VS Code marketplace manifest
+pnpm vscode:manifest:check
+
+# Build VS Code extension VSIX artifact
+pnpm vscode:release:ci
 
 # Run menu bar app tests
 pnpm --filter @nexus/menubar-app test

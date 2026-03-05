@@ -1,0 +1,3 @@
+interface:
+  display_name: "Nexus integrations and observability"
+  short_description: "Help implement Nexus integrations and observability workflows"

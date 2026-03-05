@@ -1,6 +1,6 @@
 # VS Code Extension MVP
 
-The `@nexus/vscode-extension` package provides Phase 6 MVP parity for in-editor workflow:
+The `nexus-vscode-extension` package provides Phase 6 MVP parity for in-editor workflow:
 
 - Inbox view (`Nexus Inbox`) in Explorer
 - Inbox summary command
@@ -9,9 +9,13 @@ The `@nexus/vscode-extension` package provides Phase 6 MVP parity for in-editor 
 ## Development
 
 ```bash
-pnpm --filter @nexus/vscode-extension build
-pnpm --filter @nexus/vscode-extension test
+pnpm --filter nexus-vscode-extension build
+pnpm --filter nexus-vscode-extension test
+pnpm vscode:manifest:check
+pnpm vscode:release:ci
 ```
+
+Artifacts are written to `output/vscode-extension/`.
 
 ## Run in VS Code Extension Host
 
@@ -32,4 +36,3 @@ Configure in VS Code settings:
 - `nexus.webBaseUrl` (default: `http://localhost:3000`)
 - `nexus.inboxLimit` (default: `20`)
 - `nexus.requestTimeoutMs` (default: `8000`)
-
