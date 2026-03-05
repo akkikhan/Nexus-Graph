@@ -14,6 +14,8 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REMOTE_DIR="${REMOTE_DIR:-$HOME/nexus}"
 ARCHIVE_LOCAL="/tmp/nexus-deploy-$(date +%Y%m%d%H%M%S).tar.gz"
 ARCHIVE_REMOTE="~/nexus-deploy.tar.gz"
+LOCAL_ENV_FILE="$PROJECT_DIR/docker/.env"
+REMOTE_ENV_FILE="~/nexus-deploy.env"
 
 SSH=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VM_USER@$VM_IP")
 SCP=(scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8)
@@ -55,6 +57,13 @@ git archive --format=tar.gz -o "$ARCHIVE_LOCAL" HEAD
 
 log "Uploading archive..."
 "${SCP[@]}" "$ARCHIVE_LOCAL" "$VM_USER@$VM_IP:$ARCHIVE_REMOTE"
+
+if [ -f "$LOCAL_ENV_FILE" ]; then
+  log "Uploading docker/.env..."
+  "${SCP[@]}" "$LOCAL_ENV_FILE" "$VM_USER@$VM_IP:$REMOTE_ENV_FILE"
+else
+  log "No local docker/.env found; remote script will reuse existing VM env or .env.example."
+fi
 
 DEPLOY_FAILED=0
 {
@@ -98,6 +107,13 @@ rm -f ~/nexus-deploy.tar.gz
 if [ -n "$ENV_BAK" ]; then
   mkdir -p ~/nexus_new/docker
   cp "$ENV_BAK" ~/nexus_new/docker/.env
+fi
+
+if [ -f ~/nexus-deploy.env ]; then
+  mkdir -p ~/nexus_new/docker
+  mv ~/nexus-deploy.env ~/nexus_new/docker/.env
+  chmod 600 ~/nexus_new/docker/.env
+  echo "[remote] applied uploaded docker/.env"
 fi
 
 rm -rf ~/nexus

@@ -15,6 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $ArchivePath = Join-Path $env:TEMP "nexus-deploy-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss')).tar.gz"
+$LocalEnvPath = Join-Path $ProjectDir "docker\.env"
 
 Write-Host "[deploy] Target: $VmUser@$VmIp"
 Write-Host "[deploy] Key: $SshKey"
@@ -78,6 +79,14 @@ try {
     scp -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 $ArchivePath "${VmUser}@${VmIp}:~/nexus-deploy.tar.gz"
     if ($LASTEXITCODE -ne 0) { throw "scp failed with exit code $LASTEXITCODE" }
 
+    if (Test-Path $LocalEnvPath) {
+        Write-Host "[deploy] Uploading docker/.env..." -ForegroundColor Yellow
+        scp -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 $LocalEnvPath "${VmUser}@${VmIp}:~/nexus-deploy.env"
+        if ($LASTEXITCODE -ne 0) { throw "scp docker/.env failed with exit code $LASTEXITCODE" }
+    } else {
+        Write-Host "[deploy] No local docker/.env found; remote script will reuse existing VM env or .env.example." -ForegroundColor DarkGray
+    }
+
     # Verify upload integrity on the VM. If this fails, do not proceed.
     $remoteSha = (ssh -i $SshKey -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=8 "$VmUser@$VmIp" "sha256sum /home/$VmUser/nexus-deploy.tar.gz | cut -d' ' -f1").Trim().ToLowerInvariant()
     if ($LASTEXITCODE -ne 0) { throw "remote sha256 check failed with exit code $LASTEXITCODE" }
@@ -122,6 +131,13 @@ rm -f ~/nexus-deploy.tar.gz
 if [ -n "$ENV_BAK" ]; then
   mkdir -p ~/nexus_new/docker
   cp "$ENV_BAK" ~/nexus_new/docker/.env
+fi
+
+if [ -f ~/nexus-deploy.env ]; then
+  mkdir -p ~/nexus_new/docker
+  mv ~/nexus-deploy.env ~/nexus_new/docker/.env
+  chmod 600 ~/nexus_new/docker/.env
+  echo "[remote] applied uploaded docker/.env"
 fi
 
 rm -rf ~/nexus
