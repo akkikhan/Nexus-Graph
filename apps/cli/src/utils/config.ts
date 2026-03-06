@@ -1,4 +1,4 @@
-/**
+﻿/**
  * NEXUS CLI - Configuration Management
  */
 
@@ -21,6 +21,7 @@ interface NexusConfig {
     // AI
     aiProvider?: string;
     aiApiKey?: string;
+    aiModel?: string;
     // Preferences
     colorOutput?: boolean;
     autoStage?: boolean;
@@ -52,3 +53,4 @@ export function getRepoConfig(): NexusConfig {
         branchPrefix: config.get("branchPrefix"),
     };
 }
+

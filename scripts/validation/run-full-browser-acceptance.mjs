@@ -9,11 +9,11 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const PNPM_BIN = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const NODE_BIN = process.platform === "win32" ? "node.exe" : "node";
-const RELEASE_API_PORT = String(process.env.RELEASE_API_PORT || "3101");
-const RELEASE_WEB_PORT = String(process.env.RELEASE_WEB_PORT || "3000");
-const API_BASE_URL = `http://localhost:${RELEASE_API_PORT}`;
-const WEB_BASE_URL = `http://localhost:${RELEASE_WEB_PORT}`;
-const VALIDATION_NODE_OPTIONS = process.env.VALIDATION_NODE_OPTIONS || process.env.NODE_OPTIONS || "--max-old-space-size=6144";
+const WEB_PORT = String(process.env.FULL_ACCEPTANCE_WEB_PORT || "3100");
+const API_PORT = String(process.env.FULL_ACCEPTANCE_API_PORT || "3101");
+const WEB_BASE_URL = `http://localhost:${WEB_PORT}`;
+const API_BASE_URL = `http://localhost:${API_PORT}`;
+const NODE_OPTIONS = process.env.NODE_OPTIONS || "--max-old-space-size=6144";
 
 function toShellCommand(bin, args) {
     return [bin, ...args]
@@ -33,9 +33,7 @@ async function waitForHttp(url, timeoutMs = 120000) {
     while (Date.now() - start < timeoutMs) {
         try {
             const response = await fetch(url);
-            if (response.ok || response.status >= 400) {
-                return;
-            }
+            if (response.ok || response.status >= 400) return;
         } catch {
             // Keep polling.
         }
@@ -54,11 +52,8 @@ function runCommand(label, bin, args, extraEnv = {}) {
         });
         child.on("error", reject);
         child.on("exit", (code) => {
-            if (code === 0) {
-                resolve();
-            } else {
-                reject(new Error(`${label} failed with exit code ${code}`));
-            }
+            if (code === 0) resolve();
+            else reject(new Error(`${label} failed with exit code ${code}`));
         });
     });
 }
@@ -74,16 +69,12 @@ function startService(label, args, extraEnv = {}) {
     const prefix = `[${label}]`;
     child.stdout.on("data", (chunk) => process.stdout.write(`${prefix} ${chunk}`));
     child.stderr.on("data", (chunk) => process.stderr.write(`${prefix} ${chunk}`));
-    child.on("error", (error) => {
-        process.stderr.write(`${prefix} process error: ${error.message}\n`);
-    });
+    child.on("error", (error) => process.stderr.write(`${prefix} process error: ${error.message}\n`));
     return child;
 }
 
 async function stopService(child) {
-    if (!child || child.killed || child.exitCode !== null) {
-        return;
-    }
+    if (!child || child.killed || child.exitCode !== null) return;
 
     if (process.platform === "win32") {
         await runCommand("taskkill", "taskkill", ["/pid", String(child.pid), "/T", "/F"]).catch(() => {
@@ -94,69 +85,42 @@ async function stopService(child) {
 
     child.kill("SIGTERM");
     await sleep(500);
-    if (child.exitCode === null) {
-        child.kill("SIGKILL");
-    }
+    if (child.exitCode === null) child.kill("SIGKILL");
 }
 
 async function run() {
-    await runCommand("Menu bar app tests", PNPM_BIN, ["--filter", "@nexus/menubar-app", "test:ci"]);
-    await runCommand("VS Code extension tests", PNPM_BIN, ["--filter", "nexus-vscode-extension", "test"]);
-    await runCommand("VS Code manifest validation tests", NODE_BIN, [
-        "--test",
-        "scripts/release/vscode-manifest-validation.test.mjs",
-    ]);
-    await runCommand("VS Code extension manifest check", NODE_BIN, [
-        "scripts/release/validate-vscode-extension-manifest.mjs",
-    ]);
+    process.stdout.write(`[full-browser-acceptance-runner] starting services (web=${WEB_BASE_URL}, api=${API_BASE_URL})...\n`);
 
-    process.stdout.write(
-        `[validate:release] starting API and Web services (api=${API_BASE_URL}, web=${WEB_BASE_URL})...\n`
-    );
     const api = startService("api", ["--filter", "@nexus/api", "dev:once"], {
-        PORT: RELEASE_API_PORT,
-        NODE_OPTIONS: VALIDATION_NODE_OPTIONS,
+        PORT: API_PORT,
+        NODE_OPTIONS,
     });
 
     await runCommand("Web production build", PNPM_BIN, ["--filter", "@nexus/web", "build"], {
         API_PROXY_TARGET: API_BASE_URL,
-        NODE_OPTIONS: VALIDATION_NODE_OPTIONS,
+        NODE_OPTIONS,
     });
+
     const web = startService("web", ["--filter", "@nexus/web", "start"], {
         API_PROXY_TARGET: API_BASE_URL,
-        NODE_OPTIONS: VALIDATION_NODE_OPTIONS,
-        PORT: RELEASE_WEB_PORT,
+        PORT: WEB_PORT,
+        NODE_OPTIONS,
     });
 
     try {
         await waitForHttp(`${API_BASE_URL}/health`);
-        if (api.exitCode !== null) {
-            throw new Error(`API service exited before readiness (exit code ${api.exitCode})`);
-        }
         await waitForHttp(`${WEB_BASE_URL}/inbox`);
-        if (web.exitCode !== null) {
-            throw new Error(`Web service exited before readiness (exit code ${web.exitCode})`);
-        }
-        process.stdout.write("[validate:release] services ready\n");
-
-        await runCommand("API smoke", NODE_BIN, ["scripts/validation/api-smoke.mjs"], {
-            API_BASE_URL,
-        });
-
-        await runCommand("Web smoke", NODE_BIN, ["scripts/validation/web-e2e-smoke.mjs"], {
+        await runCommand("Full browser acceptance", NODE_BIN, ["scripts/validation/full-browser-acceptance.mjs"], {
             WEB_BASE_URL,
-            REQUIRE_PLAYWRIGHT: "true",
         });
-
-        process.stdout.write("[validate:release] PASS\n");
     } finally {
-        process.stdout.write("[validate:release] stopping services...\n");
+        process.stdout.write("[full-browser-acceptance-runner] stopping services...\n");
         await stopService(web);
         await stopService(api);
     }
 }
 
 run().catch((error) => {
-    process.stderr.write(`[validate:release] FAIL: ${error.message}\n`);
+    process.stderr.write(`[full-browser-acceptance-runner] FAIL: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
 });

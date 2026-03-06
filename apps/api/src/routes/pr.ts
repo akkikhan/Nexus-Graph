@@ -71,6 +71,7 @@ const completeAIReviewJobSchema = z.object({
 const failAIReviewJobSchema = z.object({
     error: z.string().min(1),
 });
+const prIdParamSchema = z.string().uuid();
 
 function mapStatus(
     status: string | null | undefined
@@ -191,9 +192,13 @@ prRouter.get("/", zValidator("query", listPRsSchema), async (c) => {
  */
 prRouter.get("/:id", async (c) => {
     const id = c.req.param("id");
+    const parsedId = prIdParamSchema.safeParse(id);
+    if (!parsedId.success) {
+        return c.json({ error: "Invalid pull request id" }, 400);
+    }
 
     try {
-        const pr = await prRepository.findById(id);
+        const pr = await prRepository.findById(parsedId.data);
         if (pr) {
             return c.json({ pr: mapPR(pr) });
         }

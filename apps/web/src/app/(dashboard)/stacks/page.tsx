@@ -25,10 +25,9 @@ export default function StacksPage() {
     const router = useRouter();
     const queryClient = useQueryClient();
     const [showCreateForm, setShowCreateForm] = useState(false);
-    const [localCreatedStacks, setLocalCreatedStacks] = useState<StackItem[]>([]);
     const [form, setForm] = useState({
         name: "",
-        repositoryId: "local/repository",
+        repositoryId: "",
         baseBranch: "main",
     });
     const [formMessage, setFormMessage] = useState("");
@@ -42,35 +41,16 @@ export default function StacksPage() {
         mutationFn: () =>
             createStack({
                 name: form.name.trim(),
-                repositoryId: form.repositoryId.trim(),
+                repositoryId: form.repositoryId.trim() || undefined,
                 baseBranch: form.baseBranch.trim() || "main",
             }),
         onSuccess: async (result) => {
             const createdId = result?.stack?.id;
-            if (createdId && createdId.startsWith("stack-")) {
-                const localItem: StackItem = {
-                    id: createdId,
-                    name: result.stack.name || form.name.trim(),
-                    repository: {
-                        id: form.repositoryId.trim(),
-                        name: form.repositoryId.trim(),
-                    },
-                    baseBranch: result.stack.baseBranch || form.baseBranch.trim() || "main",
-                    branches: [],
-                    mergableCount: 0,
-                    totalPRs: 0,
-                    createdAt: result.stack.createdAt || new Date().toISOString(),
-                    updatedAt: result.stack.createdAt || new Date().toISOString(),
-                };
-                setLocalCreatedStacks((prev) => [localItem, ...prev]);
-                setFormMessage("Stack created in local/mock mode.");
-            } else {
-                setFormMessage("Stack created.");
-            }
+            setFormMessage("Stack created.");
             setShowCreateForm(false);
-            setForm({ name: "", repositoryId: "local/repository", baseBranch: "main" });
+            setForm({ name: "", repositoryId: "", baseBranch: "main" });
             await queryClient.invalidateQueries({ queryKey: ["stacks"] });
-            if (createdId && !createdId.startsWith("stack-")) {
+            if (createdId) {
                 router.push(`/stacks/${createdId}`);
             }
         },
@@ -96,11 +76,7 @@ export default function StacksPage() {
         );
     }
 
-    const fetchedStacks = (stacks || []) as StackItem[];
-    const mergedStackMap = new Map<string, StackItem>();
-    for (const stack of localCreatedStacks) mergedStackMap.set(stack.id, stack);
-    for (const stack of fetchedStacks) mergedStackMap.set(stack.id, stack);
-    const stackList = Array.from(mergedStackMap.values());
+    const stackList = (stacks || []) as StackItem[];
 
     return (
         <div className="p-8">
@@ -133,10 +109,6 @@ export default function StacksPage() {
                             setFormMessage("Stack name is required.");
                             return;
                         }
-                        if (!form.repositoryId.trim()) {
-                            setFormMessage("Repository ID is required.");
-                            return;
-                        }
                         setFormMessage("");
                         createMutation.mutate();
                     }}
@@ -153,7 +125,7 @@ export default function StacksPage() {
                         <input
                             value={form.repositoryId}
                             onChange={(event) => setForm((prev) => ({ ...prev, repositoryId: event.target.value }))}
-                            placeholder="Repository ID"
+                            placeholder="Repository ID or full name (optional)"
                             data-testid="stack-repo-input"
                             className="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-sm text-white placeholder:text-zinc-600"
                         />
@@ -201,15 +173,6 @@ export default function StacksPage() {
                             className="bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-hidden"
                             data-testid={`stack-card-${stack.id}`}
                             onClick={() => {
-                                const isLocalMockStack = localCreatedStacks.some(
-                                    (localStack) => localStack.id === stack.id
-                                );
-                                if (isLocalMockStack) {
-                                    setFormMessage(
-                                        "This stack was created in mock mode. Connect DB to open persistent details."
-                                    );
-                                    return;
-                                }
                                 router.push(`/stacks/${stack.id}`);
                             }}
                         >

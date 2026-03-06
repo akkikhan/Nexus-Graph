@@ -204,7 +204,7 @@ const createStackSchema = z.object({
     name: z.string().min(1),
     description: z.string().optional(),
     userId: z.string().optional(),
-    repositoryId: z.string(),
+    repositoryId: z.string().optional(),
     baseBranch: z.string().default("main"),
 });
 
@@ -443,26 +443,22 @@ stackRouter.post("/", zValidator("json", createStackSchema), async (c) => {
                 },
             }, 201);
         }
+
+        return c.json(
+            {
+                error: "Unable to resolve repository or user for stack creation",
+            },
+            404
+        );
     } catch (error: any) {
-        if (body.userId) {
-            return c.json(
-                {
-                    error: "Database unavailable for stack creation",
-                    details: errorMessage(error),
-                },
-                503
-            );
-        }
+        return c.json(
+            {
+                error: "Database unavailable for stack creation",
+                details: errorMessage(error),
+            },
+            503
+        );
     }
-
-    const newStack = {
-        id: `stack-${Date.now()}`,
-        ...body,
-        branches: [],
-        createdAt: new Date().toISOString(),
-    };
-
-    return c.json({ stack: newStack }, 201);
 });
 
 /**

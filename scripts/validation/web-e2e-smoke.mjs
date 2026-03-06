@@ -15,7 +15,7 @@ function isIgnorableRequestFailure(errorText) {
 }
 
 async function httpSmokeOnly() {
-    const routes = ["/inbox", "/stacks", "/queue", "/activity", "/insights"];
+    const routes = ["/inbox", "/stacks", "/queue", "/activity", "/insights", "/ai-rules", "/settings"];
     for (const route of routes) {
         const url = `${WEB_BASE_URL}${route}`;
         const response = await fetch(url);
@@ -85,7 +85,7 @@ async function browserSmoke(playwrightModule) {
     });
 
     try {
-        const pages = ["/inbox", "/stacks", "/queue", "/activity", "/insights"];
+        const pages = ["/inbox", "/stacks", "/queue", "/activity", "/insights", "/ai-rules", "/settings"];
         for (const route of pages) {
             await page.goto(`${WEB_BASE_URL}${route}`, { waitUntil: "domcontentloaded" });
             await page.waitForTimeout(500);
@@ -133,6 +133,42 @@ async function browserSmoke(playwrightModule) {
                     await page.waitForTimeout(250);
                 }
             }
+        }
+
+        // Queue action.
+        await page.goto(`${WEB_BASE_URL}/stacks`, { waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(750);
+        const newStackButton = page.getByTestId("new-stack-button");
+        if (await newStackButton.isVisible().catch(() => false)) {
+            const smokeStackName = `Smoke Stack ${Date.now()}`;
+            await newStackButton.click();
+            await page.getByTestId("stack-name-input").fill(smokeStackName);
+            await page.getByTestId("create-stack-submit").click();
+            await page.waitForURL(/\/stacks\/[^/]+$/, { timeout: 15000 }).catch(() => {});
+
+            const backToStacks = page.getByRole("link", { name: /Back to Stacks/i }).first();
+            const stackError = page.getByText(/Error loading stack/i).first();
+            const detailVisible = await Promise.any([
+                backToStacks.waitFor({ state: "visible", timeout: 15000 }).then(() => true),
+                stackError.waitFor({ state: "visible", timeout: 15000 }).then(() => false),
+            ]).catch(() => false);
+            assert(detailVisible, "Expected stack detail page after creating a stack");
+        }
+
+        await page.goto(`${WEB_BASE_URL}/ai-rules`, { waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(750);
+        const saveAiRules = page.getByRole("button", { name: /Save AI Rules|Saving/i }).first();
+        if (await saveAiRules.isVisible().catch(() => false)) {
+            await saveAiRules.click();
+            await page.waitForTimeout(500);
+        }
+
+        await page.goto(`${WEB_BASE_URL}/settings`, { waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(750);
+        const saveSettings = page.getByRole("button", { name: /Save Changes|Saving/i }).first();
+        if (await saveSettings.isVisible().catch(() => false)) {
+            await saveSettings.click();
+            await page.waitForTimeout(500);
         }
 
         // Queue action.

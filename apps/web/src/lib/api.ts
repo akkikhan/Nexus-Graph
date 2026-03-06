@@ -185,7 +185,7 @@ export interface StackDetail extends Omit<StackItem, "branches"> {
 
 export interface CreateStackInput {
     name: string;
-    repositoryId: string;
+    repositoryId?: string;
     baseBranch?: string;
     description?: string;
 }
@@ -236,6 +236,30 @@ export async function createStack(input: CreateStackInput): Promise<CreateStackR
         }),
     });
     return parseResponse<CreateStackResult>(res, "Failed to create stack");
+}
+
+export type SettingValue = string | number | boolean;
+
+export interface AppSettingsResponse {
+    settings: Record<string, SettingValue>;
+    userId?: string;
+    updatedAt?: string;
+}
+
+export async function fetchAppSettings(): Promise<AppSettingsResponse> {
+    const res = await fetch(`${API_BASE_URL}/settings`);
+    return parseResponse<AppSettingsResponse>(res, "Failed to fetch app settings");
+}
+
+export async function saveAppSettings(
+    settings: Record<string, SettingValue>
+): Promise<AppSettingsResponse> {
+    const res = await fetch(`${API_BASE_URL}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings }),
+    });
+    return parseResponse<AppSettingsResponse>(res, "Failed to save app settings");
 }
 
 export interface InsightsVelocityTrendPoint {

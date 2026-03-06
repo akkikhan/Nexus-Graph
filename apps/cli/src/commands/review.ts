@@ -1,4 +1,4 @@
-/**
+﻿/**
  * NEXUS CLI - AI Review Command
  * Trigger AI code review locally
  */
@@ -6,8 +6,13 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
-import { getGit, getCurrentBranch, getDiff } from "../utils/git";
+import { getGit, getCurrentBranch } from "../utils/git";
 import { getConfig } from "../utils/config";
+import {
+    collectDiffContexts,
+    formatReviewSummary,
+    runReviewAnalysis,
+} from "../utils/ai";
 
 export const reviewCommand = new Command("review")
     .description("Trigger AI code review locally")
@@ -24,84 +29,53 @@ export const reviewCommand = new Command("review")
 
             spinner.start("Analyzing changes...");
 
-            // Get diff from trunk
-            const diff = await getDiff(git, trunk, currentBranch, options.file);
+            const diffContexts = await collectDiffContexts(git, trunk, currentBranch, options.file);
 
-            if (!diff.trim()) {
+            if (diffContexts.length === 0) {
                 spinner.warn("No changes to review");
                 return;
             }
 
-            spinner.text = "Requesting AI review...";
+            spinner.text = "Running Nexus review...";
+            const result = await runReviewAnalysis(
+                diffContexts,
+                (config.get("repo") as string | undefined) || "local"
+            );
 
-            // TODO: Integrate with @nexus/ai package
-            // For now, show mock output
-            const mockReview = [
-                {
-                    file: "src/utils/auth.ts",
-                    line: 42,
-                    severity: "error",
-                    message: "Potential SQL injection vulnerability",
-                    suggestion: "Use parameterized queries instead of string concatenation",
-                },
-                {
-                    file: "src/api/users.ts",
-                    line: 78,
-                    severity: "warning",
-                    message: "Missing null check for user object",
-                    suggestion: "Add optional chaining: user?.email",
-                },
-                {
-                    file: "src/components/Login.tsx",
-                    line: 15,
-                    severity: "info",
-                    message: "Consider extracting this into a custom hook",
-                    suggestion: "Create useAuth() hook for better reusability",
-                },
-            ];
-
-            spinner.succeed("AI review complete");
+            spinner.succeed(`Review complete (${result.modeLabel})`);
             console.log("");
 
-            // Display results
-            let errors = 0;
-            let warnings = 0;
-            let infos = 0;
+            if (result.comments.length === 0) {
+                console.log(chalk.green("No material issues found."));
+                console.log("");
+                return;
+            }
 
-            for (const comment of mockReview) {
-                let icon: string;
-                let color: typeof chalk;
+            for (const comment of result.comments) {
+                const severityLabel = comment.severity.toUpperCase().padEnd(8, " ");
+                const severityColor =
+                    comment.severity === "critical"
+                        ? chalk.bgRed.white
+                        : comment.severity === "error"
+                            ? chalk.red
+                            : comment.severity === "warning"
+                                ? chalk.yellow
+                                : chalk.blue;
 
-                switch (comment.severity) {
-                    case "error":
-                        icon = "✗";
-                        color = chalk.red;
-                        errors++;
-                        break;
-                    case "warning":
-                        icon = "⚠";
-                        color = chalk.yellow;
-                        warnings++;
-                        break;
-                    default:
-                        icon = "ℹ";
-                        color = chalk.blue;
-                        infos++;
-                }
-
-                console.log(color(`${icon} ${comment.file}:${comment.line}`));
-                console.log(color(`  ${comment.message}`));
-                if (comment.suggestion) {
-                    console.log(chalk.gray(`  💡 ${comment.suggestion}`));
+                console.log(severityColor(`[${severityLabel}] ${comment.filePath}:${comment.lineNumber}`));
+                console.log(severityColor(`  ${comment.body}`));
+                if (comment.suggestionCode) {
+                    console.log(chalk.gray(`  Suggestion: ${comment.suggestionCode}`));
                 }
                 console.log("");
             }
 
-            // Summary
+            const summary = formatReviewSummary(result.comments);
             console.log(chalk.bold("Summary:"));
             console.log(
-                `  ${chalk.red(`${errors} error(s)`)} | ${chalk.yellow(`${warnings} warning(s)`)} | ${chalk.blue(`${infos} info(s)`)}`
+                `  ${chalk.red(`${summary.critical + summary.errors} high-severity`)} | ${chalk.yellow(`${summary.warnings} warning(s)`)} | ${chalk.blue(`${summary.infos} info(s)`)}`
             );
+            console.log(chalk.gray(`  Source: ${result.modeLabel}`));
             console.log("");
         } catch (error) {
             spinner.fail("Review failed");

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
     AlertTriangle,
     Bell,
@@ -46,6 +46,8 @@ import {
     syncIntegrationIssueLink,
     fetchSystemHealth,
     muteIntegrationAlert,
+    fetchAppSettings,
+    saveAppSettings,
     IntegrationAlertStatus,
     IntegrationConnectionActionAuditEvent,
     IntegrationConnection,
@@ -63,6 +65,7 @@ import {
     IntegrationWebhookAuthEvent,
     unmuteIntegrationAlert,
 } from "../../../lib/api";
+import { AppSettings, DEFAULT_APP_SETTINGS, mergeAppSettings } from "../../../lib/settings";
 
 type SelectOption = {
     label: string;
@@ -239,23 +242,7 @@ const sections: SettingsSection[] = [
     },
 ];
 
-const initialValues: Record<string, string | number | boolean> = {
-    ai_provider: "anthropic",
-    ai_model: "claude-sonnet-4-20250514",
-    ensemble_mode: true,
-    auto_review: true,
-    risk_threshold: 70,
-    merge_queue_enabled: true,
-    require_ci: true,
-    auto_rebase: true,
-    merge_method: "squash",
-    email_reviews: true,
-    email_ai_findings: false,
-    slack_enabled: false,
-    desktop_notifications: true,
-};
-
-const SETTINGS_STORAGE_KEY = "nexus.settings.v1";
+const initialValues: AppSettings = DEFAULT_APP_SETTINGS;
 const REALTIME_REFRESH_DEBOUNCE_MS = 1500;
 
 function statusLabel(status: "connected" | "disconnected" | "coming_soon"): string {
@@ -354,6 +341,7 @@ function connectionStatusForProvider(
 }
 
 export default function SettingsPage() {
+    const queryClient = useQueryClient();
     const [values, setValues] = useState(initialValues);
     const [saveMessage, setSaveMessage] = useState<string>("");
     const [authProvider, setAuthProvider] = useState<AuthProviderFilter>("all");
@@ -404,6 +392,25 @@ export default function SettingsPage() {
     const [issueLinkActionError, setIssueLinkActionError] = useState("");
     const [connectionActionMessage, setConnectionActionMessage] = useState("");
     const [connectionActionError, setConnectionActionError] = useState("");
+
+    const settingsQuery = useQuery({
+        queryKey: ["app-settings"],
+        queryFn: fetchAppSettings,
+    });
+
+    const saveSettingsMutation = useMutation({
+        mutationFn: () => saveAppSettings(values),
+        onSuccess: (result) => {
+            const merged = mergeAppSettings(result.settings);
+            setValues(merged);
+            queryClient.setQueryData(["app-settings"], result);
+            setSaveMessage("Settings saved.");
+        },
+        onError: (error) => {
+            const details = error instanceof Error ? error.message : "Failed to save settings";
+            setSaveMessage(details);
+        },
+    });
     const [processingAlertAction, setProcessingAlertAction] = useState<{
         code: string;
         mode: AlertActionMode;
@@ -457,7 +464,7 @@ export default function SettingsPage() {
             }),
         refetchInterval: 30_000,
     });
-    const integrationRepoId = authRepoId.trim() || undefined;
+    const integrationRepoFilterId = authRepoId.trim() || undefined;
     const {
         data: integrationConnectionsData,
         isLoading: integrationConnectionsLoading,
@@ -465,15 +472,16 @@ export default function SettingsPage() {
         error: integrationConnectionsError,
         refetch: refetchIntegrationConnections,
     } = useQuery({
-        queryKey: ["settings", "integration-connections", integrationRepoId],
+        queryKey: ["settings", "integration-connections", integrationRepoFilterId],
         queryFn: () =>
             fetchIntegrationConnections({
-                repoId: integrationRepoId,
+                repoId: integrationRepoFilterId,
                 limit: 50,
                 offset: 0,
             }),
         refetchInterval: 30_000,
     });
+    const operatorRepoId = integrationRepoFilterId || integrationConnectionsData?.connections?.[0]?.repoId;
     const {
         data: connectionActionAuditsData,
         isLoading: connectionActionAuditsLoading,
@@ -481,10 +489,10 @@ export default function SettingsPage() {
         error: connectionActionAuditsError,
         refetch: refetchConnectionActionAudits,
     } = useQuery({
-        queryKey: ["settings", "integration-connection-action-audits", integrationRepoId],
+        queryKey: ["settings", "integration-connection-action-audits", operatorRepoId],
         queryFn: () =>
             fetchIntegrationConnectionActionAudits({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 limit: 8,
             }),
         refetchInterval: 30_000,
@@ -496,8 +504,8 @@ export default function SettingsPage() {
         error: integrationMetricsError,
         refetch: refetchIntegrationMetrics,
     } = useQuery({
-        queryKey: ["settings", "integration-metrics", integrationRepoId],
-        queryFn: () => fetchIntegrationMetrics(integrationRepoId),
+        queryKey: ["settings", "integration-metrics", operatorRepoId],
+        queryFn: () => fetchIntegrationMetrics(operatorRepoId),
         refetchInterval: 30_000,
     });
     const {
@@ -507,8 +515,8 @@ export default function SettingsPage() {
         error: integrationAlertsError,
         refetch: refetchIntegrationAlerts,
     } = useQuery({
-        queryKey: ["settings", "integration-alerts", integrationRepoId],
-        queryFn: () => fetchIntegrationAlerts({ repoId: integrationRepoId }),
+        queryKey: ["settings", "integration-alerts", operatorRepoId],
+        queryFn: () => fetchIntegrationAlerts({ repoId: operatorRepoId }),
         refetchInterval: 30_000,
     });
     const {
@@ -521,14 +529,14 @@ export default function SettingsPage() {
         queryKey: [
             "settings",
             "integration-incident-timeline",
-            integrationRepoId,
+            operatorRepoId,
             authProvider,
             timelineScopeFilter,
             timelineSeverityFilter,
         ],
         queryFn: () =>
             fetchIntegrationIncidentTimeline({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 provider: authProvider === "all" ? undefined : authProvider,
                 scope: timelineScopeFilter === "all" ? undefined : timelineScopeFilter,
                 severity: timelineSeverityFilter === "all" ? undefined : timelineSeverityFilter,
@@ -547,7 +555,7 @@ export default function SettingsPage() {
         queryKey: [
             "settings",
             "integration-alert-triage-audits",
-            integrationRepoId,
+            operatorRepoId,
             triageAuditActionFilter,
             triageAuditActorFilter,
             triageAuditAlertCodeFilter,
@@ -555,7 +563,7 @@ export default function SettingsPage() {
         ],
         queryFn: () =>
             fetchIntegrationAlertTriageAudits({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 action: triageAuditActionFilter === "all" ? undefined : triageAuditActionFilter,
                 actor: triageAuditActorFilter.trim() || undefined,
                 alertCode: triageAuditAlertCodeFilter.trim() || undefined,
@@ -575,12 +583,12 @@ export default function SettingsPage() {
         queryKey: [
             "settings",
             "integration-incident-escalations",
-            integrationRepoId,
+            operatorRepoId,
             authSinceMinutes,
         ],
         queryFn: () =>
             fetchIntegrationIncidentEscalations({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 sinceMinutes: authSinceMinutes,
                 limit: 8,
                 offset: 0,
@@ -597,13 +605,13 @@ export default function SettingsPage() {
         queryKey: [
             "settings",
             "integration-webhooks",
-            integrationRepoId,
+            operatorRepoId,
             authProvider,
             webhookStatusFilter,
         ],
         queryFn: () =>
             fetchIntegrationWebhookEvents({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 provider: authProvider === "all" ? undefined : authProvider,
                 status: webhookStatusFilter === "all" ? undefined : webhookStatusFilter,
                 limit: WEBHOOK_RECOVERY_PAGE_SIZE,
@@ -621,14 +629,14 @@ export default function SettingsPage() {
         queryKey: [
             "settings",
             "integration-incident-sla-summary",
-            integrationRepoId,
+            operatorRepoId,
             warningSlaMinutes,
             criticalSlaMinutes,
             authSinceMinutes,
         ],
         queryFn: () =>
             fetchIntegrationIncidentSlaSummary({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 windowMinutes: authSinceMinutes,
                 warningSlaMinutes,
                 criticalSlaMinutes,
@@ -642,10 +650,10 @@ export default function SettingsPage() {
         error: webhookActionAuditsError,
         refetch: refetchWebhookActionAudits,
     } = useQuery({
-        queryKey: ["settings", "integration-webhook-action-audits", integrationRepoId],
+        queryKey: ["settings", "integration-webhook-action-audits", operatorRepoId],
         queryFn: () =>
             fetchIntegrationWebhookActionAudits({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 limit: 8,
         }),
         refetchInterval: 30_000,
@@ -660,12 +668,12 @@ export default function SettingsPage() {
         queryKey: [
             "settings",
             "integration-notification-deliveries",
-            integrationRepoId,
+            operatorRepoId,
             notificationStatusFilter,
         ],
         queryFn: () =>
             fetchIntegrationNotifications({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 status: notificationStatusFilter === "all" ? undefined : notificationStatusFilter,
                 limit: 8,
                 offset: 0,
@@ -679,10 +687,10 @@ export default function SettingsPage() {
         error: notificationActionAuditsError,
         refetch: refetchNotificationActionAudits,
     } = useQuery({
-        queryKey: ["settings", "integration-notification-action-audits", integrationRepoId],
+        queryKey: ["settings", "integration-notification-action-audits", operatorRepoId],
         queryFn: () =>
             fetchIntegrationNotificationActionAudits({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 limit: 8,
         }),
         refetchInterval: 30_000,
@@ -698,13 +706,13 @@ export default function SettingsPage() {
         queryKey: [
             "settings",
             "integration-issue-links",
-            integrationRepoId,
+            operatorRepoId,
             issueLinkProvider,
             issueLinkStatusFilter,
         ],
         queryFn: () =>
             fetchIntegrationIssueLinks({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 provider: issueLinkProvider,
                 status: issueLinkStatusFilter === "all" ? undefined : issueLinkStatusFilter,
                 limit: 8,
@@ -719,10 +727,10 @@ export default function SettingsPage() {
         error: issueLinkActionAuditsError,
         refetch: refetchIssueLinkActionAudits,
     } = useQuery({
-        queryKey: ["settings", "integration-issue-link-action-audits", integrationRepoId],
+        queryKey: ["settings", "integration-issue-link-action-audits", operatorRepoId],
         queryFn: () =>
             fetchIntegrationIssueLinkActionAudits({
-                repoId: integrationRepoId,
+                repoId: operatorRepoId,
                 limit: 8,
             }),
         refetchInterval: 30_000,
@@ -774,7 +782,7 @@ export default function SettingsPage() {
             socket = new WebSocket(wsUrl);
 
             socket.onopen = () => {
-                const channels = integrationRepoId ? ["integrations", `repo:${integrationRepoId}`] : ["integrations"];
+                const channels = operatorRepoId ? ["integrations", `repo:${operatorRepoId}`] : ["integrations"];
                 socket?.send(
                     JSON.stringify({
                         type: "subscribe",
@@ -791,9 +799,9 @@ export default function SettingsPage() {
                     };
                     if (parsed?.type !== "integration:updated") return;
                     if (
-                        integrationRepoId &&
+                        operatorRepoId &&
                         typeof parsed?.payload?.repoId === "string" &&
-                        parsed.payload.repoId !== integrationRepoId
+                        parsed.payload.repoId !== operatorRepoId
                     ) {
                         return;
                     }
@@ -823,7 +831,7 @@ export default function SettingsPage() {
             socket?.close();
         };
     }, [
-        integrationRepoId,
+        operatorRepoId,
         refetchConnectionActionAudits,
         refetchIntegrationAlerts,
         refetchIntegrationConnections,
@@ -856,7 +864,7 @@ export default function SettingsPage() {
 
     const authEvents = authEventsData?.events || [];
     const integrationConnections = integrationConnectionsData?.connections || [];
-    const triageTargetRepoId = integrationRepoId || integrationConnections[0]?.repoId;
+    const triageTargetRepoId = operatorRepoId;
     const connectionActionAudits = connectionActionAuditsData?.events || [];
     const incidentTimeline = integrationIncidentTimelineData?.events || [];
     const incidentSlaSummary: IntegrationIncidentSlaSummary | null = integrationIncidentSlaSummaryData || null;
@@ -932,26 +940,22 @@ export default function SettingsPage() {
     };
 
     useEffect(() => {
-        try {
-            const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-            if (!raw) return;
-            const parsed = JSON.parse(raw);
-            if (!parsed || typeof parsed !== "object") return;
-            setValues((prev) => ({ ...prev, ...(parsed as Record<string, string | number | boolean>) }));
-            setSaveMessage("Loaded saved settings from this browser.");
-        } catch {
-            setSaveMessage("Saved settings were invalid and were ignored.");
+        if (settingsQuery.data?.settings) {
+            setValues(mergeAppSettings(settingsQuery.data.settings));
+            if (!saveSettingsMutation.isSuccess && !saveSettingsMutation.isPending) {
+                setSaveMessage("Loaded saved settings.");
+            }
+            return;
         }
-    }, []);
+        if (settingsQuery.error) {
+            const details = settingsQuery.error instanceof Error
+                ? settingsQuery.error.message
+                : "Failed to load saved settings";
+            setSaveMessage(details);
+        }
+    }, [settingsQuery.data, settingsQuery.error]);
 
-    const onSave = () => {
-        try {
-            localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(values));
-            setSaveMessage("Settings saved in this browser.");
-        } catch {
-            setSaveMessage("Could not save settings in this browser.");
-        }
-    };
+    const onSave = () => saveSettingsMutation.mutate();
 
     const onResetDefaults = () => {
         setValues(initialValues);
@@ -1269,7 +1273,7 @@ export default function SettingsPage() {
         setWebhookActionError("");
         setRetryingDueWebhooks(true);
         try {
-            const result = await retryDueIntegrationWebhooks(20, integrationRepoId);
+            const result = await retryDueIntegrationWebhooks(20, operatorRepoId);
             const message = `Retried ${result.processed} due webhook event(s).`;
             setWebhookActionMessage(message);
             await Promise.all([
@@ -1324,7 +1328,7 @@ export default function SettingsPage() {
         setNotificationActionError("");
         setRetryingDueNotifications(true);
         try {
-            const result = await retryDueIntegrationNotifications(20, integrationRepoId);
+            const result = await retryDueIntegrationNotifications(20, operatorRepoId);
             const message = `Retried ${result.processed} due notification(s).`;
             setNotificationActionMessage(message);
             await Promise.all([
@@ -1379,7 +1383,7 @@ export default function SettingsPage() {
         setIssueLinkActionError("");
         setRetryingIssueLinkSyncs(true);
         try {
-            const result = await retryIntegrationIssueLinkSyncs(20, integrationRepoId);
+            const result = await retryIntegrationIssueLinkSyncs(20, operatorRepoId);
             const message = `Retried ${result.processed} issue-link sync(s).`;
             setIssueLinkActionMessage(message);
             await Promise.all([
@@ -1614,7 +1618,7 @@ export default function SettingsPage() {
                             <h3 className="text-sm font-semibold text-white">Integrations Operations</h3>
                             <p className="text-xs text-zinc-500">
                                 Connection health, delivery/webhook metrics, and alert state
-                                {integrationRepoId ? ` for repo ${integrationRepoId}.` : "."}
+                                {operatorRepoId ? ` for repo ${operatorRepoId}.` : "."}
                             </p>
                         </div>
                         <span
@@ -2732,7 +2736,17 @@ export default function SettingsPage() {
                                                 </div>
                                                 <div className="divide-y divide-zinc-800">
                                                     {issueLinks.map((link) => {
-                                                        const actionable = link.status === "sync_pending" || link.status === "sync_failed";
+                                                        const metadata =
+                                                            link.metadata && typeof link.metadata === "object"
+                                                                ? (link.metadata as { lastSync?: { status?: string } })
+                                                                : {};
+                                                        const lastSyncStatus =
+                                                            typeof metadata.lastSync?.status === "string"
+                                                                ? metadata.lastSync.status
+                                                                : undefined;
+                                                        const actionable =
+                                                            (link.status === "sync_pending" || link.status === "sync_failed") &&
+                                                            lastSyncStatus !== "dead_letter";
                                                         return (
                                                             <div
                                                                 key={link.id}
@@ -3054,9 +3068,10 @@ export default function SettingsPage() {
                 <span className="text-sm text-zinc-500">{saveMessage}</span>
                 <button
                     onClick={onSave}
-                    className="px-6 py-2 bg-nexus-600 hover:bg-nexus-500 rounded-lg font-medium transition-colors"
+                    disabled={saveSettingsMutation.isPending}
+                    className="px-6 py-2 bg-nexus-600 hover:bg-nexus-500 rounded-lg font-medium transition-colors disabled:opacity-60"
                 >
-                    Save Changes
+                    {saveSettingsMutation.isPending ? "Saving..." : "Save Changes"}
                 </button>
             </div>
         </div>

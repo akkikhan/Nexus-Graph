@@ -129,6 +129,12 @@ Menu bar app guide: `docs/menubar-app.md`
 
 VS Code extension guide: `docs/vscode-extension.md`
 
+Beginner product guide: `docs/beginner-guide.md`
+
+Manual QA matrix: `docs/qa-matrix.md`
+
+Settings deep dive: `docs/settings-deep-dive.md`
+
 ## Database Environments
 
 DB setup now supports local Postgres, Supabase, and Azure Postgres.

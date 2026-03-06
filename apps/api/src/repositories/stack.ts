@@ -144,7 +144,7 @@ export const stackRepository = {
     },
 
     async createResolved(input: {
-        repositoryId: string;
+        repositoryId?: string;
         userId?: string;
         name: string;
         baseBranch?: string;

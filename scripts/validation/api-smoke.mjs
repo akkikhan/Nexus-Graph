@@ -208,6 +208,69 @@ async function run() {
             assertErrorPayload("stacks", stacks.payload);
         }
 
+        const settings = await request("/api/v1/settings");
+        printResult("GET /api/v1/settings", settings);
+        assert(settings.response.status === 200, "settings lookup must return 200");
+        assert(
+            settings.payload && typeof settings.payload === "object" && typeof settings.payload.settings === "object",
+            "settings payload must include settings object"
+        );
+
+        const settingsUpdatePayload = {
+            ai_provider: "openai",
+            ai_model: "gpt-4o",
+            ensemble_mode: false,
+            auto_review: true,
+            risk_threshold: 55,
+            merge_queue_enabled: true,
+            require_ci: true,
+            auto_rebase: false,
+            merge_method: "squash",
+            email_reviews: true,
+            email_ai_findings: true,
+            slack_enabled: false,
+            desktop_notifications: true,
+        };
+
+        const updateSettings = await request("/api/v1/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                settings: settingsUpdatePayload,
+            }),
+        });
+        printResult("PUT /api/v1/settings", updateSettings);
+        assert(updateSettings.response.status === 200, "settings update must return 200");
+        assert(
+            updateSettings.payload?.settings?.ai_provider === "openai",
+            "settings update must persist ai_provider"
+        );
+        assert(
+            updateSettings.payload?.settings?.risk_threshold === 55,
+            "settings update must persist risk_threshold"
+        );
+
+        const invalidSettings = await request("/api/v1/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                settings: {
+                    ...settingsUpdatePayload,
+                    risk_threshold: 101,
+                },
+            }),
+        });
+        printResult("PUT /api/v1/settings (invalid)", invalidSettings);
+        assert(invalidSettings.response.status === 400, "invalid settings update must return 400");
+
+        const settingsAfterUpdate = await request("/api/v1/settings");
+        printResult("GET /api/v1/settings (after update)", settingsAfterUpdate);
+        assert(settingsAfterUpdate.response.status === 200, "settings refetch must return 200");
+        assert(
+            settingsAfterUpdate.payload?.settings?.ai_model === "gpt-4o",
+            "settings refetch must reflect persisted ai_model"
+        );
+
         if (firstRepoId) {
             const createPR = await request("/api/v1/prs", {
                 method: "POST",

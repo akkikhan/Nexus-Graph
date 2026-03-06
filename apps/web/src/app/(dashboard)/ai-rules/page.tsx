@@ -3,34 +3,50 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, ShieldCheck, Gauge, Sparkles } from "lucide-react";
-
-type SettingValue = string | number | boolean;
-type SettingsValues = Record<string, SettingValue>;
-
-const SETTINGS_STORAGE_KEY = "nexus.settings.v1";
-const defaultValues: SettingsValues = {
-    ai_provider: "anthropic",
-    ai_model: "claude-sonnet-4-20250514",
-    ensemble_mode: true,
-    auto_review: true,
-    risk_threshold: 70,
-};
+import { fetchAppSettings, saveAppSettings } from "../../../lib/api";
+import { AppSettings, DEFAULT_APP_SETTINGS, SettingValue, mergeAppSettings } from "../../../lib/settings";
 
 export default function AIRulesPage() {
-    const [values, setValues] = useState<SettingsValues>(defaultValues);
+    const queryClient = useQueryClient();
+    const [values, setValues] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
     const [message, setMessage] = useState<string>("");
 
+    const settingsQuery = useQuery({
+        queryKey: ["app-settings"],
+        queryFn: fetchAppSettings,
+    });
+
+    const saveMutation = useMutation({
+        mutationFn: () => saveAppSettings(values),
+        onSuccess: (result) => {
+            const merged = mergeAppSettings(result.settings);
+            setValues(merged);
+            queryClient.setQueryData(["app-settings"], result);
+            setMessage("AI rules saved.");
+        },
+        onError: (error) => {
+            const details = error instanceof Error ? error.message : "Failed to save AI rules";
+            setMessage(details);
+        },
+    });
+
     useEffect(() => {
-        try {
-            const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-            if (!raw) return;
-            const parsed = JSON.parse(raw) as SettingsValues;
-            setValues((prev) => ({ ...prev, ...parsed }));
-        } catch {
-            // Ignore malformed local settings and keep defaults.
+        if (settingsQuery.data?.settings) {
+            setValues(mergeAppSettings(settingsQuery.data.settings));
+            if (!saveMutation.isSuccess && !saveMutation.isPending) {
+                setMessage("Loaded saved AI rules.");
+            }
+            return;
         }
-    }, []);
+        if (settingsQuery.error) {
+            const details = settingsQuery.error instanceof Error
+                ? settingsQuery.error.message
+                : "Failed to load AI rules";
+            setMessage(details);
+        }
+    }, [settingsQuery.data, settingsQuery.error]);
 
     const riskLabel = useMemo(() => {
         const score = Number(values.risk_threshold ?? 70);
@@ -43,20 +59,10 @@ export default function AIRulesPage() {
         setValues((prev) => ({ ...prev, [key]: value }));
     };
 
-    const save = () => {
-        try {
-            const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-            const existing = raw ? (JSON.parse(raw) as SettingsValues) : {};
-            const merged = { ...existing, ...values };
-            localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(merged));
-            setMessage("AI rules saved.");
-        } catch {
-            setMessage("Could not save AI rules in this browser.");
-        }
-    };
+    const save = () => saveMutation.mutate();
 
     const reset = () => {
-        setValues(defaultValues);
+        setValues(DEFAULT_APP_SETTINGS);
         setMessage("AI rules reset to defaults. Click Save to persist.");
     };
 
@@ -177,9 +183,10 @@ export default function AIRulesPage() {
                 <div className="mt-8 flex items-center gap-3">
                     <button
                         onClick={save}
+                        disabled={saveMutation.isPending}
                         className="px-4 py-2 rounded-lg bg-nexus-500 hover:bg-nexus-600 text-white text-sm font-medium transition-colors"
                     >
-                        Save AI Rules
+                        {saveMutation.isPending ? "Saving..." : "Save AI Rules"}
                     </button>
                     <button
                         onClick={reset}

@@ -54,8 +54,8 @@ const listConnectionActionAuditsSchema = z.object({
 });
 
 const listIssueLinksSchema = z.object({
-    repoId: z.string().optional(),
-    prId: z.string().optional(),
+    repoId: z.string().uuid().optional(),
+    prId: z.string().uuid().optional(),
     provider: providerSchema.optional(),
     status: issueLinkStatusSchema.optional(),
     limit: z.coerce.number().min(1).max(100).default(20),

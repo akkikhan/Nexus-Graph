@@ -1,4 +1,4 @@
-/**
+﻿/**
  * NEXUS CLI - Submit Command
  * Submit PRs for your stack
  */
@@ -11,6 +11,11 @@ import { getStackManager } from "../utils/stack";
 import { getConfig } from "../utils/config";
 import { GitHubAPI } from "../utils/github";
 import { syncStackToServer } from "../utils/api";
+import {
+    collectDiffContexts,
+    formatReviewCommentBody,
+    runReviewAnalysis,
+} from "../utils/ai";
 
 export const submitCommand = new Command("submit")
     .alias("ss")
@@ -27,7 +32,6 @@ export const submitCommand = new Command("submit")
             const config = getConfig();
             const stackManager = getStackManager();
 
-            // Get the stack from current branch
             const currentBranch = await getCurrentBranch(git);
             const stack = await stackManager.getStack(currentBranch);
 
@@ -38,9 +42,8 @@ export const submitCommand = new Command("submit")
 
             console.log(chalk.bold(`\nSubmitting ${stack.length} branch(es):\n`));
 
-            // Initialize GitHub API
             const github = new GitHubAPI(config.get("githubToken") as string);
-            const [owner, repo] = (config.get("repo") as string || "").split("/");
+            const [owner, repo] = ((config.get("repo") as string) || "").split("/");
 
             if (!owner || !repo) {
                 console.error(chalk.red("Error: Repository not configured. Run 'nx init' first."));
@@ -48,61 +51,66 @@ export const submitCommand = new Command("submit")
             }
 
             const trunk = config.get("trunk", "main") as string;
+            const repoName = (config.get("repo") as string | undefined) || "local";
             let previousBranch = trunk;
 
             for (const branch of stack) {
                 spinner.start(`Pushing ${chalk.cyan(branch.name)}...`);
-
-                // Push the branch
                 await git.push("origin", branch.name, ["--set-upstream", "--force-with-lease"]);
                 spinner.succeed(`Pushed ${chalk.cyan(branch.name)}`);
 
-                // Check if PR exists
-                const existingPR = await github.findPR(owner, repo, branch.name);
+                let activePr = await github.findPR(owner, repo, branch.name);
 
-                if (existingPR) {
-                    // Update existing PR
-                    spinner.start(`Updating PR #${existingPR.number}...`);
+                if (activePr) {
+                    spinner.start(`Updating PR #${activePr.number}...`);
 
-                    // Update base if needed
-                    if (existingPR.base.ref !== previousBranch) {
-                        await github.updatePR(owner, repo, existingPR.number, {
+                    if (activePr.base.ref !== previousBranch) {
+                        activePr = await github.updatePR(owner, repo, activePr.number, {
                             base: previousBranch,
                         });
                     }
 
-                    spinner.succeed(`Updated PR #${existingPR.number}: ${chalk.gray(existingPR.title)}`);
-                    console.log(chalk.gray(`   ${existingPR.html_url}`));
+                    spinner.succeed(`Updated PR #${activePr.number}: ${chalk.gray(activePr.title)}`);
+                    console.log(chalk.gray(`   ${activePr.html_url}`));
                     await stackManager.updatePRInfo(
                         branch.name,
-                        existingPR.number,
-                        existingPR.draft ? "draft" : existingPR.state
+                        activePr.number,
+                        activePr.draft ? "draft" : activePr.state
                     );
                 } else if (!options.updateOnly) {
-                    // Create new PR
                     spinner.start(`Creating PR for ${chalk.cyan(branch.name)}...`);
 
-                    const pr = await github.createPR(owner, repo, {
+                    activePr = await github.createPR(owner, repo, {
                         title: branch.name.replace(/[-_]/g, " ").replace(/\//g, ": "),
                         head: branch.name,
                         base: previousBranch,
                         draft: options.draft,
-                        body: `Part of stack created with NEXUS.\n\n---\n*This PR was created by [NEXUS](https://nexus.dev)*`,
+                        body: "Part of stack created with NEXUS.\n\n---\nThis PR was created by Nexus CLI.",
                     });
 
-                    spinner.succeed(`Created PR #${pr.number}: ${chalk.cyan(pr.title)}`);
-                    console.log(chalk.gray(`   ${pr.html_url}`));
+                    spinner.succeed(`Created PR #${activePr.number}: ${chalk.cyan(activePr.title)}`);
+                    console.log(chalk.gray(`   ${activePr.html_url}`));
                     await stackManager.updatePRInfo(
                         branch.name,
-                        pr.number,
+                        activePr.number,
                         options.draft ? "draft" : "open"
                     );
+                }
 
-                    // Request AI review if enabled
-                    if (options.ai !== false) {
-                        spinner.start("Requesting AI review...");
-                        // TODO: Trigger AI review via webhook or API
-                        spinner.succeed("AI review requested");
+                if (activePr && options.ai !== false) {
+                    try {
+                        spinner.start(`Running Nexus review for PR #${activePr.number}...`);
+                        const diffContexts = await collectDiffContexts(git, previousBranch, branch.name);
+                        const reviewResult = await runReviewAnalysis(diffContexts, repoName);
+                        const commentBody = formatReviewCommentBody(
+                            reviewResult,
+                            previousBranch,
+                            branch.name
+                        );
+                        await github.createComment(owner, repo, activePr.number, commentBody);
+                        spinner.succeed(`Posted Nexus review on PR #${activePr.number}`);
+                    } catch (reviewError) {
+                        spinner.warn(`Skipped Nexus review: ${String(reviewError)}`);
                     }
                 }
 
@@ -122,17 +130,13 @@ export const submitCommand = new Command("submit")
                 // Best effort only.
             }
 
-            console.log(chalk.green(`\n✓ Stack submitted successfully!\n`));
+            console.log(chalk.green("\nStack submitted successfully.\n"));
 
-            // Show stack summary
             console.log(chalk.bold("Stack Summary:"));
-            for (let i = stack.length - 1; i >= 0; i--) {
-                const branch = stack[i];
-                const isTop = i === stack.length - 1;
-                const prefix = isTop ? "┌" : i === 0 ? "└" : "├";
-                console.log(
-                    `  ${prefix}── ${branch.prNumber ? `PR #${branch.prNumber}` : branch.name}`
-                );
+            for (let index = stack.length - 1; index >= 0; index -= 1) {
+                const branch = stack[index];
+                const prefix = index === stack.length - 1 ? "+" : index === 0 ? "\\" : "|";
+                console.log(`  ${prefix}-- ${branch.prNumber ? `PR #${branch.prNumber}` : branch.name}`);
             }
             console.log("");
         } catch (error) {
